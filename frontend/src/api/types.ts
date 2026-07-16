@@ -81,6 +81,27 @@ export type DailyOrderInput = {
   readonly lengthTier?: LengthTier
 }
 
+/** 學習進度上雲（T2）：streak / 聆聽分鐘 / 查詞次數 / 已聽集數 / 播放進度快照。
+ *  跨裝置同步；localStorage 降級為 cache。 */
+export type Activity = {
+  readonly streakDates: readonly string[] // 'YYYY-MM-DD'，去重
+  readonly listenMinutes: Readonly<Record<string, number>> // {'YYYY-MM': minutes}
+  readonly lookupCount: Readonly<Record<string, number>> // {'YYYY-MM': count}
+  readonly listenedEpisodeIds: readonly string[]
+  readonly lastPlayedEpisodeId?: string | null
+  readonly lastPlayedPosition?: number | null
+  readonly lastPlayedAt?: string | null // ISO 8601
+}
+
+/** patchActivity(patch) 的輸入：全部是「增量」語意，只合併有給的欄位（非取代）。 */
+export type ActivityPatch = {
+  readonly addStreakDate?: string
+  readonly addListenedEpisodeId?: string
+  readonly addListenMinutes?: { readonly month: string; readonly minutes: number }
+  readonly addLookupCount?: { readonly month: string; readonly count: number }
+  readonly lastPlayed?: { readonly episodeId: string; readonly position: number; readonly at: string }
+}
+
 export interface Api {
   lookupDict(word: string): Promise<DictEntry | null>
   addVocab(item: Omit<VocabItem, 'id' | 'createdAt'>): Promise<VocabItem>
@@ -110,4 +131,7 @@ export interface Api {
   getEpisode(slug: string): Promise<Episode>
   // 依日期取當日交付的集數（player ?date= 連結用）；找不到回 null 由前端 fallback
   getDeliveredEpisode(date: string): Promise<Episode | null>
+  // 學習進度上雲（T2）
+  getActivity(): Promise<Activity>
+  patchActivity(patch: ActivityPatch): Promise<Activity>
 }

@@ -2,7 +2,7 @@ import { BrowserRouter, Routes, Route, useLocation } from 'react-router-dom'
 import { AnimatePresence, motion } from 'framer-motion'
 import { Toaster } from 'sonner'
 import { useEffect } from 'react'
-import { AuthProvider, PlayerProvider, VocabProvider, SettingsProvider, ListenedProvider, FavoritesProvider, DailyOrderProvider } from './state'
+import { AuthProvider, ActivityProvider, PlayerProvider, VocabProvider, SettingsProvider, ListenedProvider, FavoritesProvider, DailyOrderProvider } from './state'
 import { TopBar, BottomNav } from './components/layout'
 import { HomeRoute, PlayerRoute, VocabRoute, FavoritesRoute, SettingsRoute, ProgressRoute, FlashcardRoute, DailyRoute, LoginRoute } from './routes'
 
@@ -56,23 +56,25 @@ export default function App() {
     <BrowserRouter>
       <AuthProvider>
         <SettingsProvider>
-          <ListenedProvider>
-            <PlayerProvider>
-              <VocabProvider>
-                <FavoritesProvider>
-                  <DailyOrderProvider>
-                    <div className="min-h-screen bg-bg-primary text-text-primary font-sans">
-                      <TopBar />
-                      <main className="pb-14 lg:pb-0">
-                        <AnimatedRoutes />
-                      </main>
-                      <BottomNav />
-                    </div>
-                  </DailyOrderProvider>
-                </FavoritesProvider>
-              </VocabProvider>
-            </PlayerProvider>
-          </ListenedProvider>
+          <ActivityProvider>
+            <ListenedProvider>
+              <PlayerProvider>
+                <VocabProvider>
+                  <FavoritesProvider>
+                    <DailyOrderProvider>
+                      <div className="min-h-screen bg-bg-primary text-text-primary font-sans">
+                        <TopBar />
+                        <main className="pb-14 lg:pb-0">
+                          <AnimatedRoutes />
+                        </main>
+                        <BottomNav />
+                      </div>
+                    </DailyOrderProvider>
+                  </FavoritesProvider>
+                </VocabProvider>
+              </PlayerProvider>
+            </ListenedProvider>
+          </ActivityProvider>
         </SettingsProvider>
       </AuthProvider>
       <Toaster position="bottom-center" richColors />

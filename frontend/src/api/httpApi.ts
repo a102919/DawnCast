@@ -1,5 +1,6 @@
 import { z } from 'zod'
 import type {
+  Activity,
   Api,
   DailyOrder,
   DailyOrderStatus,
@@ -209,6 +210,16 @@ const MockEpisodeSchema = z.object({
 
 const EpisodeListSchema = z.array(MockEpisodeSchema)
 
+const ActivitySchema = z.object({
+  streakDates: z.array(z.string()),
+  listenMinutes: z.record(z.string(), z.number()),
+  lookupCount: z.record(z.string(), z.number()),
+  listenedEpisodeIds: z.array(z.string()),
+  lastPlayedEpisodeId: z.string().nullable().optional(),
+  lastPlayedPosition: z.number().nullable().optional(),
+  lastPlayedAt: z.string().nullable().optional(),
+}) satisfies z.ZodType<Activity>
+
 // ─── 實作 ─────────────────────────────────────────────────────────────────
 
 export const httpApi: Api = {
@@ -349,6 +360,14 @@ export const httpApi: Api = {
       videoUrl,
       cues: content.cues,
     }
+  },
+
+  async getActivity() {
+    return request<Activity>('/activity', { schema: ActivitySchema })
+  },
+
+  async patchActivity(patch) {
+    return request<Activity>('/activity', { method: 'PATCH', body: patch, schema: ActivitySchema })
   },
 }
 

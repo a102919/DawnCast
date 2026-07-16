@@ -1,36 +1,18 @@
-import { useCallback, useState, type ReactNode } from 'react'
+import { useCallback, type ReactNode } from 'react'
 import { ListenedContext, type ListenedContextValue } from './listenedContextValue'
+import { useActivity } from './useActivity'
 
-const LS_KEY = 'dawncast:listened'
-
+/** 已聽集數與 streak 現由 ActivityProvider 統一管理（上雲 + localStorage cache）；
+ *  此 Provider 只是薄殼，維持既有 ListenedContextValue 介面給既有呼叫端（HomeRoute /
+ *  EpisodeCard / ProgressRoute / PlayerRoute）不必改動。 */
 export function ListenedProvider({ children }: { readonly children: ReactNode }) {
-  const [listenedIds, setListenedIds] = useState<ReadonlySet<string>>(() => {
-    try {
-      const stored = localStorage.getItem(LS_KEY)
-      return new Set(stored ? (JSON.parse(stored) as string[]) : [])
-    } catch {
-      return new Set()
-    }
-  })
+  const { listenedEpisodeIds, markListened } = useActivity()
 
   const markAsListened = useCallback((id: string) => {
-    setListenedIds(prev => {
-      if (prev.has(id)) return prev
-      const next = new Set(prev)
-      next.add(id)
-      localStorage.setItem(LS_KEY, JSON.stringify([...next]))
-      const today = new Date().toLocaleDateString('en-CA')
-      const datesKey = 'dawncast:activity:dates'
-      const rawDates = localStorage.getItem(datesKey)
-      const existingDates: string[] = rawDates ? (JSON.parse(rawDates) as string[]) : []
-      if (!existingDates.includes(today)) {
-        localStorage.setItem(datesKey, JSON.stringify([...existingDates, today].slice(-365)))
-      }
-      return next
-    })
-  }, [])
+    markListened(id)
+  }, [markListened])
 
-  const value: ListenedContextValue = { listenedIds, markAsListened }
+  const value: ListenedContextValue = { listenedIds: listenedEpisodeIds, markAsListened }
 
   return (
     <ListenedContext.Provider value={value}>

@@ -201,6 +201,21 @@ class Episode(CamelModel):
     cues: list[Cue] = Field(default_factory=list)
 
 
+class Activity(CamelModel):
+    """學習進度上雲（T2）。四個累積型欄位 + 播放進度快照，跨裝置同步。
+
+    PATCH 端點做「合併」而非「取代」；此模型是合併後（或無列時的預設）快照。
+    """
+
+    streak_dates: list[str] = Field(default_factory=list)  # ["YYYY-MM-DD", ...]
+    listen_minutes: dict[str, int] = Field(default_factory=dict)  # {"YYYY-MM": minutes}
+    lookup_count: dict[str, int] = Field(default_factory=dict)  # {"YYYY-MM": count}
+    listened_episode_ids: list[str] = Field(default_factory=list)
+    last_played_episode_id: str | None = None
+    last_played_position: float | None = None
+    last_played_at: str | None = None  # ISO 8601
+
+
 class EpisodeListItem(CamelModel):
     """集數列表項，鏡像前端 MockEpisode（列表頁用，不含 cues / videoUrl）。
 

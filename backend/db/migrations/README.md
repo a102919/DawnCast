@@ -7,6 +7,7 @@
 3. `0003_queue_cron.sql` — pgmq 佇列 + pg_cron 夜間排程
 4. `0004_vocab_source_sentence_zh.sql` — user_vocab 補來源句子中文對照
 5. `0005_episode_grounding_format.sql` — episodes 加 length_tier / format / grounded 欄位
+6. `0009_user_activity.sql` — 新增 user_activity 表（streak/聆聽分鐘/查詞次數/播放進度上雲）
 
 > `0003` 需要 Supabase 啟用 `pgmq` 與 `pg_cron` extension（Dashboard → Database → Extensions）。
 > pgvector 起步不建 ivfflat/hnsw 索引（資料量小，精確掃描更穩，PRD §3.1）。

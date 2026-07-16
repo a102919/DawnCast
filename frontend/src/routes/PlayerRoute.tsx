@@ -12,9 +12,8 @@ import { VocabDrawer } from '../components/vocab/VocabDrawer'
 import type { Episode, Cue } from '../types/episode'
 import type { DictEntry } from '../api/types'
 import { api } from '../api'
-import { usePlayer, useListened, useDailyOrder, useSettings } from '../state'
+import { usePlayer, useListened, useDailyOrder, useSettings, useActivity } from '../state'
 import { findActiveCueIndex } from '../lib'
-import { storageGet, storageSet } from '../lib/storage'
 
 export function PlayerRoute() {
   const [episode, setEpisode] = useState<Episode | null>(null)
@@ -30,6 +29,7 @@ export function PlayerRoute() {
   const { settings } = useSettings()
   const { markAsListened } = useListened()
   const { markPlayed } = useDailyOrder()
+  const { addListenMinutes, addLookupCount } = useActivity()
   const episodeIdRef = useRef<string | null>(null)
   const hasMarkedListened = useRef(false)
   const hasMarkedDailyPlayed = useRef(false)
@@ -72,23 +72,28 @@ export function PlayerRoute() {
       episodeIdRef.current = episode.id
       initialSeekAppliedRef.current = false
       hasMarkedListened.current = false
-      // P0-1：載入已儲存播放進度
-      const progress = loadProgress(episode.id)
-      if (progress.exists) {
-        // 等 video element 就緒後套用
-        const trySeek = () => {
-          if (initialSeekAppliedRef.current) return
-          const v = videoRef.current
-          if (v && v.readyState >= 1) {
-            initialSeekAppliedRef.current = true
-            seekTo(progress.currentTime)
-          } else {
-            setTimeout(trySeek, 100)
-          }
-        }
-        trySeek()
+    }
+  }, [episode])
+
+  useEffect(() => {
+    // P0-1：載入已儲存播放進度。loadProgress 本身會先看本機 localStorage，
+    // 沒有的話退回 ActivityProvider 的 lastPlayed（GET /activity 非同步回來後
+    // loadProgress 參照會變、這個 effect 因此重跑，達成換裝置後補套用進度）。
+    if (!episode || initialSeekAppliedRef.current) return
+    const progress = loadProgress(episode.id)
+    if (!progress.exists) return
+    // 等 video element 就緒後套用
+    const trySeek = () => {
+      if (initialSeekAppliedRef.current) return
+      const v = videoRef.current
+      if (v && v.readyState >= 1) {
+        initialSeekAppliedRef.current = true
+        seekTo(progress.currentTime)
+      } else {
+        setTimeout(trySeek, 100)
       }
     }
+    trySeek()
   }, [episode, loadProgress, seekTo, videoRef])
 
   useEffect(() => {
@@ -97,11 +102,9 @@ export function PlayerRoute() {
       hasMarkedListened.current = true
       markAsListened(episode.id)
       const ymMin = new Date().toLocaleDateString('en-CA').slice(0, 7)
-      const minKey = 'dawncast:activity:listenMinutes'
-      const prevMin = storageGet<Record<string, number>>(minKey) ?? {}
-      storageSet(minKey, { ...prevMin, [ymMin]: (prevMin[ymMin] ?? 0) + Math.floor(currentTime / 60) })
+      addListenMinutes(ymMin, Math.floor(currentTime / 60))
     }
-  }, [currentTime, duration, episode, markAsListened])
+  }, [currentTime, duration, episode, markAsListened, addListenMinutes])
 
   useEffect(() => {
     if (!episode || duration <= 0 || hasMarkedDailyPlayed.current) return
@@ -136,9 +139,7 @@ export function PlayerRoute() {
       setDictEntry(entry)
       // 寫入活動查詞計數（給 ProgressRoute 顯示用）
       const ymLookup = new Date().toLocaleDateString('en-CA').slice(0, 7)
-      const lookupMonthKey = 'dawncast:activity:lookupCount'
-      const prevLookup = storageGet<Record<string, number>>(lookupMonthKey) ?? {}
-      storageSet(lookupMonthKey, { ...prevLookup, [ymLookup]: (prevLookup[ymLookup] ?? 0) + 1 })
+      addLookupCount(ymLookup, 1)
     } catch {
       setLookupError('查詢失敗，請重試')
     }

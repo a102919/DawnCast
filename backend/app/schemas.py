@@ -52,6 +52,38 @@ class UpdateSettingsBody(CamelModel):
     default_delivery_time: str | None = None
 
 
+class ListenMinutesDelta(CamelModel):
+    """addListenMinutes 的增量輸入：指定月份要「加上」的分鐘數（非取代）。"""
+
+    month: str = Field(min_length=1)  # 'YYYY-MM'
+    minutes: int = Field(ge=0)
+
+
+class LookupCountDelta(CamelModel):
+    """addLookupCount 的增量輸入：指定月份要「加上」的查詞次數（非取代）。"""
+
+    month: str = Field(min_length=1)  # 'YYYY-MM'
+    count: int = Field(ge=0)
+
+
+class LastPlayedInput(CamelModel):
+    """播放進度快照。at 是事件發生時間（ISO 8601），用來擋亂序節流請求覆蓋新進度。"""
+
+    episode_id: str = Field(min_length=1)
+    position: float = Field(ge=0)
+    at: str = Field(min_length=1)
+
+
+class PatchActivityBody(CamelModel):
+    """patchActivity(patch)。全 optional，皆為「增量」語意，只合併有給的欄位。"""
+
+    add_streak_date: str | None = Field(default=None, min_length=1)
+    add_listened_episode_id: str | None = Field(default=None, min_length=1)
+    add_listen_minutes: ListenMinutesDelta | None = None
+    add_lookup_count: LookupCountDelta | None = None
+    last_played: LastPlayedInput | None = None
+
+
 class SaveDailyOrderBody(CamelModel):
     """saveDailyOrder(order)。前端送完整 DailyOrder；date 為 key。"""
 

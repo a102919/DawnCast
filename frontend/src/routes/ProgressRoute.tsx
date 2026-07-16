@@ -1,8 +1,7 @@
 import type { ComponentType } from 'react'
 import { Headphones, BookOpen, Flame, Clock, Search } from 'lucide-react'
-import { useVocab, useListened } from '../state'
+import { useVocab, useListened, useActivity } from '../state'
 import { EPISODES } from './episodeData'
-import { storageGet } from '../lib/storage'
 
 function calcStreak(dates: readonly string[]): number {
   if (dates.length === 0) return 0
@@ -24,17 +23,14 @@ function calcStreak(dates: readonly string[]): number {
 export function ProgressRoute() {
   const { items } = useVocab()
   const { listenedIds } = useListened()
+  const { streakDates, listenMinutes, lookupCount } = useActivity()
 
   const listenedEps = EPISODES.filter(ep => listenedIds.has(ep.id))
   const yearMonth = new Date().toLocaleDateString('en-CA').slice(0, 7)
 
-  const activityDates = storageGet<string[]>('dawncast:activity:dates') ?? []
-  const listenMinutesMap = storageGet<Record<string, number>>('dawncast:activity:listenMinutes') ?? {}
-  const lookupCountMap = storageGet<Record<string, number>>('dawncast:activity:lookupCount') ?? {}
-
-  const streak = calcStreak(activityDates)
-  const thisMonthMinutes = listenMinutesMap[yearMonth] ?? 0
-  const thisMonthLookups = lookupCountMap[yearMonth] ?? 0
+  const streak = calcStreak(streakDates)
+  const thisMonthMinutes = listenMinutes[yearMonth] ?? 0
+  const thisMonthLookups = lookupCount[yearMonth] ?? 0
   const thisMonthVocab = items.filter(v => v.createdAt.startsWith(yearMonth)).length
 
   return (
