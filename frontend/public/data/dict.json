@@ -1,0 +1,282 @@
+{
+  "iterate": {
+    "word": "iterate",
+    "ipa": "/ˈɪtəreɪt/",
+    "pos": ["v"],
+    "translation": "反覆執行；迭代",
+    "exchange": "p:iterated/d:iterated/i:iterating/3:iterates"
+  },
+  "verify": {
+    "word": "verify",
+    "ipa": "/ˈverɪfaɪ/",
+    "pos": ["v"],
+    "translation": "驗證；核實",
+    "exchange": "p:verified/d:verified/i:verifying/3:verifies"
+  },
+  "sensor": {
+    "word": "sensor",
+    "ipa": "/ˈsensər/",
+    "pos": ["n"],
+    "translation": "感測器；傳感器",
+    "exchange": "s:sensors"
+  },
+  "loop": {
+    "word": "loop",
+    "ipa": "/luːp/",
+    "pos": ["n", "v"],
+    "translation": "迴圈；循環",
+    "exchange": "p:looped/d:looped/i:looping/3:loops/s:loops"
+  },
+  "engineer": {
+    "word": "engineer",
+    "ipa": "/ˌendʒɪˈnɪər/",
+    "pos": ["n", "v"],
+    "translation": "工程師；設計",
+    "exchange": "p:engineered/d:engineered/i:engineering/3:engineers/s:engineers"
+  },
+  "engineering": {
+    "word": "engineering",
+    "ipa": "/ˌendʒɪˈnɪərɪŋ/",
+    "pos": ["n"],
+    "translation": "工程學；工程",
+    "exchange": ""
+  },
+  "observe": {
+    "word": "observe",
+    "ipa": "/əbˈzɜːrv/",
+    "pos": ["v"],
+    "translation": "觀察；注意",
+    "exchange": "p:observed/d:observed/i:observing/3:observes"
+  },
+  "observation": {
+    "word": "observation",
+    "ipa": "/ˌɒbzərˈveɪʃən/",
+    "pos": ["n"],
+    "translation": "觀察；觀測",
+    "exchange": "s:observations"
+  },
+  "adjust": {
+    "word": "adjust",
+    "ipa": "/əˈdʒʌst/",
+    "pos": ["v"],
+    "translation": "調整；適應",
+    "exchange": "p:adjusted/d:adjusted/i:adjusting/3:adjusts"
+  },
+  "adjustment": {
+    "word": "adjustment",
+    "ipa": "/əˈdʒʌstmənt/",
+    "pos": ["n"],
+    "translation": "調整；校正",
+    "exchange": "s:adjustments"
+  },
+  "intent": {
+    "word": "intent",
+    "ipa": "/ɪnˈtent/",
+    "pos": ["n", "a"],
+    "translation": "意圖；目的；專注的",
+    "exchange": "s:intents"
+  },
+  "context": {
+    "word": "context",
+    "ipa": "/ˈkɒntekst/",
+    "pos": ["n"],
+    "translation": "脈絡；語境；背景",
+    "exchange": "s:contexts"
+  },
+  "action": {
+    "word": "action",
+    "ipa": "/ˈækʃən/",
+    "pos": ["n"],
+    "translation": "行動；動作",
+    "exchange": "s:actions"
+  },
+  "agent": {
+    "word": "agent",
+    "ipa": "/ˈeɪdʒənt/",
+    "pos": ["n"],
+    "translation": "代理人；智能體",
+    "exchange": "s:agents"
+  },
+  "code": {
+    "word": "code",
+    "ipa": "/koʊd/",
+    "pos": ["n", "v"],
+    "translation": "程式碼；代碼；編寫程式",
+    "exchange": "p:coded/d:coded/i:coding/3:codes/s:codes"
+  },
+  "practice": {
+    "word": "practice",
+    "ipa": "/ˈpræktɪs/",
+    "pos": ["n", "v"],
+    "translation": "練習；實踐；慣例",
+    "exchange": "p:practiced/d:practiced/i:practicing/3:practices/s:practices"
+  },
+  "feedback": {
+    "word": "feedback",
+    "ipa": "/ˈfiːdbæk/",
+    "pos": ["n"],
+    "translation": "回饋；反饋",
+    "exchange": ""
+  },
+  "define": {
+    "word": "define",
+    "ipa": "/dɪˈfaɪn/",
+    "pos": ["v"],
+    "translation": "定義；界定",
+    "exchange": "p:defined/d:defined/i:defining/3:defines"
+  },
+  "gather": {
+    "word": "gather",
+    "ipa": "/ˈɡæðər/",
+    "pos": ["v"],
+    "translation": "收集；聚集",
+    "exchange": "p:gathered/d:gathered/i:gathering/3:gathers"
+  },
+  "repeat": {
+    "word": "repeat",
+    "ipa": "/rɪˈpiːt/",
+    "pos": ["v", "n"],
+    "translation": "重複；再做",
+    "exchange": "p:repeated/d:repeated/i:repeating/3:repeats/s:repeats"
+  },
+  "process": {
+    "word": "process",
+    "ipa": "/ˈprɒses/",
+    "pos": ["n", "v"],
+    "translation": "流程；過程；處理",
+    "exchange": "p:processed/d:processed/i:processing/3:processes/s:processes"
+  },
+  "trust": {
+    "word": "trust",
+    "ipa": "/trʌst/",
+    "pos": ["v", "n"],
+    "translation": "信任；相信",
+    "exchange": "p:trusted/d:trusted/i:trusting/3:trusts"
+  },
+  "imagine": {
+    "word": "imagine",
+    "ipa": "/ɪˈmædʒɪn/",
+    "pos": ["v"],
+    "translation": "想像；設想",
+    "exchange": "p:imagined/d:imagined/i:imagining/3:imagines"
+  },
+  "assistant": {
+    "word": "assistant",
+    "ipa": "/əˈsɪstənt/",
+    "pos": ["n", "a"],
+    "translation": "助手；助理",
+    "exchange": "s:assistants"
+  },
+  "popular": {
+    "word": "popular",
+    "ipa": "/ˈpɒpjʊlər/",
+    "pos": ["a"],
+    "translation": "流行的；受歡迎的",
+    "exchange": ""
+  },
+  "stage": {
+    "word": "stage",
+    "ipa": "/steɪdʒ/",
+    "pos": ["n", "v"],
+    "translation": "階段；舞台；籌備",
+    "exchange": "p:staged/d:staged/i:staging/3:stages/s:stages"
+  },
+  "cycle": {
+    "word": "cycle",
+    "ipa": "/ˈsaɪkəl/",
+    "pos": ["n", "v"],
+    "translation": "循環；週期",
+    "exchange": "p:cycled/d:cycled/i:cycling/3:cycles/s:cycles"
+  },
+  "evidence": {
+    "word": "evidence",
+    "ipa": "/ˈevɪdəns/",
+    "pos": ["n"],
+    "translation": "證據；跡象",
+    "exchange": ""
+  },
+  "mistake": {
+    "word": "mistake",
+    "ipa": "/mɪˈsteɪk/",
+    "pos": ["n", "v"],
+    "translation": "錯誤；失誤",
+    "exchange": "p:mistook/d:mistaken/i:mistaking/3:mistakes/s:mistakes"
+  },
+  "access": {
+    "word": "access",
+    "ipa": "/ˈækses/",
+    "pos": ["n", "v"],
+    "translation": "存取；訪問；進入",
+    "exchange": "p:accessed/d:accessed/i:accessing/3:accesses"
+  },
+  "crash": {
+    "word": "crash",
+    "ipa": "/kræʃ/",
+    "pos": ["v", "n"],
+    "translation": "當機；崩潰；撞擊",
+    "exchange": "p:crashed/d:crashed/i:crashing/3:crashes/s:crashes"
+  },
+  "debugger": {
+    "word": "debugger",
+    "ipa": "/diːˈbʌɡər/",
+    "pos": ["n"],
+    "translation": "除錯器；偵錯程式",
+    "exchange": "s:debuggers"
+  },
+  "software": {
+    "word": "software",
+    "ipa": "/ˈsɒftweər/",
+    "pos": ["n"],
+    "translation": "軟體",
+    "exchange": ""
+  },
+  "literally": {
+    "word": "literally",
+    "ipa": "/ˈlɪtərəli/",
+    "pos": ["r"],
+    "translation": "字面上；確實地",
+    "exchange": ""
+  },
+  "tight": {
+    "word": "tight",
+    "ipa": "/taɪt/",
+    "pos": ["a", "r"],
+    "translation": "嚴密的；緊的",
+    "exchange": "r:tighter/t:tightest"
+  },
+  "ship": {
+    "word": "ship",
+    "ipa": "/ʃɪp/",
+    "pos": ["v", "n"],
+    "translation": "發布；出貨；交付",
+    "exchange": "p:shipped/d:shipped/i:shipping/3:ships/s:ships"
+  },
+  "parallel": {
+    "word": "parallel",
+    "ipa": "/ˈpærəlel/",
+    "pos": ["a", "n"],
+    "translation": "平行的；並行的",
+    "exchange": "s:parallels"
+  },
+  "preview": {
+    "word": "preview",
+    "ipa": "/ˈpriːvjuː/",
+    "pos": ["n", "v"],
+    "translation": "預習；預覽",
+    "exchange": "p:previewed/d:previewed/i:previewing/3:previews/s:previews"
+  },
+  "dose": {
+    "word": "dose",
+    "ipa": "/doʊs/",
+    "pos": ["n"],
+    "translation": "一劑；一份",
+    "exchange": "s:doses"
+  },
+  "technical": {
+    "word": "technical",
+    "ipa": "/ˈteknɪkəl/",
+    "pos": ["a"],
+    "translation": "技術的；專業的",
+    "exchange": ""
+  }
+}

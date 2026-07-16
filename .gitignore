@@ -1,0 +1,27 @@
+# env / secrets
+.env
+.env.*
+!*.env.example
+
+# python
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
+# node
+node_modules/
+dist/
+frontend/dist/
+
+# misc
+.DS_Store
+.playwright-mcp/
+output/
+
+# tool state / caches (regenerable, not source)
+.codegraph/
+.claude-flow/
+

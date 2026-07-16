@@ -1,0 +1,29 @@
+# 建置 context 瘦身：只送原始碼與依賴定義，其餘一律排除。
+# 重點是別把本機 .venv（含原生套件）與祕密檔送進 image。
+
+# Python 虛擬環境與快取
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/
+
+# 測試與本機產物
+tests/
+output/
+*.log
+
+# 祕密與本機設定（image 內靠 fly secrets 注入，絕不打包）
+.env
+.env.*
+!.env.example
+
+# 版控與編輯器雜物
+.git/
+.gitignore
+.idea/
+.vscode/
+.DS_Store

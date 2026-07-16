@@ -1,0 +1,54 @@
+# ── DawnCast API（FastAPI / uvicorn）───────────────────────────────────
+# 對外服務層。不碰媒體處理，所以「不裝 ffmpeg、不裝中文字型」——
+# 那些只有 worker 燒字幕時才需要，API 裝了只是讓 image 變肥、攻擊面變大。
+#
+# build context 為 backend/：所有 COPY 路徑相對 backend/。
+# 例：docker build -f deploy/Dockerfile.api .
+
+# ---- builder：用 uv 把依賴裝進 image 內的 .venv ----
+FROM python:3.12-slim AS builder
+
+# uv 官方靜態 binary，免在 image 裡裝 pip/curl
+COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/
+
+ENV UV_COMPILE_BYTECODE=1 \
+    UV_LINK_MODE=copy \
+    UV_PYTHON_DOWNLOADS=0
+
+WORKDIR /app
+
+# 先只 COPY 依賴定義 → 鎖檔，命中 layer cache（原始碼變動不必重裝依賴）。
+# --no-install-project：此時還沒 COPY 原始碼，只裝第三方依賴。
+COPY pyproject.toml uv.lock ./
+RUN uv sync --frozen --no-dev --no-install-project
+
+# 再 COPY 三個套件並安裝專案本身（API 只需 app + shared，
+# 但 hatch wheel 把 app/engine/shared 綁同一包，故一併帶上 engine）。
+COPY app ./app
+COPY engine ./engine
+COPY shared ./shared
+RUN uv sync --frozen --no-dev
+
+# ---- runtime：乾淨小 image，只搬 .venv 與原始碼 ----
+FROM python:3.12-slim AS runtime
+
+# 用非 root 跑，降低風險
+RUN useradd --create-home --uid 10001 appuser
+WORKDIR /app
+
+ENV PATH="/app/.venv/bin:$PATH" \
+    PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PORT=8080
+
+COPY --from=builder --chown=appuser:appuser /app/.venv ./.venv
+COPY --from=builder --chown=appuser:appuser /app/app ./app
+COPY --from=builder --chown=appuser:appuser /app/engine ./engine
+COPY --from=builder --chown=appuser:appuser /app/shared ./shared
+
+USER appuser
+EXPOSE 8080
+
+# 綁 0.0.0.0:$PORT（Fly 內部 health check 與外部流量都打這）。
+# 用 shell 形式才能展開 $PORT；Fly 會注入 PORT，本機 fallback 8080。
+CMD ["sh", "-c", "uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-8080}"]

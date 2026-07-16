@@ -1,0 +1,66 @@
+# ── DawnCast Worker（常駐生成引擎）─────────────────────────────────────
+# 跑寫稿 + TTS + ffmpeg 合成/燒字幕。與 API 的關鍵差異：
+#   1. 裝 ffmpeg：audio.py / subtitles.py 直接 subprocess 呼叫，PATH 要有。
+#   2. 裝中文字型 fonts-noto-cjk：這是隱坑——少了它燒中文字幕會變一排方框（tofu），
+#      畫面照樣輸出、ffmpeg 不報錯，所以漏裝在測試環境很難察覺。務必裝。
+#      fonts-noto-color-emoji 補 emoji 顯示。
+# 無對外 port，CMD 常駐 poll 工作佇列。
+#
+# build context 為 backend/：COPY 路徑相對 backend/。
+# 例：docker build -f deploy/Dockerfile.worker .
+
+# ---- builder：uv 裝依賴 ----
+FROM python:3.12-slim AS builder
+
+COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/
+
+ENV UV_COMPILE_BYTECODE=1 \
+    UV_LINK_MODE=copy \
+    UV_PYTHON_DOWNLOADS=0
+
+WORKDIR /app
+
+COPY pyproject.toml uv.lock ./
+RUN uv sync --frozen --no-dev --no-install-project
+
+COPY app ./app
+COPY engine ./engine
+COPY shared ./shared
+RUN uv sync --frozen --no-dev
+
+# ---- runtime：含 ffmpeg + 中文字型 ----
+FROM python:3.12-slim AS runtime
+
+# ffmpeg：媒體合成必需。fonts-noto-cjk：中文字幕不變方框的關鍵。
+# --no-install-recommends 避免拖一堆用不到的套件；裝完清 apt 快取縮 image。
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+        ffmpeg \
+        fonts-noto-cjk \
+        fonts-noto-color-emoji \
+    && fc-cache -f \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN useradd --create-home --uid 10001 appuser
+WORKDIR /app
+
+ENV PATH="/app/.venv/bin:$PATH" \
+    PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1
+
+COPY --from=builder --chown=appuser:appuser /app/.venv ./.venv
+COPY --from=builder --chown=appuser:appuser /app/app ./app
+COPY --from=builder --chown=appuser:appuser /app/engine ./engine
+COPY --from=builder --chown=appuser:appuser /app/shared ./shared
+# healthcheck 由 deploy/ 帶進來（context 是 backend/，故路徑含 deploy/）
+COPY --chown=appuser:appuser deploy/healthcheck.py ./healthcheck.py
+
+USER appuser
+
+# 容器層健康檢查：DB 可連 + ffmpeg 可執行 +（可選）生成引擎 health。
+# 給寬限期讓首次 poll 起來；interval 別太密以免吃資源。
+HEALTHCHECK --interval=60s --timeout=30s --start-period=30s --retries=3 \
+    CMD python healthcheck.py || exit 1
+
+# 常駐 process：自己 poll 佇列、處理完睡 pause_sec 再撈。
+CMD ["python", "-m", "engine.worker"]

@@ -1,0 +1,53 @@
+{
+  "topic": "Loop Engineering: How AI Coding Agents Learn From Their Own Mistakes",
+  "extracted_facts": [
+    {
+      "claim": "Loop engineering is a new practice in software development (introduced publicly in early 2026) that designs the feedback loops AI coding agents use to plan, change code, observe results, and revise until a task is complete.",
+      "source_ids": []
+    },
+    {
+      "claim": "It sits in a hierarchy above prompt engineering and context engineering: prompt engineering shapes what you ask, context engineering shapes what the model sees, and loop engineering shapes the whole system around the model — the tools, tests, logs, and stopping rules.",
+      "source_ids": []
+    },
+    {
+      "claim": "A standard loop has five stages: Intent, Context, Action, Observation, and Adjustment. The agent defines a goal, gathers information, makes a change, reads test results or runtime output, and then updates its plan and runs the cycle again.",
+      "source_ids": []
+    },
+    {
+      "claim": "Modern AI coding tools like Claude Code or Cursor add a sensor layer: browser debuggers, database query skills, log access, crash tracebacks, and OpenTelemetry traces, so the agent can see hard evidence that the code actually works — not just that it compiles.",
+      "source_ids": []
+    },
+    {
+      "claim": "Engineer Peter Steinberger reportedly runs 5 to 10 coding agents in parallel and ships code he does not personally read, because the closed-loop verification system catches errors that human review would miss.",
+      "source_ids": []
+    }
+  ],
+  "target_vocab": [
+    {"word": "iterate", "explanation": "To repeat a process, making small improvements each time. A loop is something that iterates."},
+    {"word": "verify", "explanation": "To check that something is true or correct. In a loop, the agent verifies its own work."},
+    {"word": "sensor", "explanation": "A tool that collects information about what is happening. In a coding loop, sensors are things like logs, tests, and debuggers."}
+  ],
+  "script": [
+    {"speaker": "Alex", "text": "Hey everyone, welcome back to your daily dose of English! I'm Alex, and I'm here with my favorite co-host.", "zh": "嗨各位，歡迎回到你的每日英語補給！我是 Alex，跟我搭檔的是我最愛的主持人。"},
+    {"speaker": "Sarah", "text": "That's me! Hi everyone, I'm Sarah. Alex, I have a question for you before we start. Do you trust robots to write your code?", "zh": "就是我！嗨大家，我是 Sarah。Alex，開始前我有個問題想問你。你信任機器人幫你寫程式嗎？"},
+    {"speaker": "Alex", "text": "Honestly? Not really. But I just read about a new idea in software engineering, and it kind of changed my mind. It's called loop engineering.", "zh": "老實說？不怎麼信任。但我剛讀到軟體工程裡一個新概念，有點改變我的想法。它叫做 loop engineering（迴圈工程）。"},
+    {"speaker": "Sarah", "text": "Loop engineering! Ooh, that sounds technical. But don't worry, friends — we'll keep it simple. First, let's preview three words we'll use today. Ready?", "zh": "迴圈工程！喔，這聽起來很技術。但別擔心，朋友們——我們會講得很簡單。先預習今天會用到的三個單字。準備好了嗎？"},
+    {"speaker": "Alex", "text": "Word one: iterate. To iterate means to repeat a process and make it a little better each time. Like when you practice a song over and over.", "zh": "單字一：iterate（反覆執行）。意思是一遍又一遍重複一個流程，每次都讓它再好一點。就像你反覆練一首歌一樣。"},
+    {"speaker": "Sarah", "text": "Word two: verify. To verify means to check that something is true or correct. For example, you verify your password before you log in.", "zh": "單字二：verify（驗證）。意思是檢查某件事是不是真的、是不是正確。例如你登入前要先驗證密碼。"},
+    {"speaker": "Alex", "text": "And word three: sensor. A sensor is something that watches what is happening and reports information. Your phone has a sensor for light, for example.", "zh": "單字三：sensor（感測器）。是一個觀察發生什麼事並回報資訊的東西。舉例來說，你的手機有光線感測器。"},
+    {"speaker": "Sarah", "text": "Great! Now, let's dive in. So, Alex — what exactly is loop engineering?", "zh": "太棒了！現在我們深入聊聊。Alex——迴圈工程到底是什麼？"},
+    {"speaker": "Alex", "text": "Okay, imagine an AI assistant that writes code for you. Old tools just gave you a one-shot answer. You ask, it answers, and you hope it's right.", "zh": "好，想像一個幫你寫程式碼的 AI 助手。舊的工具只給你一次性的回答。你問，它答，然後你祈禱它是對的。"},
+    {"speaker": "Sarah", "text": "Yeah, and sometimes the code is completely broken, right?", "zh": "對，但有時候程式碼根本就是壞的，對吧？"},
+    {"speaker": "Alex", "text": "Exactly! Loop engineering is different. It's a new way of working, popular in 2026, where the AI doesn't just answer once. It runs in a loop. It writes code, then it tests the code, then it reads the error, then it tries again.", "zh": "沒錯！迴圈工程不一樣。這是一種 2026 年流行的新工作方式，AI 不只回答一次。它跑在一個迴圈裡：寫程式、測試程式、讀錯誤、再試一次。"},
+    {"speaker": "Sarah", "text": "So the AI iterates! It keeps going until the code actually works.", "zh": "所以 AI 在「反覆執行」！它會一直跑到程式碼真的能動為止。"},
+    {"speaker": "Alex", "text": "Yes! And the loop has a name now. Engineers call it the five stages: Intent, Context, Action, Observation, and Adjustment. The AI defines a goal, gathers information, makes a change, observes the result, and adjusts its plan. Then it runs the whole cycle again.", "zh": "對！而且這個迴圈現在有名字了。工程師稱之為五個階段：Intent（意圖）、Context（脈絡）、Action（行動）、Observation（觀察）、Adjustment（調整）。AI 先設定目標、收集資訊、做改動、觀察結果，然後調整計畫，再跑一次整個循環。"},
+    {"speaker": "Sarah", "text": "Wow, that sounds smart. But how does the AI know if the code is good? It can't really see, can it?", "zh": "哇，這聽起來很聰明。但 AI 怎麼知道程式碼好不好？它又看不到，對吧？"},
+    {"speaker": "Alex", "text": "Great question. This is where the sensors come in. Engineers give the AI tools to observe the real world. For example, a browser debugger so the AI can see a webpage. Database access so it can check the data. And log files, so when something crashes, the AI can read why.", "zh": "好問題。這就是「感測器」派上用場的地方。工程師給 AI 工具去觀察真實世界。例如瀏覽器除錯器，讓 AI 看到網頁；資料庫存取，讓它檢查資料；還有日誌檔，這樣當東西壞掉時，AI 能讀到原因。"},
+    {"speaker": "Sarah", "text": "So the AI literally verifies its own work. It doesn't just guess — it checks the evidence.", "zh": "所以 AI 是真的在「驗證」自己的作品。它不只猜——它會檢查證據。"},
+    {"speaker": "Alex", "text": "Right. And here's the crazy part. One engineer, Peter Steinberger, reportedly runs ten AI agents at the same time. He ships code he never reads himself, because the loops verify everything for him.", "zh": "沒錯。最瘋狂的是，有個工程師 Peter Steinberger，據說同時跑十個 AI agent。他自己從不讀自己 ship 出去的程式碼，因為迴圈會幫他驗證一切。"},
+    {"speaker": "Sarah", "text": "Ten! That sounds wild. But honestly, I kind of love it. If the loop is tight enough, the AI can catch its own mistakes faster than a human can.", "zh": "十個！聽起來很狂。但老實說，我還滿喜歡這個點子的。如果迴圈夠嚴密，AI 抓自己 bug 的速度可以比人還快。"},
+    {"speaker": "Alex", "text": "I agree. And that's the big idea of loop engineering. The future of coding is not just about better AI. It's about better loops. Better ways to observe, verify, and iterate.", "zh": "同意。這就是迴圈工程的核心精神。寫程式的未來不只是更好的 AI，而是更好的迴圈——更好的方式去觀察、驗證、反覆執行。"},
+    {"speaker": "Sarah", "text": "I love that. Friends, we hope you enjoyed today's episode. Remember: iterate, verify, and trust your sensors. See you tomorrow!", "zh": "我喜歡。朋友們，希望你們喜歡今天的節目。記住：反覆執行、驗證、相信你的感測器。我們明天見！"},
+    {"speaker": "Alex", "text": "Bye everyone! Keep learning, keep looping!", "zh": "大家掰掰！持續學習，持續跑迴圈！"}
+  ]
+}

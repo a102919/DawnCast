@@ -1,0 +1,215 @@
+{
+  "id": "quantum-computing-basics",
+  "title": "Quantum Computing: What It Is and Why It Matters",
+  "videoUrl": "http://localhost:8000/media/quantum-computing-basics.mp4",
+  "cues": [
+    {
+      "index": 1,
+      "speaker": "Alex",
+      "text": "Hey everyone, welcome back to DawnCast! I'm Alex.",
+      "zh": "嗨，各位好，歡迎回到 DawnCast！我是 Alex。",
+      "start": 0.0,
+      "end": 5.016
+    },
+    {
+      "index": 2,
+      "speaker": "Sarah",
+      "text": "And I'm Sarah! Today we're talking about quantum computing.",
+      "zh": "我是 Sarah！今天我們要聊量子計算。",
+      "start": 5.316,
+      "end": 10.212
+    },
+    {
+      "index": 3,
+      "speaker": "Alex",
+      "text": "Quantum computing... that sounds pretty advanced. Is it actually something regular people will use someday?",
+      "zh": "量子計算……聽起來很高級。一般人有一天真的用得到嗎？",
+      "start": 10.512,
+      "end": 17.832
+    },
+    {
+      "index": 4,
+      "speaker": "Sarah",
+      "text": "Maybe not anytime soon, but it's a super exciting field. And today we're just going to learn what it is — no math, I promise!",
+      "zh": "可能不會那麼快，但這是個很令人興奮的領域。今天我們只會了解它是什麼——保證不涉及數學！",
+      "start": 18.132,
+      "end": 27.036
+    },
+    {
+      "index": 5,
+      "speaker": "Alex",
+      "text": "Okay, I like that plan. So what's the very first thing we need to know?",
+      "zh": "好，我很喜歡這個計畫。那我們最基本要知道什麼？",
+      "start": 27.336,
+      "end": 33.0
+    },
+    {
+      "index": 6,
+      "speaker": "Sarah",
+      "text": "Let's start with a regular computer. You know how everything on your phone or laptop is made up of bits?",
+      "zh": "先從一般電腦說起。你知道手機或筆電裡的一切都是由「位元」組成的吧？",
+      "start": 33.3,
+      "end": 40.164
+    },
+    {
+      "index": 7,
+      "speaker": "Alex",
+      "text": "Bits? Like... ones and zeros?",
+      "zh": "位元？就是所謂的 0 和 1？",
+      "start": 40.464,
+      "end": 44.304
+    },
+    {
+      "index": 8,
+      "speaker": "Sarah",
+      "text": "Exactly! Every photo, every word, every video is just a long string of ones and zeros. Each one or zero is one bit.",
+      "zh": "沒錯！每一張照片、每一個字、每一段影片，都只是一長串的 0 和 1。每個 0 或 1 就是一個位元。",
+      "start": 44.604,
+      "end": 54.636
+    },
+    {
+      "index": 9,
+      "speaker": "Alex",
+      "text": "Got it. So quantum computers are different?",
+      "zh": "了解了。那量子電腦不同在哪裡？",
+      "start": 54.936,
+      "end": 59.256
+    },
+    {
+      "index": 10,
+      "speaker": "Sarah",
+      "text": "Totally different. Instead of bits, they use something called qubits. Q-U-B-I-T. Quantum bit.",
+      "zh": "完全不同。量子電腦不用位元，而是用「量子位元」，英文叫 qubit，Q-U-B-I-T，量子（quantum）位元（bit）。",
+      "start": 59.556,
+      "end": 67.644
+    },
+    {
+      "index": 11,
+      "speaker": "Alex",
+      "text": "Qubit. That's our first word today! So what's special about a qubit?",
+      "zh": "量子位元。這是我們今天第一個單字！那量子位元特別在哪裡？",
+      "start": 67.944,
+      "end": 74.616
+    },
+    {
+      "index": 12,
+      "speaker": "Sarah",
+      "text": "Here's the magical part: a regular bit is either 0 or 1. But a qubit can be 0 AND 1 at the same time. This is called superposition.",
+      "zh": "神奇的地方在這裡：一般位元要不是 0 要不是 1。但量子位元可以同時是 0 也是 1。這叫做「疊加」，英文叫 superposition。",
+      "start": 74.916,
+      "end": 85.548
+    },
+    {
+      "index": 13,
+      "speaker": "Alex",
+      "text": "Wait, both at once? That seems almost impossible in our everyday world.",
+      "zh": "等等，同時兩個狀態？這在我們日常生活裡聽起來幾乎不可能。",
+      "start": 85.848,
+      "end": 91.872
+    },
+    {
+      "index": 14,
+      "speaker": "Sarah",
+      "text": "It really is strange! Imagine flipping a coin. In our world, you get heads or tails. But superposition is like the coin spinning in the air — it's both heads and tails at the same time, until it lands.",
+      "zh": "真的很奇怪！想像丟硬幣，在我們的世界裡，不是正面就是反面。但疊加就像是硬幣在空中轉動的瞬間——它同時是正面也是反面，直到它落下來。",
+      "start": 92.172,
+      "end": 107.148
+    },
+    {
+      "index": 15,
+      "speaker": "Alex",
+      "text": "That's actually a helpful picture. And what's our second word?",
+      "zh": "這個比喻很有幫助。我們第二個單字是什麼？",
+      "start": 107.448,
+      "end": 112.584
+    },
+    {
+      "index": 16,
+      "speaker": "Sarah",
+      "text": "Entanglement. This is when two qubits become connected in a very special way. When qubits are entangled, changing one instantly changes the other — even if they're on opposite sides of the room, or opposite sides of the Earth!",
+      "zh": "「量子糾纏」，英文叫 entanglement。當兩個量子位元糾纏在一起時，改變其中一個會瞬間影響另一個——就算它們一個在房間這頭，一個在地球另一端！",
+      "start": 112.884,
+      "end": 127.308
+    },
+    {
+      "index": 17,
+      "speaker": "Alex",
+      "text": "Instantly? That sounds like science fiction!",
+      "zh": "瞬間？那聽起來像科幻小說！",
+      "start": 127.608,
+      "end": 131.952
+    },
+    {
+      "index": 18,
+      "speaker": "Sarah",
+      "text": "It does, right? But it's real science. Einstein actually called it 'spooky action at a distance.'",
+      "zh": "對吧？但這是真的科學。愛因斯坦甚至稱它為「鬼魅般的超距作用」。",
+      "start": 132.252,
+      "end": 140.556
+    },
+    {
+      "index": 19,
+      "speaker": "Alex",
+      "text": "I love that phrase. So with superposition and entanglement, can quantum computers do things regular computers can't?",
+      "zh": "我很喜歡這個說法。所以有了疊加和量子糾纏，量子電腦能做到一般電腦做不到的事？",
+      "start": 140.856,
+      "end": 149.328
+    },
+    {
+      "index": 20,
+      "speaker": "Sarah",
+      "text": "For certain problems, yes! Because a qubit can be multiple things at once, a quantum computer can explore many solutions simultaneously. It can be much, much faster for specific tasks like breaking codes or discovering new medicines.",
+      "zh": "對於某些問題來說，是的！因為量子位元可以同時是多個狀態，量子電腦可以同時探索很多解答。對於像破解密碼或研發新藥物這類特定任務，它可以快非常多。",
+      "start": 149.628,
+      "end": 165.78
+    },
+    {
+      "index": 21,
+      "speaker": "Alex",
+      "text": "That's amazing. But you said these computers are still very new, right?",
+      "zh": "太驚人了。但你說過這些電腦還是很新的技術，對吧？",
+      "start": 166.08,
+      "end": 171.72
+    },
+    {
+      "index": 22,
+      "speaker": "Sarah",
+      "text": "Very true. Right now, quantum computers are small, expensive, and super sensitive. A small disturbance — like a tiny vibration or temperature change — can mess up the calculation.",
+      "zh": "沒錯。目前量子電腦體積很大、造價昂貴，而且非常敏感。一點點干擾——比如微小的震動或溫度變化——就會讓計算出錯。",
+      "start": 172.02,
+      "end": 185.844
+    },
+    {
+      "index": 23,
+      "speaker": "Alex",
+      "text": "So it's still early days. But I can see why people are so excited about the future.",
+      "zh": "所以這項技術還在早期階段。但我懂為什麼大家對未來那麼興奮了。",
+      "start": 186.144,
+      "end": 192.576
+    },
+    {
+      "index": 24,
+      "speaker": "Sarah",
+      "text": "Exactly! And now you know the basics: qubit, superposition, and entanglement. Three big words, simple ideas.",
+      "zh": "沒錯！而且現在你已經學會了基本概念：量子位元、疊加、量子糾纏。三個看起來很大的詞，概念其實很簡單。",
+      "start": 192.876,
+      "end": 202.716
+    },
+    {
+      "index": 25,
+      "speaker": "Alex",
+      "text": "Thanks Sarah! That's a perfect introduction. See you next time, everyone!",
+      "zh": "謝謝 Sarah！這是個很棒的入門。大家下次見！",
+      "start": 203.016,
+      "end": 209.928
+    },
+    {
+      "index": 26,
+      "speaker": "Sarah",
+      "text": "Thanks for listening! Until next time, keep learning every day. Bye!",
+      "zh": "感謝收聽！下次見，每天都要持續學習喔！掰掰！",
+      "start": 210.228,
+      "end": 216.9
+    }
+  ]
+}

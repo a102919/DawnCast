@@ -1,0 +1,1 @@
+export { WordCardPanel } from './WordCardPanel'
