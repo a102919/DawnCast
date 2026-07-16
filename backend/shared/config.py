@@ -54,6 +54,10 @@ class Settings(BaseSettings):
     )
     supabase_jwt_audience: str = "authenticated"
 
+    # Ops/admin endpoint（T7）驗證用固定 token，走 X-Admin-Token header 比對。
+    # 不可硬寫在程式碼；空字串 = 未設定，prod 會被 assert_secure() 擋下。
+    admin_token: str = ""
+
     # ── 生成引擎（PRD §8，env 一鍵切）─────────────────────────
     generation_engine: EngineName = "api_key"
     failover_mode: FailoverMode = "degrade"
@@ -161,6 +165,8 @@ class Settings(BaseSettings):
             raise ConfigError("prod 未設定 SUPABASE_JWT_SECRET（不可用預設值）")
         if "*" in self.cors_allowed_origins:
             raise ConfigError("prod 的 CORS_ALLOWED_ORIGINS 不可包含 '*'")
+        if self.admin_token == "":
+            raise ConfigError("prod 未設定 ADMIN_TOKEN（不可用空字串）")
 
 
 @lru_cache

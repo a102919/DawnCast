@@ -40,4 +40,24 @@ def test_prod_accepts_secure_config() -> None:
         environment="prod",
         supabase_jwt_secret="a-real-secret",
         cors_allowed_origins=["https://dawncast.app"],
+        admin_token="a-real-admin-token",
+    ).assert_secure()  # 不該 raise
+
+
+def test_prod_rejects_empty_admin_token() -> None:
+    with pytest.raises(ConfigError):
+        Settings(
+            environment="prod",
+            supabase_jwt_secret="a-real-secret",
+            cors_allowed_origins=["https://dawncast.app"],
+            admin_token="",
+        ).assert_secure()
+
+
+def test_prod_accepts_admin_token_set() -> None:
+    Settings(
+        environment="prod",
+        supabase_jwt_secret="a-real-secret",
+        cors_allowed_origins=["https://dawncast.app"],
+        admin_token="a-real-admin-token",
     ).assert_secure()  # 不該 raise

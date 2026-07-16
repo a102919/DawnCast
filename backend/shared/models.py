@@ -232,3 +232,51 @@ class EpisodeListItem(CamelModel):
     is_featured: bool = False
     episode: int = 0
     published_at: str = ""
+
+
+# ── Ops / admin 契約（T7，X-Admin-Token 驗證，internal debug 用）───────
+
+
+class AdminEpisode(CamelModel):
+    """admin debug 用集數清單項。hasAudio 用 audio_r2_key 是否已寫入代理生成完成訊號。"""
+
+    id: str  # 對外用 slug
+    title: str
+    topic: str
+    cefr_level: str = "B1"
+    is_free: bool = False
+    is_featured: bool = False
+    episode_no: int = 0
+    published_at: str = ""
+    created_at: str
+    freshness_class: str = "evergreen"
+    expires_at: str | None = None
+    has_audio: bool = False
+
+
+class AdminJobQueue(CamelModel):
+    """單一 pgmq 佇列的度量（pgmq.metrics_all() 逐列對映）。
+
+    空佇列時 pgmq 可能回 NULL age，故後三欄允許 None。
+    """
+
+    queue_name: str
+    queue_length: int
+    newest_msg_age_sec: int | None = None
+    oldest_msg_age_sec: int | None = None
+    total_messages: int | None = None
+
+
+class AdminTokenUsageItem(CamelModel):
+    slug: str
+    title: str
+    input_tokens: int = 0
+    output_tokens: int = 0
+    created_at: str
+
+
+class AdminTokenUsageResponse(CamelModel):
+    total_input_tokens: int = 0
+    total_output_tokens: int = 0
+    episode_count: int = 0
+    items: list[AdminTokenUsageItem] = Field(default_factory=list)

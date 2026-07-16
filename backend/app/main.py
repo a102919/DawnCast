@@ -19,6 +19,7 @@ from fastapi.staticfiles import StaticFiles
 from app.response import err
 from app.routers import (
     activity,
+    admin,
     daily_orders,
     episodes,
     favorites,
@@ -86,6 +87,7 @@ def create_app() -> FastAPI:
     app.include_router(episodes.router)
     app.include_router(dict_router.router)
     app.include_router(activity.router)
+    app.include_router(admin.router)
 
     # 本機 fallback：當 R2 未設且 LOCAL_MEDIA_DIR 指向本地資料夾時，
     # 把整個目錄掛到 /media/* 讓前端視訊標籤能直接 src=。
