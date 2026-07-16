@@ -38,6 +38,8 @@ test = "pytest"
 [tool.ruff]
 line-length = 100
 target-version = "py312"
+# scripts/ 是單次執行的 utility（資料 backfill、批次翻譯），不參與部署也不該卡 production lint 訊號。
+extend-exclude = ["scripts"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "SIM"]

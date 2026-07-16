@@ -2,7 +2,8 @@
 
 消費 engine.pipeline.post_process.DICT_TRANSLATE_QUEUE = "dict_translate"。
 每筆訊息：{"word": "<lowercase>"}
-worker 流程：read_batch → translate_batch (MiniMax) → 逐筆 upsert dict_cache on conflict → 成功才 delete。
+worker 流程：read_batch → translate_batch (MiniMax) → 逐筆 upsert dict_cache on conflict →
+成功才 delete。
 
 批次大小 BATCH_SIZE=40：一次 prompt 丟 40 字翻譯，比單字版 ~40x 加速
 （單字版 MiniMax API round-trip ~25~50s/字；batch 版 latency 接近單字但 output token 對齊 N 筆）。
@@ -97,7 +98,10 @@ async def _handle_batch(msgs: list[Msg]) -> None:
             upserted += 1
     logger.info(
         "dict_translate batch n=%d upserted=%d deleted=%d archived=%d",
-        len(valid), upserted, deleted, archived,
+        len(valid),
+        upserted,
+        deleted,
+        archived,
     )
 
 
