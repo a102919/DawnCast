@@ -23,6 +23,7 @@ from app.routers import (
     daily_orders,
     episodes,
     favorites,
+    notifications,
     vocab,
 )
 from app.routers import (
@@ -88,6 +89,7 @@ def create_app() -> FastAPI:
     app.include_router(dict_router.router)
     app.include_router(activity.router)
     app.include_router(admin.router)
+    app.include_router(notifications.router)
 
     # 本機 fallback：當 R2 未設且 LOCAL_MEDIA_DIR 指向本地資料夾時，
     # 把整個目錄掛到 /media/* 讓前端視訊標籤能直接 src=。
