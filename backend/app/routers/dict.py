@@ -2,6 +2,8 @@
 
 主路徑 → dict_cache（後端，灌了 ECDICT + kaikki）。
 未命中 → 線上 LLM（MiniMax）翻譯 + upsert 回 dict_cache，再回給前端。
+音檔：cache 命中或 LLM 新增後，若 audio_url 為 null，呼叫 dict_audio.synthesize_word_audio
+     觸發 TTS 並 best-effort 回寫。任何失敗一律降級（不回 500）。
 對映前端 DictEntry | null：翻譯失敗仍回 ok(None)。
 """
 
@@ -17,6 +19,7 @@ from psycopg.rows import dict_row
 from app.deps import get_current_user
 from app.response import ApiResponse, ok
 from engine.llm.translate import translate_word
+from engine.media.dict_audio import synthesize_word_audio
 from shared.db.pool import connection
 from shared.models import DictEntry
 
@@ -27,6 +30,34 @@ router = APIRouter(prefix="/dict", tags=["dict"])
 
 def _row_to_entry(row: dict[str, Any]) -> DictEntry:
     return DictEntry.model_validate(row)
+
+
+async def _ensure_audio_url(word: str, entry: DictEntry) -> DictEntry:
+    """若 entry.audio_url 為空，inline 觸發 TTS 並 best-effort 回寫。
+
+    降級原則：
+      - synthesize 拋例外 → log.warning + 回原 entry（永不冒泡 500）
+      - synthesize 回 None → 回原 entry（audio_url 維持 None）
+      - DB UPDATE 失敗 → log.warning + 回帶 URL 的 entry（本次可播、未來自動重試）
+    """
+    if entry.audio_url is not None:
+        return entry
+    try:
+        url = await synthesize_word_audio(word)
+    except Exception as exc:  # noqa: BLE001 — best-effort
+        logger.warning("TTS 合成失敗 word=%s: %s", word, exc)
+        return entry
+    if url is None:
+        return entry
+    try:
+        async with connection() as conn, conn.cursor() as cur:
+            await cur.execute(
+                "update public.dict_cache set audio_url = %s where word = %s",
+                (url, word),
+            )
+    except Exception as exc:  # noqa: BLE001 — best-effort
+        logger.warning("audio_url 回寫失敗 word=%s: %s", word, exc)
+    return entry.model_copy(update={"audio_url": url})
 
 
 @router.get("/lookup", response_model=ApiResponse[DictEntry | None])
@@ -47,7 +78,7 @@ async def lookup_dict(
         )
         row = await cur.fetchone()
     if row is not None:
-        return ok(_row_to_entry(row))
+        return ok(await _ensure_audio_url(word, _row_to_entry(row)))
 
     # ── LLM fallback（MiniMax，與 podcast 生成同帳號）────
     payload = await translate_word(word)
@@ -82,19 +113,18 @@ async def lookup_dict(
     except Exception as exc:  # noqa: BLE001 — best-effort
         logger.warning("dict_cache 寫入失敗（不擋 fallback）word=%s: %s", word, exc)
         # 即便寫入失敗也把翻譯結果回前端（前端至少看到 zh）
-        return ok(
-            DictEntry(
-                word=word,
-                translation=payload["translation"],
-                ipa=payload.get("ipa"),
-                pos=payload.get("pos") or [],
-                example_en=payload.get("example_en"),
-                example_zh=payload.get("example_zh"),
-            )
+        fallback = DictEntry(
+            word=word,
+            translation=payload["translation"],
+            ipa=payload.get("ipa"),
+            pos=payload.get("pos") or [],
+            example_en=payload.get("example_en"),
+            example_zh=payload.get("example_zh"),
         )
+        return ok(await _ensure_audio_url(word, fallback))
 
     if row2 is not None:
-        return ok(_row_to_entry(cast("dict[str, Any]", row2)))
+        return ok(await _ensure_audio_url(word, _row_to_entry(cast("dict[str, Any]", row2))))
     return ok(
         DictEntry(
             word=word,
