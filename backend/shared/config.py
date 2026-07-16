@@ -89,6 +89,11 @@ class Settings(BaseSettings):
     # 寫稿語意層重試硬上限（PRD §6 防重生風暴）
     generation_max_attempts: int = 3
 
+    # ── Rate limit（T5）──────────────────────────────────────
+    # /dict/lookup 每分鐘每 client 允許的查詢次數（單一 process 的 in-memory 限制；
+    # 多 worker 部署下實際上限 = N × 此值，spec 排除 Redis 故採 in-memory）。
+    rate_limit_dict_per_min: int = 60
+
     # ── Cloudflare R2（S3 相容）─────────────────────────────
     r2_account_id: str = ""
     r2_access_key_id: str = ""
