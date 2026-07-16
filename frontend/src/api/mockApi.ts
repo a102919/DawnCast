@@ -1,4 +1,4 @@
-import type { Activity, ActivityPatch, Api, DailyOrder, DictEntry, Settings, VocabItem } from './types'
+import type { AccountInfo, Activity, ActivityPatch, Api, DailyOrder, DictEntry, Settings, VocabItem } from './types'
 import type { Episode } from '../types/episode'
 import { EPISODES } from '../routes/episodeData'
 
@@ -343,6 +343,11 @@ export const mockApi: Api = {
     return data as Episode
   },
 
+  // T1：mock 模式沒有真 worker，setOrder 仍會呼叫此處但純 noop
+  async triggerGenerateJob(_date) {
+    return undefined
+  },
+
   async getActivity() {
     return readActivity()
   },
@@ -351,5 +356,29 @@ export const mockApi: Api = {
     const updated = mergeActivity(readActivity(), patch)
     writeActivity(updated)
     return updated
+  },
+
+  // T4 帳號自我管理 — mock 模式：回預設 AccountInfo。
+  // 真實應用不會走這條（http 模式才會接 /me）；保留 mock 讓 demo 模式也能呼叫。
+  async getMe() {
+    const info: AccountInfo = {
+      id: 'mock-user',
+      email: 'mock@example.com',
+      tz: 'Asia/Taipei',
+      deliveryTime: '07:00',
+      createdAt: new Date().toISOString(),
+    }
+    return info
+  },
+
+  // mock 模式刪除：模擬 backend cascade 行為，清掉所有 dawncast: 開頭的 localStorage keys。
+  // handler 端會再呼叫 supabase.auth.signOut() + localStorage.clear()，這裡只負責 mock API contract。
+  async deleteAccount() {
+    const keysToRemove: string[] = []
+    for (let i = 0; i < localStorage.length; i++) {
+      const key = localStorage.key(i)
+      if (key && key.startsWith('dawncast:')) keysToRemove.push(key)
+    }
+    for (const k of keysToRemove) localStorage.removeItem(k)
   },
 }

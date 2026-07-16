@@ -1,5 +1,6 @@
 import { z } from 'zod'
 import type {
+  AccountInfo,
   Activity,
   Api,
   DailyOrder,
@@ -220,6 +221,15 @@ const ActivitySchema = z.object({
   lastPlayedAt: z.string().nullable().optional(),
 }) satisfies z.ZodType<Activity>
 
+// T4 帳號自我管理：後端 CamelModel 保證 camelCase；email 為空字串時仍合法（JWT 無 email claim）。
+const AccountInfoSchema = z.object({
+  id: z.string(),
+  email: z.string(),
+  tz: z.string(),
+  deliveryTime: z.string(),
+  createdAt: z.string(),
+}) satisfies z.ZodType<AccountInfo>
+
 // ─── 實作 ─────────────────────────────────────────────────────────────────
 
 export const httpApi: Api = {
@@ -362,12 +372,30 @@ export const httpApi: Api = {
     }
   },
 
+  async triggerGenerateJob(date) {
+    // T1：送訂單後 fire-and-forget 觸發 worker 跑當日 pipeline。
+    // 後端回 202 + envelope；前端 Promise<void> 不解析 body。
+    // 失敗由呼叫端 catch（DailyOrderProvider 僅 console.warn，不打斷 setOrder）。
+    await request<null>(
+      `/jobs/orders/${encodeURIComponent(date)}/generate`,
+      { method: 'POST', schema: null },
+    )
+  },
+
   async getActivity() {
     return request<Activity>('/activity', { schema: ActivitySchema })
   },
 
   async patchActivity(patch) {
     return request<Activity>('/activity', { method: 'PATCH', body: patch, schema: ActivitySchema })
+  },
+
+  async getMe() {
+    return request<AccountInfo>('/me', { schema: AccountInfoSchema })
+  },
+
+  async deleteAccount() {
+    await request<null>('/me', { method: 'DELETE', schema: null })
   },
 }
 

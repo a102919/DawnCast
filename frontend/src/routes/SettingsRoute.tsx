@@ -1,6 +1,9 @@
 import { useState, type ReactNode } from 'react'
 import { AnimatePresence, motion } from 'framer-motion'
-import { useSettings, useVocab } from '../state'
+import { useNavigate } from 'react-router-dom'
+import { useSettings, useVocab, useAuth } from '../state'
+import { api, AppError } from '../api'
+import { supabase } from '../lib/supabaseClient'
 import { Toggle, Chip } from '../components/primitives'
 import { AlertTriangle } from 'lucide-react'
 import { TOPIC_LABELS } from './episodeData'
@@ -16,7 +19,12 @@ function isTopicChoice(s: string): s is Exclude<TopicKey, 'all'> {
 export function SettingsRoute() {
   const { settings, updateSettings, resetPopupPreferences } = useSettings()
   const { clearVocab, items } = useVocab()
+  const { signOut } = useAuth()
+  const navigate = useNavigate()
   const [confirmClear, setConfirmClear] = useState(false)
+  const [confirmDeleteAccount, setConfirmDeleteAccount] = useState(false)
+  const [isDeletingAccount, setIsDeletingAccount] = useState(false)
+  const [deleteError, setDeleteError] = useState<string | null>(null)
 
   const FONT_SIZES = [
     { value: 'sm' as const, label: '小' },
@@ -38,6 +46,36 @@ export function SettingsRoute() {
   const handleClearVocab = async () => {
     await clearVocab()
     setConfirmClear(false)
+  }
+
+  // T4 帳號自我管理：刪除本人帳號。
+  // 流程：DELETE /me → supabase.auth.signOut() → localStorage.clear() → 導回首頁。
+  // 任一步失敗皆 abort（避免半毀狀態；DB 已刪但前端未清會讓重複登入看到舊資料）。
+  const handleDeleteAccount = async () => {
+    setIsDeletingAccount(true)
+    setDeleteError(null)
+    try {
+      await api.deleteAccount()
+      try {
+        await supabase.auth.signOut()
+      } catch {
+        // signOut 失敗不致命（DB 已清；重新整理即視為未登入）
+      }
+      try {
+        await signOut()
+      } catch {
+        // 同上
+      }
+      localStorage.clear()
+      navigate('/', { replace: true })
+    } catch (err) {
+      // 對外訊息：把 AppError.message 顯示給使用者；其他錯誤給通用訊息
+      setDeleteError(
+        err instanceof AppError ? err.message : '刪除帳號失敗，請稍後再試',
+      )
+      setIsDeletingAccount(false)
+      setConfirmDeleteAccount(false)
+    }
   }
 
   return (
@@ -192,6 +230,72 @@ export function SettingsRoute() {
                     >
                       確定清除
                     </button>
+                  </div>
+                </motion.div>
+              )}
+            </AnimatePresence>
+          </div>
+        </SettingSection>
+
+        {/* T4 帳號自我管理：刪除帳號危險區塊。
+            沿用 confirmClear 的 AnimatePresence 二次確認模式，避免引入新互動元件。 */}
+        <SettingSection title="帳號">
+          <div>
+            <SettingRow
+              label="刪除帳號"
+              description="永久刪除帳號與所有學習資料（單字本、收藏、活動、設定、訂單）"
+            >
+              <button
+                onClick={() => {
+                  setConfirmDeleteAccount(true)
+                  setDeleteError(null)
+                }}
+                disabled={confirmDeleteAccount || isDeletingAccount}
+                className="text-sm text-danger hover:underline cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed px-3 py-2 -mr-3 rounded min-h-[44px]"
+              >
+                刪除帳號
+              </button>
+            </SettingRow>
+
+            <AnimatePresence>
+              {confirmDeleteAccount && (
+                <motion.div
+                  key="confirm-delete-account"
+                  initial={{ opacity: 0, height: 0 }}
+                  animate={{ opacity: 1, height: 'auto' }}
+                  exit={{ opacity: 0, height: 0 }}
+                  transition={{ duration: 0.2, ease: [0.2, 0.8, 0.2, 1] }}
+                  className="overflow-hidden"
+                >
+                  <div className="flex flex-col gap-3 px-4 py-3 border-t border-border bg-bg-secondary">
+                    <span className="flex items-center gap-1.5 text-xs text-danger">
+                      <AlertTriangle size={14} />
+                      此操作無法復原，將永久刪除你的帳號與所有資料。
+                    </span>
+                    {deleteError && (
+                      <span className="text-xs text-danger" role="alert">
+                        {deleteError}
+                      </span>
+                    )}
+                    <div className="flex items-center gap-3 justify-end">
+                      <button
+                        onClick={() => {
+                          setConfirmDeleteAccount(false)
+                          setDeleteError(null)
+                        }}
+                        disabled={isDeletingAccount}
+                        className="text-sm text-text-secondary px-4 py-2.5 rounded-lg border border-border bg-bg-primary hover:bg-bg-secondary transition-colors min-h-[44px] min-w-[64px] disabled:opacity-40 disabled:cursor-not-allowed"
+                      >
+                        取消
+                      </button>
+                      <button
+                        onClick={handleDeleteAccount}
+                        disabled={isDeletingAccount}
+                        className="text-sm text-white font-medium px-4 py-2.5 rounded-lg bg-danger hover:opacity-90 transition-opacity min-h-[44px] min-w-[64px] disabled:opacity-40 disabled:cursor-not-allowed"
+                      >
+                        {isDeletingAccount ? '刪除中...' : '確定刪除我的帳號'}
+                      </button>
+                    </div>
                   </div>
                 </motion.div>
               )}

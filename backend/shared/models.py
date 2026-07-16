@@ -280,3 +280,21 @@ class AdminTokenUsageResponse(CamelModel):
     total_output_tokens: int = 0
     episode_count: int = 0
     items: list[AdminTokenUsageItem] = Field(default_factory=list)
+
+
+# ── 帳號自我管理（T4）──────────────────────────────────────────
+
+
+class AccountInfo(CamelModel):
+    """GET /me 回傳欄位。id / email / tz / delivery_time / created_at。
+
+    email 從 JWT payload 解（Supabase 預設 JWT 帶 email claim）；
+    其餘欄位從 public.users SELECT。handle_new_user trigger 尚未補列時，
+    tz / delivery_time / created_at 採 DB 預設值，router 端不必補空字串。
+    """
+
+    id: str
+    email: str = ""  # JWT 無 email claim 時回空字串（不丟錯）
+    tz: str = "Asia/Taipei"
+    delivery_time: str = "07:00"
+    created_at: str = ""  # ISO 8601；空字串表示尚無列（前端可顯示「剛建立」）

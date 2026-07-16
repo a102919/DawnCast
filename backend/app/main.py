@@ -16,13 +16,16 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 
+from app.middleware import RateLimitMiddleware
 from app.response import err
 from app.routers import (
+    account,
     activity,
     admin,
     daily_orders,
     episodes,
     favorites,
+    jobs,
     notifications,
     vocab,
 )
@@ -53,9 +56,21 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
 def create_app() -> FastAPI:
     app = FastAPI(title="DawnCast API", lifespan=lifespan)
 
+    settings = get_settings()
+
+    # /dict/lookup 限流（per-IP sliding window，in-memory）；擋 LLM fallback 撞量。
+    # 順序關鍵：RateLimit 先加（內層），CORS 後加（最外層）—— 讓 429 JSONResponse
+    # 回程仍會被 CORSMiddleware 包到、補上 Access-Control-Allow-Origin，
+    # 跨域 SPA 才能在瀏覽器端讀到 rate_limited envelope（缺 ACAO 會被預檢擋）。
+    app.add_middleware(
+        RateLimitMiddleware,
+        limit=settings.rate_limit_dict_per_min,
+        window_sec=60.0,
+    )
+
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=get_settings().cors_allowed_origins,
+        allow_origins=settings.cors_allowed_origins,
         allow_credentials=True,
         allow_methods=["*"],
         allow_headers=["*"],
@@ -88,7 +103,9 @@ def create_app() -> FastAPI:
     app.include_router(episodes.router)
     app.include_router(dict_router.router)
     app.include_router(activity.router)
+    app.include_router(account.router)  # T4：帳號自我管理（URL 字面 /me）
     app.include_router(admin.router)
+    app.include_router(jobs.router)
     app.include_router(notifications.router)
 
     # 本機 fallback：當 R2 未設且 LOCAL_MEDIA_DIR 指向本地資料夾時，
@@ -96,7 +113,6 @@ def create_app() -> FastAPI:
     # 沒設 → 不掛（prod 預期走 R2 presign，本機才需要）。
     from pathlib import Path
 
-    settings = get_settings()
     media_dir = settings.local_media_dir
     if media_dir and Path(media_dir).is_dir():
         app.mount("/media", StaticFiles(directory=media_dir), name="media")

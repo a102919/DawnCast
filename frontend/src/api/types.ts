@@ -102,6 +102,17 @@ export type ActivityPatch = {
   readonly lastPlayed?: { readonly episodeId: string; readonly position: number; readonly at: string }
 }
 
+/** 帳號自我管理（T4）：GET /me 回傳欄位。
+ *  email 由 JWT 解（後端拿不到時回空字串，不丟錯）。
+ *  tz / deliveryTime / createdAt 從 public.users 讀；trigger 尚未補列時採預設值。 */
+export type AccountInfo = {
+  readonly id: string
+  readonly email: string
+  readonly tz: string
+  readonly deliveryTime: string
+  readonly createdAt: string
+}
+
 export interface Api {
   lookupDict(word: string): Promise<DictEntry | null>
   addVocab(item: Omit<VocabItem, 'id' | 'createdAt'>): Promise<VocabItem>
@@ -131,7 +142,13 @@ export interface Api {
   getEpisode(slug: string): Promise<Episode>
   // 依日期取當日交付的集數（player ?date= 連結用）；找不到回 null 由前端 fallback
   getDeliveredEpisode(date: string): Promise<Episode | null>
+  // T1：送訂單後 fire-and-forget 觸發 worker 跑當日 pipeline（POST /jobs/orders/{date}/generate，
+  // 後端回 202 + envelope；前端 Promise<void> 不解析 body，失敗僅 log 不 throw）
+  triggerGenerateJob(date: string): Promise<void>
   // 學習進度上雲（T2）
   getActivity(): Promise<Activity>
   patchActivity(patch: ActivityPatch): Promise<Activity>
+  // 帳號自我管理（T4）：查詢 / 刪除本人帳號
+  getMe(): Promise<AccountInfo>
+  deleteAccount(): Promise<void>
 }

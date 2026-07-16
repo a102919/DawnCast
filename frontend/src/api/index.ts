@@ -7,6 +7,7 @@ export const api: Api = import.meta.env.VITE_USE_MOCK === 'false' ? httpApi : mo
 
 export { AppError } from './httpApi'
 export type {
+  AccountInfo,
   Api,
   DailyOrder,
   DailyOrderInput,
