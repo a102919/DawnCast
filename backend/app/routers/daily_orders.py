@@ -76,7 +76,8 @@ async def save_daily_order(
             on conflict (user_id, order_date) do update set
               selected_topics  = excluded.selected_topics,
               specific_request = excluded.specific_request,
-              status           = excluded.status,
+              -- status 故意不重置：狀態機推進只能由 jobs router / collect_open cron 控制，
+              -- 前端編輯不能把 queued 洗回 pending（會造成重複 enqueue 與 LLM 成本 DoS）。
               delivery_time    = excluded.delivery_time,
               played_at        = excluded.played_at,
               entry_mode       = excluded.entry_mode,

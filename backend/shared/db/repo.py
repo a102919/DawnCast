@@ -352,6 +352,38 @@ async def mark_orders_status_for_date(
         return cur.rowcount
 
 
+async def get_order_status(user_id: str, order_date: str) -> str | None:
+    """取某 user 某日期的 daily_order 狀態；查無回 None（與 rowcount=0 區分）。"""
+    async with connection() as conn, conn.cursor(row_factory=dict_row) as cur:
+        await cur.execute(
+            "select status from public.daily_orders where user_id = %s and order_date = %s",
+            (user_id, order_date),
+        )
+        row = await cur.fetchone()
+    return str(row["status"]) if row else None
+
+
+async def transition_order_to_queued(user_id: str, order_date: str) -> bool:
+    """原子把 daily_order.status 從 pending 翻 queued（jobs router 觸發用）。
+
+    SQL 層 CAS：UPDATE ... WHERE status='pending' RETURNING。
+    並發兩個請求時第二個會等第一個 row lock 釋放後看到 status='queued'，
+    rowcount=0 → 回傳 False → router 翻譯成 409。
+    不需任何應用層鎖；零跨 process 風險。
+    """
+    async with connection() as conn, conn.cursor() as cur:
+        await cur.execute(
+            """
+            update public.daily_orders
+            set status = 'queued', updated_at = now()
+            where user_id = %s and order_date = %s and status = 'pending'
+            returning order_date
+            """,
+            (user_id, order_date),
+        )
+        return cur.rowcount > 0
+
+
 def _cues_from_script_json(script_json: Any) -> list[Cue]:
     """script_json 可能是 {cues:[...]} 或直接 [...]，皆容錯。"""
     if not script_json:

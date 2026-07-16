@@ -55,6 +55,11 @@ export function DailyOrderProvider({ children }: { readonly children: ReactNode 
         next.set(date, saved)
         return next
       })
+      // T1：fire-and-forget 觸發 worker 跑當日 pipeline；失敗僅 log，
+      // 不影響 setOrder 回傳值。22:00 collect_open cron 與 evergreen 03:30 兜底。
+      void api.triggerGenerateJob(date).catch(err => {
+        console.warn('[daily-order] trigger generate failed', err)
+      })
       return saved
     },
     [orders],
