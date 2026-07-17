@@ -24,4 +24,5 @@ output/
 # tool state / caches (regenerable, not source)
 .codegraph/
 .claude-flow/
+*.sqlite3
 
