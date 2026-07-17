@@ -95,7 +95,7 @@ export function HomeRoute() {
           繼續你的學習之旅
         </h1>
         <div className="flex flex-col sm:flex-row items-center justify-center gap-3 pt-2">
-          <Link to="/player">
+          <Link to={`/player${lastPlayed ? `/${lastPlayed.episodeId}` : latestEpisode ? `/${latestEpisode.id}` : ''}`}>
             <Button variant="primary" size="lg">
               <Play size={16} fill="currentColor" />
               繼續學習
@@ -111,7 +111,7 @@ export function HomeRoute() {
         {lastPlayed && (
           <div className="pt-3">
             <Link
-              to="/player"
+              to={`/player/${lastPlayed.episodeId}`}
               className="inline-flex items-center gap-1.5 text-xs text-text-tertiary hover:text-accent transition-colors duration-fast"
             >
               <Play size={11} fill="currentColor" />
@@ -144,7 +144,7 @@ export function HomeRoute() {
             </button>
           </div>
         )}
-        <Link to="/player" className="block">
+        <Link to={`/player/${latestEpisode.id}`} className="block">
           <div className="p-5 rounded-xl ring-1 ring-accent/20 bg-accent/5 hover:bg-accent/10 shadow-md transition-colors duration-fast group">
             <div className="flex items-center justify-between gap-4">
               <div className="space-y-1">

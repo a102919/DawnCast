@@ -11,7 +11,7 @@ export function EpisodeCard({ ep }: { readonly ep: MockEpisode }) {
   const isFav = favorites.has(ep.id)
 
   return (
-    <Link to="/player" className="block">
+    <Link to={`/player/${ep.id}`} className="block">
       <div className="relative p-4 rounded-lg border border-border bg-bg-primary hover:border-accent/40 hover:shadow-sm transition-all duration-fast group">
         {ep.isFeatured && (
           <div className="absolute top-2.5 right-2.5 z-10 flex items-center gap-1 px-1.5 py-0.5 rounded-full bg-accent/10 border border-accent/30 text-accent">

@@ -1,6 +1,6 @@
 import { useState, type ReactNode } from 'react'
 import { AnimatePresence, motion } from 'framer-motion'
-import { useNavigate } from 'react-router-dom'
+import { Link, useNavigate } from 'react-router-dom'
 import { useSettings, useVocab, useAuth } from '../state'
 import { api, AppError } from '../api'
 import { supabase } from '../lib/supabaseClient'
@@ -19,7 +19,7 @@ function isTopicChoice(s: string): s is Exclude<TopicKey, 'all'> {
 export function SettingsRoute() {
   const { settings, updateSettings, resetPopupPreferences } = useSettings()
   const { clearVocab, items } = useVocab()
-  const { signOut } = useAuth()
+  const { signOut, user } = useAuth()
   const navigate = useNavigate()
   const [confirmClear, setConfirmClear] = useState(false)
   const [confirmDeleteAccount, setConfirmDeleteAccount] = useState(false)
@@ -46,6 +46,11 @@ export function SettingsRoute() {
   const handleClearVocab = async () => {
     await clearVocab()
     setConfirmClear(false)
+  }
+
+  const handleSignOut = async () => {
+    await signOut()
+    navigate('/')
   }
 
   // T4 帳號自我管理：刪除本人帳號。
@@ -241,6 +246,26 @@ export function SettingsRoute() {
             沿用 confirmClear 的 AnimatePresence 二次確認模式，避免引入新互動元件。 */}
         <SettingSection title="帳號">
           <div>
+            {user ? (
+              <SettingRow label="登入狀態" description={user.email}>
+                <button
+                  onClick={() => void handleSignOut()}
+                  className="text-sm text-accent hover:underline cursor-pointer px-3 py-2 -mr-3 rounded min-h-[44px]"
+                >
+                  登出
+                </button>
+              </SettingRow>
+            ) : (
+              <SettingRow label="登入狀態" description="尚未登入">
+                <Link
+                  to="/login"
+                  className="text-sm text-accent hover:underline cursor-pointer px-3 py-2 -mr-3 rounded min-h-[44px] inline-flex items-center"
+                >
+                  登入
+                </Link>
+              </SettingRow>
+            )}
+
             <SettingRow
               label="刪除帳號"
               description="永久刪除帳號與所有學習資料（單字本、收藏、活動、設定、訂單）"

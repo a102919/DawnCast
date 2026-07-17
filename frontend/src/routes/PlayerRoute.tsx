@@ -1,4 +1,5 @@
 import { useState, useEffect, useMemo, useCallback, useRef } from 'react'
+import { useParams } from 'react-router-dom'
 import { AnimatePresence, motion } from 'framer-motion'
 import { AlertCircle, RotateCcw, PlayCircle } from 'lucide-react'
 import { VideoPlayer } from '../components/player/VideoPlayer'
@@ -16,6 +17,7 @@ import { usePlayer, useListened, useDailyOrder, useSettings, useActivity } from 
 import { findActiveCueIndex } from '../lib'
 
 export function PlayerRoute() {
+  const { id } = useParams<{ id: string }>()
   const [episode, setEpisode] = useState<Episode | null>(null)
   const [fetchError, setFetchError] = useState<string | null>(null)
   const [selectedWord, setSelectedWord] = useState<string | null>(null)
@@ -48,6 +50,11 @@ export function PlayerRoute() {
           return
         }
       }
+      if (id) {
+        const data = await api.getEpisode(id)
+        setEpisode(data)
+        return
+      }
       const list = await api.listEpisodes()
       if (list.length === 0) {
         setFetchError('目前沒有可播放的集數')
@@ -58,7 +65,7 @@ export function PlayerRoute() {
     } catch {
       setFetchError('節目資料載入失敗，請重新整理頁面')
     }
-  }, [])
+  }, [id])
 
   useEffect(() => {
     // mount 時載入 episode：async data loading 是 effect 內 setState 的正當用法

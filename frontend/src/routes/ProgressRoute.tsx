@@ -1,7 +1,8 @@
-import type { ComponentType } from 'react'
+import { useEffect, useState, type ComponentType } from 'react'
 import { Headphones, BookOpen, Flame, Clock, Search } from 'lucide-react'
 import { useVocab, useListened, useActivity } from '../state'
-import { EPISODES } from './episodeData'
+import { api } from '../api'
+import type { MockEpisode } from './episodeData'
 
 function calcStreak(dates: readonly string[]): number {
   if (dates.length === 0) return 0
@@ -24,8 +25,17 @@ export function ProgressRoute() {
   const { items } = useVocab()
   const { listenedIds } = useListened()
   const { streakDates, listenMinutes, lookupCount } = useActivity()
+  const [episodes, setEpisodes] = useState<readonly MockEpisode[]>([])
 
-  const listenedEps = EPISODES.filter(ep => listenedIds.has(ep.id))
+  useEffect(() => {
+    api.listEpisodes()
+      .then(setEpisodes)
+      .catch(() => {
+        // 統計摘要頁：載入失敗靜默處理，不擋整頁
+      })
+  }, [])
+
+  const listenedEps = episodes.filter(ep => listenedIds.has(ep.id))
   const yearMonth = new Date().toLocaleDateString('en-CA').slice(0, 7)
 
   const streak = calcStreak(streakDates)
@@ -38,7 +48,7 @@ export function ProgressRoute() {
       <h1 className="text-xl font-semibold text-text-primary">學習進度</h1>
 
       <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
-        <StatCard Icon={Headphones} label="已聽集數" value={listenedEps.length} unit="集" />
+        <StatCard Icon={Headphones} label="已聽集數" value={listenedIds.size} unit="集" />
         <StatCard Icon={BookOpen} label="累積詞彙" value={items.length} unit="個" />
         <StatCard Icon={Flame} label="連續天數" value={streak} unit="天" />
         <StatCard Icon={Clock} label="本月聆聽" value={thisMonthMinutes} unit="分" />
