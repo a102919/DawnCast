@@ -6,21 +6,25 @@ export function FavoritesProvider({ children }: { readonly children: ReactNode }
   const [favorites, setFavorites] = useState<ReadonlySet<string>>(new Set())
 
   useEffect(() => {
-    api.getFavorites().then(ids => setFavorites(new Set(ids)))
+    api.getFavorites().then(ids => setFavorites(new Set(ids))).catch(err => {
+      console.warn('[favorites] initial load failed', err)
+    })
   }, [])
 
   const toggle = useCallback(async (id: string) => {
+    let willAdd = false
     setFavorites(prev => {
       const next = new Set(prev)
       if (next.has(id)) {
         next.delete(id)
-        void api.removeFavorite(id)
       } else {
         next.add(id)
-        void api.addFavorite(id)
+        willAdd = true
       }
       return next
     })
+    const call = willAdd ? api.addFavorite(id) : api.removeFavorite(id)
+    await call.catch(err => console.warn('[favorites] toggle sync failed', err))
   }, [])
 
   const has = useCallback(

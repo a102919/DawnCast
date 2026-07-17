@@ -21,6 +21,8 @@ export function DailyOrderProvider({ children }: { readonly children: ReactNode 
       const map = new Map<string, DailyOrder>()
       for (const o of list) map.set(o.date, o)
       setOrders(map)
+    }).catch(err => {
+      console.warn('[daily-order] initial load failed', err)
     })
   }, [todayDate])
 

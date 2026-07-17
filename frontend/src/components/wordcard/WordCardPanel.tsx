@@ -1,6 +1,7 @@
 import { useEffect, type ReactNode } from 'react'
 import { X, BookmarkPlus, Check, AlertCircle, RotateCcw, Play } from 'lucide-react'
 import { AnimatePresence, motion } from 'framer-motion'
+import { toast } from 'sonner'
 import type { DictEntry } from '../../api/types'
 import type { Cue } from '../../types/episode'
 import { useVocab } from '../../state'
@@ -51,19 +52,23 @@ export function WordCardPanel({ isOpen, word, entry, lookupError, onRetry, activ
 
   const handleAddVocab = async () => {
     if (!word || !entry || !activeCue) return
-    await addVocab({
-      word,
-      lemma: word,
-      pos: entry.pos[0],
-      translation: entry.translation,
-      ipa: entry.ipa,
-      sourceEpisodeId: episodeId,
-      sourceLineNo: activeCueIdx,
-      sourceTimestamp: activeCue.start,
-      sourceSentence: activeCue.text,
-      sourceSentenceZh: activeCue.zh,
-      senseIdx: 0,
-    })
+    try {
+      await addVocab({
+        word,
+        lemma: word,
+        pos: entry.pos[0],
+        translation: entry.translation,
+        ipa: entry.ipa,
+        sourceEpisodeId: episodeId,
+        sourceLineNo: activeCueIdx,
+        sourceTimestamp: activeCue.start,
+        sourceSentence: activeCue.text,
+        sourceSentenceZh: activeCue.zh,
+        senseIdx: 0,
+      })
+    } catch {
+      toast.error('加入單字本失敗，請重試')
+    }
   }
 
   return (

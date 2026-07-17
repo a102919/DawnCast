@@ -16,7 +16,9 @@ export function SettingsProvider({ children }: { readonly children: ReactNode })
   const [settings, setSettings] = useState<Settings>(DEFAULT_SETTINGS)
 
   useEffect(() => {
-    api.getSettings().then(setSettings)
+    api.getSettings().then(setSettings).catch(err => {
+      console.warn('[settings] initial load failed', err)
+    })
   }, [])
 
   const updateSettings = useCallback(async (patch: Partial<Settings>) => {

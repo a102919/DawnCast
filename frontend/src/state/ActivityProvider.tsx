@@ -75,7 +75,9 @@ export function ActivityProvider({ children }: { readonly children: ReactNode })
       storageSet(LISTENED_KEY, listenedEpisodeIds)
       return { ...prev, streakDates, listenedEpisodeIds }
     })
-    void api.patchActivity({ addStreakDate: today, addListenedEpisodeId: episodeId })
+    void api.patchActivity({ addStreakDate: today, addListenedEpisodeId: episodeId }).catch(err => {
+      console.warn('[activity] patchActivity failed', err)
+    })
   }, [])
 
   const addListenMinutes = useCallback((month: string, minutes: number) => {
@@ -88,7 +90,9 @@ export function ActivityProvider({ children }: { readonly children: ReactNode })
       storageSet(LISTEN_MINUTES_KEY, listenMinutes)
       return { ...prev, listenMinutes }
     })
-    void api.patchActivity({ addListenMinutes: { month, minutes } })
+    void api.patchActivity({ addListenMinutes: { month, minutes } }).catch(err => {
+      console.warn('[activity] patchActivity failed', err)
+    })
   }, [])
 
   const addLookupCount = useCallback((month: string, count: number) => {
@@ -101,7 +105,9 @@ export function ActivityProvider({ children }: { readonly children: ReactNode })
       storageSet(LOOKUP_COUNT_KEY, lookupCount)
       return { ...prev, lookupCount }
     })
-    void api.patchActivity({ addLookupCount: { month, count } })
+    void api.patchActivity({ addLookupCount: { month, count } }).catch(err => {
+      console.warn('[activity] patchActivity failed', err)
+    })
   }, [])
 
   const setLastPlayed = useCallback(
@@ -110,7 +116,9 @@ export function ActivityProvider({ children }: { readonly children: ReactNode })
       const now = Date.now()
       if (!opts?.force && now - lastSyncRef.current < LAST_PLAYED_SYNC_THROTTLE_MS) return
       lastSyncRef.current = now
-      void api.patchActivity({ lastPlayed: { episodeId, position, at: new Date().toISOString() } })
+      void api.patchActivity({ lastPlayed: { episodeId, position, at: new Date().toISOString() } }).catch(err => {
+        console.warn('[activity] patchActivity failed', err)
+      })
     },
     [],
   )
