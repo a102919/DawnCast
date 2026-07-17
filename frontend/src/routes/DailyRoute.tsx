@@ -46,11 +46,6 @@ export function DailyRoute() {
       }
       return
     }
-    if (result.kind === 'played') {
-      // 目前 form 不會送 played;若之後支援,呼叫 markPlayed
-      toast.error('不支援的操作')
-      return
-    }
     setBusy(true)
     try {
       await setOrder(selectedDate, {

@@ -5,8 +5,7 @@
 機制（jobs.py）也尚未建立。故本次只實作「到 settings.defaultDeliveryTime
 → 產生待寄通知記錄」的觸發邏輯與其單元測試，不假造外部寄信串接。
 
-TODO：待 email service 憑證到位、T1 排程機制確定後，再讓 pg_cron 或 worker
-呼叫本檔的純函式 build_pending_notifications 接上實際寄送。
+已定案維持唯讀觀察端點，出餐通知功能不會再接寄信整合（產品決策，見 tasks/todo.md T8）。
 
 設計取捨（見 tasks/todo.md）：
 - 不建 DB 表存「已通知」狀態——目前沒有任何消費者會讀寫它，現在建表等於

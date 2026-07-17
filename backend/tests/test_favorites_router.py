@@ -1,9 +1,8 @@
-"""Favorites router 測試（T9）：list / add / remove / isFavorite。
+"""Favorites router 測試（T9）：list / add / remove。
 
 驗證重點：
-  (a) 無 JWT → 401（四 endpoint 全驗）
-  (b) happy path：list 回 slug[]；add 之後 isFavorite = True；remove 之後 = False；
-      對未知 slug → 404
+  (a) 無 JWT → 401（三 endpoint 全驗）
+  (b) happy path：list 回 slug[]；對未知 slug → 404
   (c) 授權收斂：A 的 token 不能看到、加進、刪掉 B 的收藏
       （若 router 漏 where user_id = %s，A 會把收藏寫進 B 名下或看到 B 的）
 
@@ -80,7 +79,7 @@ class FakeCursor:
             self._rows = [{"id": uid}] if uid else []
             return
 
-        # SELECT FROM user_favorites JOIN episodes（list 與 isFavorite 共用此 JOIN）
+        # SELECT FROM user_favorites JOIN episodes（list 用此 JOIN）
         # 顯式要求 "where f.user_id = %s"，若 router 把 WHERE 拿掉 → branch 不匹配
         # → 回空，test 失敗（不靠 params[0] 推測 user_id，避免假綠）。
         if (
@@ -88,16 +87,6 @@ class FakeCursor:
             and "join public.episodes e" in s
             and "where f.user_id = %s" in s
         ):
-            if "select 1" in s:
-                # isFavorite：params = (user_id, slug)
-                user_id, slug = params[0], params[1]
-                ep_uuid = EPISODES.get(slug)
-                is_fav = ep_uuid is not None and any(
-                    uid == user_id and ep == ep_uuid for uid, ep in FAVORITES
-                )
-                self._rows = [{"x": 1}] if is_fav else []
-                return
-
             # list：params = (user_id,)
             user_id = params[0]
             out: list[dict[str, Any]] = []
@@ -181,7 +170,7 @@ def _auth(user_id: str) -> dict[str, str]:
     return {"Authorization": f"Bearer {_token(user_id)}"}
 
 
-# ── (a) 無 JWT → 401（四 endpoint 全驗）─────────────────────────
+# ── (a) 無 JWT → 401（三 endpoint 全驗）─────────────────────────
 
 
 def test_list_favorites_no_jwt_returns_401(client: TestClient) -> None:
@@ -202,12 +191,6 @@ def test_remove_favorite_no_jwt_returns_401(client: TestClient) -> None:
     assert res.json()["error"]["code"] == "unauthorized"
 
 
-def test_is_favorite_no_jwt_returns_401(client: TestClient) -> None:
-    res = client.get("/favorites/ep-a")
-    assert res.status_code == 401
-    assert res.json()["error"]["code"] == "unauthorized"
-
-
 # ── (b) happy path ────────────────────────────────────────────
 
 
@@ -217,21 +200,6 @@ def test_list_favorites_returns_user_slugs(client: TestClient) -> None:
     slugs = res.json()["data"]
     # A 有 ep-a 與 ep-shared 兩個收藏
     assert set(slugs) == {"ep-a", "ep-shared"}
-
-
-def test_add_favorite_then_is_favorite_returns_true(client: TestClient) -> None:
-    add_res = client.post("/favorites/ep-shared", headers=_auth(USER_B))
-    assert add_res.status_code == 200
-    is_res = client.get("/favorites/ep-shared", headers=_auth(USER_B))
-    assert is_res.status_code == 200
-    assert is_res.json()["data"] is True
-
-
-def test_remove_favorite_flips_is_favorite_to_false(client: TestClient) -> None:
-    del_res = client.delete("/favorites/ep-a", headers=_auth(USER_A))
-    assert del_res.status_code == 200
-    is_res = client.get("/favorites/ep-a", headers=_auth(USER_A))
-    assert is_res.json()["data"] is False
 
 
 def test_add_favorite_unknown_slug_returns_404(client: TestClient) -> None:
@@ -263,16 +231,8 @@ def test_list_favorites_scoped_to_owner(client: TestClient) -> None:
     assert "ep-shared" not in slugs_b
 
 
-def test_is_favorite_scoped_to_owner(client: TestClient) -> None:
-    # ep-b 只有 B 收藏 → A 視角 false；B 視角 true
-    res_a = client.get("/favorites/ep-b", headers=_auth(USER_A))
-    res_b = client.get("/favorites/ep-b", headers=_auth(USER_B))
-    assert res_a.json()["data"] is False
-    assert res_b.json()["data"] is True
-
-
 def test_remove_favorite_scoped_to_owner(client: TestClient) -> None:
-    # A 嘗試刪 B 的 ep-b → 不可動到 B（B 仍收藏）
+    # A 嘗試刪 B 的 ep-b → 不可動到 B（B 仍收藏，用 list 驗證）
     client.delete("/favorites/ep-b", headers=_auth(USER_A))
-    res_b = client.get("/favorites/ep-b", headers=_auth(USER_B))
-    assert res_b.json()["data"] is True
+    res_b = client.get("/favorites", headers=_auth(USER_B))
+    assert "ep-b" in res_b.json()["data"]

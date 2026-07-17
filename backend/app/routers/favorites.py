@@ -1,4 +1,4 @@
-"""收藏 router：list（回 slug[]）/ add / remove / isFavorite。
+"""收藏 router：list（回 slug[]）/ add / remove。
 
 DB user_favorites 存 episode uuid；對外一律用 slug。slug↔uuid 轉換在此。
 """
@@ -72,19 +72,3 @@ async def remove_favorite(slug: str, user_id: str = Depends(get_current_user)) -
         )
         await conn.commit()
     return ok(None)
-
-
-@router.get("/{slug}", response_model=ApiResponse[bool])
-async def is_favorite(slug: str, user_id: str = Depends(get_current_user)) -> ApiResponse[bool]:
-    async with connection() as conn, conn.cursor(row_factory=dict_row) as cur:
-        await cur.execute(
-            """
-            select 1
-            from public.user_favorites f
-            join public.episodes e on e.id = f.episode_id
-            where f.user_id = %s and e.slug = %s
-            """,
-            (user_id, slug),
-        )
-        found = await cur.fetchone()
-    return ok(found is not None)

@@ -77,10 +77,10 @@
   - 換瀏覽器登入同一 user 看到的數字一致
 - **驗證**：登入 → 操作 → 換瀏覽器登入同帳號 → 數字一致
 
-### [ ] T3. PronounceButton 音檔 backfill
+### [x] T3. PronounceButton 音檔 backfill
 
 - **目的**：詞卡的喇叭按鈕實際能播發音
-- **現況**：`dict_cache.audio_url` schema 有但永遠 null；`engine/media/tts.py` 存在但沒被呼叫
+- **現況**：Piper infra 已裝好（pyproject.toml + Dockerfile.api + Settings.piper_voice_model），喇叭按鈕可用
 - **影響檔案**：
   - `backend/app/routers/dict.py` 的 `lookup_dict`：查無音檔時呼叫 TTS 回寫
   - `engine/media/tts.py`：對接 Piper TTS（本地）或外部 TTS API；產出 .mp3 上 R2
@@ -92,12 +92,15 @@
 
 ## P1 — UX 補強
 
-### [ ] T4. 帳號自我管理
+### [x] T4. 帳號自我管理
 
-- **目的**：使用者可改 email、刪帳號
-- **影響檔案**：
-  - 新增 `backend/app/routers/account.py`：`GET /me`、`DELETE /me`（cascade user_vocab / user_favorites / user_settings / daily_orders / user_activity）
-  - 前端 SettingsRoute 新增「刪除帳號」危險區塊（沿用 confirmClear 的 AnimatePresence 模式）
+- **目的**：刪帳號
+- **現況**：`backend/app/routers/account.py` 的 `DELETE /me` 已完成——FK ON
+  DELETE CASCADE 自動清 8 張 child tables（deliveries / daily_orders /
+  user_vocab / user_favorites / user_settings / topic_requests /
+  user_heard_topics / user_activity），授權從 JWT 衍生 `user_id`（不信任
+  前端傳入），測試齊全（`backend/tests/test_account.py`）
+- **已定案不做**：使用者改 email——產品決策，非漏做
 - **DoD**：刪帳號後該 user_id 所有資料 cascade 清除；再次註冊同 email 視為新帳號
 - **驗證**：註冊 → 收 vocab / 收藏 → 刪帳號 → DB 該 user_id 列全空
 
@@ -130,15 +133,13 @@
 - **DoD**：帶 admin token 可查所有 episode / job / token 用量；不帶 → 401
 - **驗證**：拿 10 個 user 跑 5 天 → admin endpoint 顯示累計 token 用量對得起帳單
 
-### [ ] T8. 出餐通知（email / push）
+### [已取消] T8. 出餐通知（email / push）
 
-- **目的**：到 `settings.defaultDeliveryTime` 提醒使用者有新集
-- **影響檔案**：
-  - `backend/app/routers/` 加 `notifications.py` 或併入 `jobs.py`
-  - 整合 Supabase email template 或外部 email service
-  - 前端 Settings 新增「通知偏好」toggle
-- **DoD**：訂閱出餐時間 → 收到 email
-- **驗證**：註冊 → 設出餐時間 5 分鐘後 → 5 分鐘內收信
+**定案不做**：沒有 email service 憑證（`shared/config.py`／`.env.example` 全無
+SMTP/SendGrid/Resend/SES 欄位），也沒有排程觸發機制可掛實際 dispatch；產品
+決策上先不做寄信整合。`backend/app/routers/notifications.py` 保留為唯讀觀察
+端點（`build_pending_notifications` 純函式可查「現在該通知誰」），不會再接
+上實際寄送。
 
 ### [ ] T9. 後端 router-level 測試補齊
 

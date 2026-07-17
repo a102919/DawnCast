@@ -101,7 +101,6 @@ export type DailyOrderFormSubmitResult =
       lengthTier: LengthTier
     }
   | { kind: 'cancel' }
-  | { kind: 'played' }
 
 interface DailyOrderFormProps {
   readonly date: string
