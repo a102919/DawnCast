@@ -55,4 +55,4 @@ fly deploy -c deploy/fly.worker.toml
 
 ## DB migration
 
-部署前先在 Supabase 套用 `backend/db/migrations/0001~0003`（見該目錄 README），並啟用 `pgmq` / `pg_cron` / `vector` extension。
+部署前先依 `backend/db/migrations/README.md` 的清單依序套用全部 migration，並啟用 `pgmq` / `pg_cron` / `vector` extension。
