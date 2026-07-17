@@ -98,7 +98,7 @@ def _resolve_model() -> str:
     settings = get_settings()
     return (
         os.environ.get("PIPER_VOICE_MODEL")
-        or getattr(settings, "piper_voice_model", "")
+        or settings.piper_voice_model
         or str(Path.home() / ".local/share/piper/en_US-amy-medium.onnx")
     )
 

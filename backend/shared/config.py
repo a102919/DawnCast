@@ -102,6 +102,11 @@ class Settings(BaseSettings):
     r2_endpoint: str = ""  # https://<account>.r2.cloudflarestorage.com
     r2_signed_url_ttl: int = 7200  # 2h，避免長音檔播一半過期
 
+    # ── Piper TTS（詞卡發音喇叭）──────────────────────────────
+    # 語音模型檔路徑；空字串 = 未設定，_resolve_model() fallback 到
+    # ~/.local/share/piper/en_US-amy-medium.onnx（見 engine/media/dict_audio.py）。
+    piper_voice_model: str = ""
+
     # 本機 fallback（無 R2 時讓前端能拿到媒體檔）。
     # 設了路徑 + 路徑存在 → backend mount /media/* StaticFiles；
     # 沒設 / 設空字串 → get_episode_url 維持 raise NotFoundError。

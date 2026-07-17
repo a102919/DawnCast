@@ -29,6 +29,10 @@ COPY engine ./engine
 COPY shared ./shared
 RUN uv sync --frozen --no-dev
 
+# 詞卡發音喇叭（Piper TTS）：下載固定語音 en_US-amy-medium，
+# 與 engine/media/dict_audio.py 的 _resolve_model() fallback 檔名對齊。
+RUN uv run python -m piper.download_voices --download-dir /app/voices en_US-amy-medium
+
 # ---- runtime：乾淨小 image，只搬 .venv 與原始碼 ----
 FROM python:3.12-slim AS runtime
 
@@ -39,12 +43,14 @@ WORKDIR /app
 ENV PATH="/app/.venv/bin:$PATH" \
     PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
-    PORT=8080
+    PORT=8080 \
+    PIPER_VOICE_MODEL=/app/voices/en_US-amy-medium.onnx
 
 COPY --from=builder --chown=appuser:appuser /app/.venv ./.venv
 COPY --from=builder --chown=appuser:appuser /app/app ./app
 COPY --from=builder --chown=appuser:appuser /app/engine ./engine
 COPY --from=builder --chown=appuser:appuser /app/shared ./shared
+COPY --from=builder --chown=appuser:appuser /app/voices ./voices
 
 USER appuser
 EXPOSE 8080
