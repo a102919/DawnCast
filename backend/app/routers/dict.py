@@ -70,8 +70,8 @@ async def lookup_dict(
     if not word:
         return ok(None)
 
-    # Lemma 候選：衍生先、原 word 最後。例：「trees」→ ["tre", "tree", "trees"]。
-    # SQL 用 ORDER BY array_position DESC 取最像 lemma 的命中。
+    # Lemma 候選：原 word 首位、衍生依序往後。例：「trees」→ ["trees", "tre", "tree"]。
+    # SQL 用 ORDER BY array_position DESC：位置最晚（最像 lemma 的）命中壓過原 word。
     candidates = lemmatize(word)
 
     # ── 主路徑：以 lemma 候選清單查 cache，命中優先取最像 lemma 者 ──

@@ -55,7 +55,15 @@ class _FakeCursor:
         _EXECUTED_SQL.append(s)
         self._rows = []
 
-        # SELECT by word（cache 命中查詢 / LLM fallback 後讀回）
+        # SELECT by word — lemma 候選版本（dict.py d73f9d7+）
+        if "where word = any(%s::text[])" in s:
+            if _CACHE_ROW is not None and _CACHE_ROW.get("word") in params[0]:
+                self._rows = [dict(_CACHE_ROW)]
+            else:
+                self._rows = []
+            return
+
+        # SELECT by word（LLM fallback 寫回後讀回）
         if "from public.dict_cache where word = %s" in s:
             word = params[0]
             if _CACHE_ROW is not None and _CACHE_ROW.get("word") == word:

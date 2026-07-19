@@ -52,6 +52,12 @@ class _FakeCursor:
     async def execute(self, sql: str, params: tuple[Any, ...] = ()) -> None:
         self._rows = []
         normalized = " ".join(sql.split())
+        # Lemma 候選 SELECT（dict.py d73f9d7+）：以候選清單查，命中優先取 lemma。
+        if "where word = any(%s::text[])" in normalized:
+            if _CACHE_ROW is not None and _CACHE_ROW.get("word") in params[0]:
+                self._rows = [dict(_CACHE_ROW)]
+            return
+        # LLM fallback 寫回後讀回 / 其他單 word 查詢。
         if "from public.dict_cache where word = %s" in normalized:
             if _CACHE_ROW is not None and _CACHE_ROW.get("word") == params[0]:
                 self._rows = [dict(_CACHE_ROW)]
@@ -328,9 +334,9 @@ def test_429_response_carries_cors_header_for_cross_origin_spa(
     )
     assert res.status_code == 429
     # 跨域 SPA 必讀得到 ACAO header，否則瀏覽器會擋掉 fetch
-    assert (
-        res.headers.get("access-control-allow-origin") == FRONTEND_ORIGIN
-    ), f"預期 ACAO={FRONTEND_ORIGIN}，實際 headers={dict(res.headers)!r}"
+    assert res.headers.get("access-control-allow-origin") == FRONTEND_ORIGIN, (
+        f"預期 ACAO={FRONTEND_ORIGIN}，實際 headers={dict(res.headers)!r}"
+    )
 
 
 # ── Self-check Demo ──────────────────────────────────────────────
