@@ -26,3 +26,6 @@ output/
 .claude-flow/
 *.sqlite3
 
+# session workflow scratch（含指向個人絕對路徑的 symlink，不可攜）
+.claude/workflows/scripts/
+
