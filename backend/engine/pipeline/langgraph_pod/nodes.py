@@ -763,11 +763,10 @@ async def render_episode_node(state: PodState, config: RunnableConfig) -> dict[s
         if not isinstance(renderer, MockRenderer):
             raise TypeError("renderer 不是 MockRenderer")
         script_payload = script.model_dump()
-        mp3, mp4, srt, cues = renderer.render(script_payload)
+        mp3, srt, cues = renderer.render(script_payload)
         return {
             "artifacts": EpisodeArtifacts(
                 mp3_path=mp3,
-                mp4_path=mp4,
                 srt=srt,
                 vtt="",  # mock 不產
                 cues=[__import__("shared.models", fromlist=["Cue"]).Cue(**c) for c in cues],
@@ -797,7 +796,6 @@ async def upload_artifacts_node(state: PodState, config: RunnableConfig) -> dict
 
     prefix = f"episodes/{episode_id}"
     audio_key = f"{prefix}/episode.mp3"
-    mp4_key = f"{prefix}/episode.mp4"
     srt_key = f"{prefix}/episode.srt"
 
     is_production = r2 is None  # mock 路徑會注入 MockR2；production 沒有才走真 R2
@@ -806,13 +804,11 @@ async def upload_artifacts_node(state: PodState, config: RunnableConfig) -> dict
     try:
         if r2 is not None:
             r2.put_object(audio_key, art.mp3_path.read_bytes(), "audio/mpeg")
-            r2.put_object(mp4_key, art.mp4_path.read_bytes(), "video/mp4")
             r2.put_object(srt_key, art.srt.encode("utf-8"), "application/x-subrip")
         else:
             from shared.storage import r2 as real_r2  # noqa: PLC0415
 
             real_r2.put_object(audio_key, art.mp3_path.read_bytes(), "audio/mpeg")
-            real_r2.put_object(mp4_key, art.mp4_path.read_bytes(), "video/mp4")
             real_r2.put_object(srt_key, art.srt.encode("utf-8"), "application/x-subrip")
     except Exception as exc:  # 包括 StorageError 與 MockR2 forced failure
         logger.warning(
@@ -820,16 +816,16 @@ async def upload_artifacts_node(state: PodState, config: RunnableConfig) -> dict
             exc,
             episode_id,
         )
-        audio_key = mp4_key = srt_key = None  # type: ignore[assignment]
+        audio_key = srt_key = None  # type: ignore[assignment]
         storage_failed = True
 
     # 本地 fallback
     media_dir = settings.local_media_dir
-    if media_dir and art.mp4_path.exists():
+    if media_dir and art.mp3_path.exists():
         try:
             from .mock import safe_local_fallback  # noqa: PLC0415
 
-            safe_local_fallback(art.mp4_path, slug, media_dir)
+            safe_local_fallback(art.mp3_path, slug, media_dir)
         except OSError as exc:
             logger.warning("寫本地 fallback 失敗 %s: %s", slug, exc)
 
@@ -840,7 +836,6 @@ async def upload_artifacts_node(state: PodState, config: RunnableConfig) -> dict
 
     return {
         "audio_key": audio_key,
-        "mp4_key": mp4_key,
         "srt_key": srt_key,
         "storage_failed": storage_failed,
     }
@@ -861,7 +856,6 @@ async def update_episode_keys_node(state: PodState, config: RunnableConfig) -> d
         await repo.update_episode_keys(
             state["episode_id"],
             audio_key=state.get("audio_key"),
-            mp4_key=state.get("mp4_key"),
             srt_key=state.get("srt_key"),
             script_json=script.model_dump(by_alias=False),
             cues=art.cues,

@@ -5,9 +5,9 @@ export type PlayerContextValue = {
   readonly isPlaying: boolean
   readonly duration: number
   readonly playbackRate: number
-  readonly videoRef: RefObject<HTMLVideoElement | null>
+  readonly videoRef: RefObject<HTMLMediaElement | null>
   seekTo(time: number): void
-  setVideoRef(el: HTMLVideoElement | null): void
+  setVideoRef(el: HTMLMediaElement | null): void
   play(): void
   pause(): void
   setPlaybackRate(rate: number): void

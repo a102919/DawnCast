@@ -38,6 +38,12 @@ class Settings(BaseSettings):
     cors_allowed_origins: list[str] = Field(
         default=["http://localhost:5173", "http://127.0.0.1:5173"],
     )
+    # origin regex 補充（e.g. devtunnels 子網域）。空字串表示不啟用。
+    # 預設空：fail-secure；prod 帶值會被 assert_secure() 拒絕，dev 想用請於
+    # 本機 .env 顯式設定 CORS_ALLOWED_ORIGIN_REGEX（dotenv 格式，不寫 Python r""）。
+    cors_allowed_origin_regex: str = Field(
+        default="",
+    )
 
     # ── 資料庫（Supabase 託管 Postgres）──────────────────────
     database_url: str = Field(
@@ -48,11 +54,18 @@ class Settings(BaseSettings):
     db_pool_max: int = 10
 
     # ── Auth（Supabase Auth 發的 JWT）────────────────────────
-    supabase_jwt_secret: str = Field(
-        default=_DEFAULT_JWT_SECRET,
-        description="驗 Supabase JWT 用（HS256）",
+    # 2025 起 Supabase 預設改用 ES256（ECC P-256）簽 JWT，不再提供 shared secret。
+    # 後端抓 JWKS 拿公開 key 驗 token，支援自動輪換（Supabase JWKS endpoint 公開）。
+    supabase_jwks_url: str = Field(
+        default="https://agrprhsbfnxzwyugctrp.supabase.co/auth/v1/.well-known/jwks.json",
+        description="Supabase JWKS endpoint 網址；驗 ES256 token 用",
     )
     supabase_jwt_audience: str = "authenticated"
+    # 保留欄位向後相容舊測試 / 工具腳本；prod 不再用。
+    supabase_jwt_secret: str = Field(
+        default=_DEFAULT_JWT_SECRET,
+        description="（legacy）HS256 對稱 secret；ES256 時代已不驗 token 用，僅測試相容",
+    )
 
     # Ops/admin endpoint（T7）驗證用固定 token，走 X-Admin-Token header 比對。
     # 不可硬寫在程式碼；空字串 = 未設定，prod 會被 assert_secure() 擋下。
@@ -166,15 +179,21 @@ class Settings(BaseSettings):
         """上線防呆：prod 環境下拒絕不安全設定，啟動即 fail（fail closed）。
 
         dev / 測試不檢查（預設值即可跑）。prod 必檢：
-          1. JWT secret 不可是預設哨兵或空字串——否則攻擊者可自簽任意 sub 繞過授權。
+          1. JWKS URL 不可是空字串——否則無法驗 token。
           2. CORS 不可用萬用 '*'（搭配 allow_credentials 會憑證外洩）。
+          3. devtunnels regex 不可帶到 prod——會放行任意 devtunnel 子網域。
+             main.py 的 middleware 也會在 prod 跳過此設定，雙重保險。
         """
         if self.environment != "prod":
             return
-        if self.supabase_jwt_secret in ("", _DEFAULT_JWT_SECRET):
-            raise ConfigError("prod 未設定 SUPABASE_JWT_SECRET（不可用預設值）")
+        if not self.supabase_jwks_url:
+            raise ConfigError("prod 未設定 SUPABASE_JWKS_URL（不可為空）")
         if "*" in self.cors_allowed_origins:
             raise ConfigError("prod 的 CORS_ALLOWED_ORIGINS 不可包含 '*'")
+        if self.cors_allowed_origin_regex.strip():
+            raise ConfigError(
+                "prod 的 CORS_ALLOWED_ORIGIN_REGEX 不可設定（dev-only；prod 留空）"
+            )
         if self.admin_token == "":
             raise ConfigError("prod 未設定 ADMIN_TOKEN（不可用空字串）")
 

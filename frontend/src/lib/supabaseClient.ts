@@ -1,6 +1,6 @@
 import { createClient, type SupabaseClient } from '@supabase/supabase-js'
 
-// 僅用於 Auth：拿 magic link session / JWT。資料一律走後端 REST API。
+// 僅用於 Auth：拿 Google OAuth session / JWT。資料一律走後端 REST API。
 const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL ?? ''
 const SUPABASE_ANON_KEY = import.meta.env.VITE_SUPABASE_ANON_KEY ?? ''
 

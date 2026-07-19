@@ -214,11 +214,9 @@ def _sample_artifacts(tmp: Path) -> Any:
     from engine.media import EpisodeArtifacts
 
     mp3 = tmp / "episode.mp3"
-    mp4 = tmp / "episode.mp4"
     mp3.write_bytes(b"FAKE_MP3")
-    mp4.write_bytes(b"FAKE_MP4")
     cues = [Cue(index=1, speaker="Alex", text="hi", zh="嗨", start=0.0, end=1.0)]
-    return EpisodeArtifacts(mp3_path=mp3, mp4_path=mp4, srt="1\n", vtt="WEBVTT\n", cues=cues)
+    return EpisodeArtifacts(mp3_path=mp3, srt="1\n", vtt="WEBVTT\n", cues=cues)
 
 
 class _GenRepoSpy:
@@ -342,12 +340,11 @@ async def test_generate_job_happy_path(monkeypatch: pytest.MonkeyPatch) -> None:
     keys = {u[0] for u in uploads}
     assert keys == {
         "episodes/ep-new-id/episode.mp3",
-        "episodes/ep-new-id/episode.mp4",
         "episodes/ep-new-id/episode.srt",
     }
     # content-type 正確
     types = {u[0].rsplit(".", 1)[1]: u[2] for u in uploads}
-    assert types == {"mp3": "audio/mpeg", "mp4": "video/mp4", "srt": "application/x-subrip"}
+    assert types == {"mp3": "audio/mpeg", "srt": "application/x-subrip"}
     # update_episode_keys 帶到 cues
     assert "cues" in repo_spy.updated
     # 兩位收件人都交付

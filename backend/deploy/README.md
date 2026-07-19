@@ -24,11 +24,16 @@ fly apps create dawncast-api
 fly apps create dawncast-worker
 
 # 2. 設 secrets（對映 .env.example，兩個 app 各設一次）
-# ENVIRONMENT=prod 會啟動上線防呆：漏設 SUPABASE_JWT_SECRET 或 CORS 用 '*' → API 拒絕啟動。
+# ENVIRONMENT=prod 會啟動上線防呆：
+#   - 漏設 SUPABASE_JWKS_URL
+#   - CORS_ALLOWED_ORIGINS 含 '*'
+#   - CORS_ALLOWED_ORIGIN_REGEX 非空（dev-only 設定，不該帶到 prod）
+#   - ADMIN_TOKEN 空字串
+# → API 拒絕啟動。
 fly secrets set -c deploy/fly.api.toml \
   ENVIRONMENT=prod \
   CORS_ALLOWED_ORIGINS='["https://dawncast.app"]' \
-  DATABASE_URL=... SUPABASE_JWT_SECRET=... \
+  DATABASE_URL=... SUPABASE_JWKS_URL=... \
   R2_ACCOUNT_ID=... R2_ACCESS_KEY_ID=... R2_SECRET_ACCESS_KEY=... \
   R2_BUCKET=dawncast R2_ENDPOINT=...
 

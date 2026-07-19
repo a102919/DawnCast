@@ -18,10 +18,9 @@ from typing import Any
 
 import pytest
 from fastapi.testclient import TestClient
-from jose import jwt
 
 from app.routers import admin as admin_router
-from shared.config import Settings, get_settings
+from shared.config import Settings
 
 ADMIN_TOKEN = "test-admin-token"
 
@@ -174,13 +173,9 @@ def _admin_headers(token: str) -> dict[str, str]:
 
 
 def _jwt_headers() -> dict[str, str]:
-    settings = get_settings()
-    token = jwt.encode(
-        {"sub": "some-user-id", "aud": settings.supabase_jwt_audience},
-        settings.supabase_jwt_secret,
-        algorithm="HS256",
-    )
-    return {"Authorization": f"Bearer {token}"}
+    from tests._auth import auth_header
+
+    return auth_header("some-user-id")
 
 
 # ── /admin/episodes ────────────────────────────────────────────────

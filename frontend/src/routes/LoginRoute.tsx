@@ -1,29 +1,47 @@
 import { useState } from 'react'
 import { Link } from 'react-router-dom'
-import { Mail, CheckCircle2, AlertCircle, ArrowLeft, Loader2 } from 'lucide-react'
+import { AlertCircle, ArrowLeft, Loader2 } from 'lucide-react'
 import { Button } from '../components/primitives/Button'
 import { useAuth } from '../state'
 
-type Status = 'idle' | 'sending' | 'sent' | 'error'
+type Status = 'idle' | 'redirecting' | 'error'
+
+function GoogleIcon() {
+  return (
+    <svg width="18" height="18" viewBox="0 0 18 18" aria-hidden="true">
+      <path
+        fill="#4285F4"
+        d="M17.64 9.2c0-.64-.06-1.25-.16-1.84H9v3.48h4.84a4.14 4.14 0 0 1-1.8 2.72v2.26h2.92c1.7-1.57 2.68-3.88 2.68-6.62z"
+      />
+      <path
+        fill="#34A853"
+        d="M9 18c2.43 0 4.47-.8 5.96-2.18l-2.92-2.26c-.81.54-1.84.86-3.04.86-2.34 0-4.32-1.58-5.03-3.7H.96v2.33A9 9 0 0 0 9 18z"
+      />
+      <path
+        fill="#FBBC05"
+        d="M3.97 10.72A5.4 5.4 0 0 1 3.68 9c0-.6.1-1.18.29-1.72V4.95H.96A9 9 0 0 0 0 9c0 1.45.35 2.83.96 4.05l3.01-2.33z"
+      />
+      <path
+        fill="#EA4335"
+        d="M9 3.58c1.32 0 2.51.46 3.44 1.35l2.59-2.59C13.46.89 11.43 0 9 0A9 9 0 0 0 .96 4.95l3.01 2.33C4.68 5.16 6.66 3.58 9 3.58z"
+      />
+    </svg>
+  )
+}
 
 export function LoginRoute() {
-  const { signInWithOtp } = useAuth()
-  const [email, setEmail] = useState('')
+  const { signInWithGoogle } = useAuth()
   const [status, setStatus] = useState<Status>('idle')
   const [errorMsg, setErrorMsg] = useState<string | null>(null)
 
-  const handleSubmit = async (e: React.FormEvent) => {
-    e.preventDefault()
-    const trimmed = email.trim()
-    if (!trimmed) return
-    setStatus('sending')
+  const handleSignIn = async () => {
+    setStatus('redirecting')
     setErrorMsg(null)
     try {
-      await signInWithOtp(trimmed)
-      setStatus('sent')
+      await signInWithGoogle()
     } catch (err) {
       setStatus('error')
-      setErrorMsg(err instanceof Error ? err.message : '寄送登入連結失敗，請稍後再試')
+      setErrorMsg(err instanceof Error ? err.message : 'Google 登入失敗，請稍後再試')
     }
   }
 
@@ -39,70 +57,40 @@ export function LoginRoute() {
 
       <div className="text-center space-y-2">
         <div className="inline-flex items-center justify-center w-12 h-12 rounded-full bg-accent/10 text-accent">
-          <Mail size={22} />
+          <GoogleIcon />
         </div>
         <h1 className="text-xl font-bold text-text-primary">登入 DawnCast</h1>
         <p className="text-sm text-text-secondary leading-relaxed">
-          輸入電子郵件，我們會寄送一封登入連結給你，點擊即可登入，免設定密碼。
+          使用 Google 帳號登入，免設定密碼。
         </p>
       </div>
 
-      {status === 'sent' ? (
-        <div className="flex items-start gap-2.5 px-4 py-3 rounded-lg bg-success/10 border border-success/20 text-success text-sm">
-          <CheckCircle2 size={18} className="shrink-0 mt-0.5" />
-          <div className="space-y-1">
-            <p className="font-medium">登入連結已寄出</p>
-            <p className="text-text-secondary text-xs leading-relaxed">
-              請至 {email} 收信，點擊信中的連結完成登入。
-            </p>
-          </div>
+      {status === 'error' && errorMsg && (
+        <div className="flex items-center gap-2 px-3 py-2 rounded-lg bg-danger/10 border border-danger/20 text-danger text-xs">
+          <AlertCircle size={14} className="shrink-0" />
+          <span>{errorMsg}</span>
         </div>
-      ) : (
-        <form onSubmit={handleSubmit} className="space-y-3">
-          <div className="space-y-1.5">
-            <label htmlFor="login-email" className="block text-xs font-medium text-text-secondary">
-              電子郵件
-            </label>
-            <input
-              id="login-email"
-              type="email"
-              required
-              autoComplete="email"
-              value={email}
-              onChange={(e) => setEmail(e.target.value)}
-              placeholder="you@example.com"
-              className="w-full px-3 py-2.5 rounded-md bg-bg-secondary border border-border text-sm text-text-primary placeholder:text-text-tertiary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
-            />
-          </div>
-
-          {status === 'error' && errorMsg && (
-            <div className="flex items-center gap-2 px-3 py-2 rounded-lg bg-danger/10 border border-danger/20 text-danger text-xs">
-              <AlertCircle size={14} className="shrink-0" />
-              <span>{errorMsg}</span>
-            </div>
-          )}
-
-          <Button
-            type="submit"
-            variant="primary"
-            size="lg"
-            className="w-full justify-center"
-            disabled={status === 'sending'}
-          >
-            {status === 'sending' ? (
-              <>
-                <Loader2 size={16} className="animate-spin" />
-                寄送中
-              </>
-            ) : (
-              <>
-                <Mail size={16} />
-                寄送登入連結
-              </>
-            )}
-          </Button>
-        </form>
       )}
+
+      <Button
+        variant="primary"
+        size="lg"
+        className="w-full justify-center"
+        disabled={status === 'redirecting'}
+        onClick={() => void handleSignIn()}
+      >
+        {status === 'redirecting' ? (
+          <>
+            <Loader2 size={16} className="animate-spin" />
+            正在導向 Google
+          </>
+        ) : (
+          <>
+            <GoogleIcon />
+            使用 Google 帳號登入
+          </>
+        )}
+      </Button>
     </div>
   )
 }

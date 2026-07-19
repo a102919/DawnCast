@@ -68,13 +68,21 @@ def create_app() -> FastAPI:
         window_sec=60.0,
     )
 
-    app.add_middleware(
-        CORSMiddleware,
-        allow_origins=settings.cors_allowed_origins,
-        allow_credentials=True,
-        allow_methods=["*"],
-        allow_headers=["*"],
-    )
+    # CORS kwargs：env-aware。dev 才啟用 PNA + origin regex（opt-in 相容路徑，
+    # 給不走 vite proxy、直接打後端的場景留後路；prod 完全不開，fail-secure）。
+    cors_kwargs: dict[str, object] = {
+        "allow_origins": settings.cors_allowed_origins,
+        "allow_credentials": True,
+        "allow_methods": ["*"],
+        "allow_headers": ["*"],
+    }
+    if settings.environment == "dev":
+        # Private Network Access (PNA / CORS-RFC1918)：HTTPS 公開來源（e.g. devtunnels）
+        # 打本機 loopback 必須明確同意，否則 Chrome 直接擋。
+        cors_kwargs["allow_private_network"] = True
+        if settings.cors_allowed_origin_regex:
+            cors_kwargs["allow_origin_regex"] = settings.cors_allowed_origin_regex
+    app.add_middleware(CORSMiddleware, **cors_kwargs)
 
     @app.exception_handler(AppError)
     async def app_error_handler(_request: Request, exc: AppError) -> JSONResponse:

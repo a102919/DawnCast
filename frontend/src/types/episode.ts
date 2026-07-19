@@ -10,6 +10,6 @@ export type Cue = {
 export type Episode = {
   readonly id: string
   readonly title: string
-  readonly videoUrl: string
+  readonly audioUrl: string
   readonly cues: readonly Cue[]
 }

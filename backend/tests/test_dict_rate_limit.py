@@ -19,7 +19,6 @@ from typing import Any
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
-from jose import jwt
 
 from app.routers import dict as dict_router
 from shared.config import Settings, get_settings
@@ -157,13 +156,9 @@ def make_client(make_app: Any):
 
 
 def _auth() -> dict[str, str]:
-    settings = get_settings()
-    token = jwt.encode(
-        {"sub": USER_ID, "aud": settings.supabase_jwt_audience},
-        settings.supabase_jwt_secret,
-        algorithm="HS256",
-    )
-    return {"Authorization": f"Bearer {token}"}
+    from tests._auth import auth_header
+
+    return auth_header(USER_ID)
 
 
 # ── (1) 上限內全部 200 ─────────────────────────────────────────────

@@ -1,7 +1,8 @@
-"""engine.media：把 ScriptJSON 渲染成可播放的媒體成品。
+"""engine.media：把 ScriptJSON 渲染成 mp3 + 字幕成品。
 
-對外公開高階入口 render_episode：TTS → concat → timeline → 字幕 → 燒影片，
-全部產到傳入的 workdir，不寫死 output/、不上傳 R2（上傳是 Phase 3 的事）。
+對外公開高階入口 render_episode：TTS → concat → timeline → 字幕字串，
+全部產到傳入的 workdir，不寫死 output/、不上傳 R2（上傳是 upload_artifacts_node 的事）。
+不再燒字幕 mp4 — 前端吃 Cue list 自行做同步高亮。
 """
 
 from __future__ import annotations
@@ -13,7 +14,7 @@ from shared.config import get_settings
 from shared.models import Cue, ScriptJSON
 
 from .audio import concat_segments
-from .subtitles import build_timeline, burn_video, cues_to_json, write_srt, write_vtt
+from .subtitles import build_timeline, cues_to_json, write_srt, write_vtt
 from .tts import SynthSegment, synth_script
 from .workdir import make_job_workdir
 
@@ -22,7 +23,6 @@ __all__ = [
     "EpisodeArtifacts",
     "SynthSegment",
     "build_timeline",
-    "burn_video",
     "concat_segments",
     "cues_to_json",
     "make_job_workdir",
@@ -35,17 +35,16 @@ __all__ = [
 
 @dataclass(frozen=True)
 class EpisodeArtifacts:
-    """一集渲染完成的成品：音檔、影片、字幕字串與時間軸 cues。"""
+    """一集渲染完成的成品：音檔、字幕字串與時間軸 cues。"""
 
     mp3_path: Path
-    mp4_path: Path
     srt: str
     vtt: str
     cues: list[Cue]
 
 
 async def render_episode(script: ScriptJSON, workdir: Path) -> EpisodeArtifacts:
-    """把腳本完整渲染成媒體成品，全部產到 workdir。"""
+    """把腳本渲染成 mp3 + 字幕字串 + cues 時間軸，全部產到 workdir。"""
     settings = get_settings()
     workdir.mkdir(parents=True, exist_ok=True)
 
@@ -64,12 +63,8 @@ async def render_episode(script: ScriptJSON, workdir: Path) -> EpisodeArtifacts:
     srt = write_srt(cues)
     vtt = write_vtt(cues)
 
-    mp4_path = workdir / "episode.mp4"
-    burn_video(cues, mp3_path, mp4_path, workdir=workdir)
-
     return EpisodeArtifacts(
         mp3_path=mp3_path,
-        mp4_path=mp4_path,
         srt=srt,
         vtt=vtt,
         cues=cues,

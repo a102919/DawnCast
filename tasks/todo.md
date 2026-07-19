@@ -117,12 +117,13 @@
 
 ## P2 — 直接砍 spec / 之後再說
 
-### [ ] T6. 從 product spec 砍掉未做的付費功能
+### [x] T6. 從 product spec 砍掉未做的付費功能
 
 - **目的**：避免 spec 跟實作持續 drift
 - **影響檔案**：`tasks/` 下若有舊 spec 提到 CSV / Anki、離線下載、AB 重複練習，標 `[已取消]` 或刪除段落
 - **DoD**：grep `tasks/`、`docs/`、`ux-research/` 對這三個關鍵字全部有「已砍」標註
-- **驗證**：`grep -rn "CSV\|Anki\|離線下載\|AB repeat\|AB 重複" tasks/ docs/`
+- **驗證**：`grep -rn "CSV\|Anki\|離線下載\|AB repeat\|AB 重複" tasks/ docs/` → 唯一未標 `[已取消]` 命中只剩 todo.md T6 自己驗證那一行（合理）；ux-research 全有 `[已取消]` 標註。
+- **現況**：全 19 個參考點都標好；task 改為 `[x]` 收尾。
 
 ### [ ] T7. Admin / Ops endpoint
 

@@ -13,7 +13,7 @@ type SavedProgress = {
 }
 
 export function PlayerProvider({ children }: { readonly children: ReactNode }) {
-  const videoRef = useRef<HTMLVideoElement | null>(null)
+  const videoRef = useRef<HTMLMediaElement | null>(null)
   const [currentTime, setCurrentTime] = useState(0)
   const [isPlaying, setIsPlaying] = useState(false)
   const [duration, setDuration] = useState(0)
@@ -54,7 +54,7 @@ export function PlayerProvider({ children }: { readonly children: ReactNode }) {
     }
   }, [persistProgress])
 
-  const setVideoRef = useCallback((el: HTMLVideoElement | null) => {
+  const setVideoRef = useCallback((el: HTMLMediaElement | null) => {
     if (videoRef.current && progressTimerRef.current) {
       clearTimeout(progressTimerRef.current)
       progressTimerRef.current = null

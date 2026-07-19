@@ -26,7 +26,7 @@ const MOCK_LIST: readonly MockEpisode[] = [
 ]
 
 function mockEpisodeFor(id: string): Episode {
-  return { id, title: `Episode ${id}`, videoUrl: `https://example.com/${id}.mp4`, cues: [] }
+  return { id, title: `Episode ${id}`, audioUrl: `https://example.com/${id}.mp3`, cues: [] }
 }
 
 // Mock api 模組：spyOn 真物件太繞，直接替換整個 export（跟 DailyOrderProvider.test.tsx 同手法）。

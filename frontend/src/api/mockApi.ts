@@ -1,6 +1,6 @@
 import type { AccountInfo, Activity, ActivityPatch, Api, DailyOrder, DictEntry, Settings, VocabItem } from './types'
 import type { Episode } from '../types/episode'
-import { EPISODES } from '../routes/episodeData'
+import { SEED_EPISODES_FOR_TEST } from '../routes/episodeData'
 
 const VOCAB_KEY = 'dawncast:vocab'
 const SETTINGS_KEY = 'dawncast:settings'
@@ -322,7 +322,7 @@ export const mockApi: Api = {
   },
 
   async listEpisodes() {
-    return EPISODES
+    return SEED_EPISODES_FOR_TEST
   },
 
   // mock 模式只有單一示範節目檔，無論 slug 一律回 /data/episode.json，

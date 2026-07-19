@@ -6,8 +6,8 @@ export type AuthContextValue = {
   readonly user: User | null
   /** session 是否還在初始化（首次讀取 getSession） */
   readonly isLoading: boolean
-  /** 寄出 email magic link */
-  signInWithOtp(email: string): Promise<void>
+  /** 導去 Google OAuth 同意畫面 */
+  signInWithGoogle(): Promise<void>
   signOut(): Promise<void>
 }
 

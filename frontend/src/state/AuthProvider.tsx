@@ -29,10 +29,10 @@ export function AuthProvider({ children }: { readonly children: ReactNode }) {
     }
   }, [])
 
-  const signInWithOtp = useCallback(async (email: string) => {
-    const { error } = await supabase.auth.signInWithOtp({
-      email,
-      options: { emailRedirectTo: window.location.origin },
+  const signInWithGoogle = useCallback(async () => {
+    const { error } = await supabase.auth.signInWithOAuth({
+      provider: 'google',
+      options: { redirectTo: window.location.origin },
     })
     if (error) throw error
   }, [])
@@ -47,10 +47,10 @@ export function AuthProvider({ children }: { readonly children: ReactNode }) {
       session,
       user: session?.user ?? null,
       isLoading,
-      signInWithOtp,
+      signInWithGoogle,
       signOut,
     }),
-    [session, isLoading, signInWithOtp, signOut],
+    [session, isLoading, signInWithGoogle, signOut],
   )
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>

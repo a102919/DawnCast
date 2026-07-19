@@ -1,16 +1,13 @@
-"""字幕：從 SynthSegment 算時間軸，產 SRT / VTT / JSON，並燒雙語字幕 mp4。
+"""字幕：從 SynthSegment 算時間軸，產 SRT / VTT / JSON 字串。
 
 時間軸在記憶體一次算完（cursor += dur + pause），下游全吃 Cue list，
-不再 glob mp3 後整批 ffprobe。
+不再 glob mp3 後整批 ffprobe。前端依 Cue list 自行做同步高亮，不再生 mp4。
 """
 
 from __future__ import annotations
 
-import subprocess
 from collections.abc import Sequence
-from pathlib import Path
 
-from shared.errors import TTSError
 from shared.models import Cue
 
 from .tts import SynthSegment
@@ -89,105 +86,4 @@ def write_vtt(cues: Sequence[Cue]) -> str:
 
 def cues_to_json(cues: Sequence[Cue]) -> list[dict[str, object]]:
     """Cue list → camelCase dict list（前端播放頁直接吃）。"""
-    return [cue.model_dump(by_alias=True) for cue in cues]
-
-
-def burn_video(cues: Sequence[Cue], mp3: Path, out_mp4: Path, *, workdir: Path) -> None:
-    """燒雙語字幕 mp4：1280x720 深藍底 + vignette，EN 白 / ZH 黃，每 cue 兩行。"""
-    workdir.mkdir(parents=True, exist_ok=True)
-    ass_path = workdir / "_subs.ass"
-
-    # ASS 標頭：欄位順序與顏色 / 字型不可改（與既有正確成品一致）。
-    # 部分行天生超過 100 字元（ASS Format / Style 規格），逐行標 noqa。
-    ass_header = "\n".join(
-        [
-            "[Script Info]",
-            "ScriptType: v4.00+",
-            "PlayResX: 1280",
-            "PlayResY: 720",
-            "",
-            "[V4+ Styles]",
-            "Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding",  # noqa: E501
-            "Style: En,Helvetica,40,&H00FFFFFF,&H000000FF,&H00000000,&H80000000,-1,0,0,0,100,100,0,0,1,2,1,2,60,60,80,1",  # noqa: E501
-            "Style: Zh,Noto Sans CJK TC,40,&H0033E6FF,&H000000FF,&H00000000,&H80000000,0,0,0,0,100,100,0,0,1,2,1,2,60,60,30,1",  # noqa: E501
-            "",
-            "[Events]",
-            "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text",
-            "",
-        ]
-    )
-
-    body = []
-    for cue in cues:
-        start = _fmt_vtt_ts(cue.start)
-        end = _fmt_vtt_ts(cue.end)
-        body.append(
-            f"Dialogue: 0,{start},{end},En,,0,0,0,,{cue.text}\n"
-            f"Dialogue: 0,{start},{end},Zh,,0,0,0,,{cue.zh}\n"
-        )
-    ass_path.write_text(ass_header + "".join(body), encoding="utf-8")
-
-    # 影片長度跟著音檔長度
-    try:
-        probe = subprocess.run(
-            [
-                "ffprobe",
-                "-v",
-                "error",
-                "-show_entries",
-                "format=duration",
-                "-of",
-                "default=noprint_wrappers=1:nokey=1",
-                str(mp3),
-            ],
-            capture_output=True,
-            text=True,
-            check=True,
-        )
-        dur = float(probe.stdout.strip())
-    except (subprocess.CalledProcessError, ValueError) as exc:
-        raise TTSError("量測 mp3 時長失敗，無法燒字幕") from exc
-
-    # ASS 路徑在 ffmpeg filter 裡要 escape 冒號
-    ass_escaped = str(ass_path).replace("\\", "/").replace(":", "\\:")
-    vf = f"vignette=PI/4,subtitles={ass_escaped}:si=0:force_style='Outline=2,Shadow=1'"
-
-    out_mp4.parent.mkdir(parents=True, exist_ok=True)
-    try:
-        subprocess.run(
-            [
-                "ffmpeg",
-                "-y",
-                "-loglevel",
-                "error",
-                "-f",
-                "lavfi",
-                "-i",
-                f"color=c=0x0F1A2E:s=1280x720:d={dur}:r=24",
-                "-i",
-                str(mp3),
-                "-vf",
-                vf,
-                "-c:v",
-                "libx264",
-                "-preset",
-                "fast",
-                "-crf",
-                "23",
-                "-c:a",
-                "aac",
-                "-b:a",
-                "128k",
-                "-shortest",
-                "-pix_fmt",
-                "yuv420p",
-                str(out_mp4),
-            ],
-            check=True,
-            capture_output=True,
-            text=True,
-        )
-    except subprocess.CalledProcessError as exc:
-        raise TTSError("燒錄字幕影片失敗") from exc
-    finally:
-        ass_path.unlink(missing_ok=True)
+    return [cue.model_dump(by_alias=True) for cue in cues]  # ponytail: 砍掉 burn_video 之後 mp4 不再生，前端只吃 Cue list 自己 render；raw srt/vtt 字串留著備用

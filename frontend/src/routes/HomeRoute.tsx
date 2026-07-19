@@ -8,7 +8,7 @@ import { Chip } from '../components/primitives/Chip'
 import { useListened, useVocab } from '../state'
 import { EpisodeCard } from '../components/EpisodeCard'
 import { api } from '../api'
-import { EPISODES, TOPIC_LABELS, CEFR_COLOR, formatDateZhTW } from './episodeData'
+import { TOPIC_LABELS, CEFR_COLOR, formatDateZhTW } from './episodeData'
 import type { TopicKey, MockEpisode } from './episodeData'
 import { storageGet } from '../lib/storage'
 
@@ -31,8 +31,8 @@ const FEATURES = [
 ] as const
 
 export function HomeRoute() {
-  // 集數庫預設帶入 EPISODES（mock 資料來源），避免首次渲染空白；載入完成後以 api 結果覆蓋。
-  const [episodes, setEpisodes] = useState<readonly MockEpisode[]>(EPISODES)
+  // 集數庫從 API 拿 DB 真資料；首次渲染空陣列 + skeleton（useEffect 跑完就有資料）。
+  const [episodes, setEpisodes] = useState<readonly MockEpisode[]>([])
   const [episode, setEpisode] = useState<Episode | null>(null)
   const [fetchError, setFetchError] = useState<string | null>(null)
   const [retryKey, setRetryKey] = useState(0)

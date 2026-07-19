@@ -185,13 +185,13 @@ const CueSchema = z.object({
   end: z.number(),
 })
 
-// videoUrl 由 /episodes/{slug}/url 補上，list 內容沒有 cues。
-// server get_episode Episode model 沒設 videoUrl 欄位會回 null（不是 undefined），
+// audioUrl 由 /episodes/{slug}/url 補上，list 內容沒有 cues。
+// server get_episode Episode model 沒設 audioUrl 欄位會回 null（不是 undefined），
 // 故 .nullable() 否則 zod 在 null 時拋 schema_mismatch。
 const EpisodeContentSchema = z.object({
   id: z.string(),
   title: z.string(),
-  videoUrl: z.string().nullable().optional(),
+  audioUrl: z.string().nullable().optional(),
   cues: z.array(CueSchema),
 })
 
@@ -340,16 +340,16 @@ export const httpApi: Api = {
   },
 
   async getEpisode(slug) {
-    // 先取 cues，videoUrl 再以簽章 URL 補上（兩次請求合併）。
+    // 先取 cues，audioUrl 再以簽章 URL 補上（兩次請求合併）。
     const content = await request<z.infer<typeof EpisodeContentSchema>>(
       `/episodes/${encodeURIComponent(slug)}`,
       { schema: EpisodeContentSchema },
     )
-    const videoUrl = content.videoUrl ?? (await fetchSignedUrl(slug))
+    const audioUrl = content.audioUrl ?? (await fetchSignedUrl(slug))
     const episode: Episode = {
       id: content.id,
       title: content.title,
-      videoUrl,
+      audioUrl,
       cues: content.cues,
     }
     return episode
@@ -363,11 +363,11 @@ export const httpApi: Api = {
       { schema: EpisodeContentSchema, nullable: true },
     )
     if (content === null) return null
-    const videoUrl = content.videoUrl ?? (await fetchSignedUrl(content.id))
+    const audioUrl = content.audioUrl ?? (await fetchSignedUrl(content.id))
     return {
       id: content.id,
       title: content.title,
-      videoUrl,
+      audioUrl,
       cues: content.cues,
     }
   },

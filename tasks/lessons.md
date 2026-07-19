@@ -2,6 +2,21 @@
 
 被糾正後記在這裡，寫成規則避免再犯。Session 開始先回顧。
 
+## 2026-07-18 — 本機同時跑多個 postgres instance 時，`.env` 的 `DATABASE_URL` 寫死是隱性定時炸彈
+
+**情境**：DawnCast `.env` 寫死 `DATABASE_URL=postgresql://postgres:postgres@localhost:5432/postgres`，但使用者本機實際裝了 4 個 postgres：docker `postgres-dev`(5432)、brew `postgresql@15`(5432 — 跟 docker 撞)、brew `postgresql@14`(5433)、brew `postgresql@17`(5434 — **這才是 dawncast 真正的 DB**)。結果：
+- 後端一直連到 docker `postgres-dev`，裡面**完全沒有 dawncast 表**（vanilla postgres，沒 pgvector/pgmq/auth schema）
+- 跑 migration 一直炸（extension 找不到、`auth.uid()` 不存在）
+- 折騰半天才發現 dict_cache 1.79M 筆 + tatoeba 13M 筆 + auth schema 全在 5434，使用者從頭到尾不知道這件事
+- CORS 修完、proxy 修完，**最後一個 500 是 DB 連錯**——所有上游修正都被這個錯誤掩蓋
+
+**規則**：
+- **`.env` 內的 port 不要寫死 magic number**：在 `DATABASE_URL` 上面加 2-3 行註解，寫明「這個 port 對應到哪個 instance」（docker / brew @哪版 / Supabase），哪天 port 被搶 / instance 砍了，下次 debug 不會再花 30 分鐘。
+- **migration 跑不起來時第一件事是「確認 DB 是對的那個」**：用 `SELECT current_database(), inet_server_port(), version();` 確認自己連去哪，不要直接灌 SQL 進去。連錯 instance 灌 migration 會把空 DB 灌成半套 schema。
+- **debug 順序**：CORS / proxy / auth 都修完還 500 → 99% 是 DB 連錯或 DB 沒表。`\dt public.*` 跟 `SELECT count(*) FROM 核心表` 兩個查詢就能定位。
+- **多 postgres 共存的本機環境**：在 `~/.zshrc` 或 README 寫一張表（port / instance / 主要用途 / 哪個專案用），避免每次 debug 都要 `lsof -iTCP:5432-5434 -P -n` 全部掃一遍。
+- **「使用者記得在本地有特別建一個 DB」這種口頭線索不要略過**：當所有候選 instance 都「看起來沒資料」時，停下來懷疑「我找的地方不對」，不是「資料不存在」。
+
 ## 2026-07-15 — 重用查詢的「正交維度」缺一個就撞錯集
 
 **情境**：Phase 4 發現 `find_reusable_episode`（`backend/shared/db/repo.py:217`）只 WHERE `big_topic` + `user_id`，**完全沒帶 `length_tier`**。意思是使用者今天選「深度知識・長篇」會直接命中三個月前「指定主題・中篇」生成的同一集——Phase 1-3 設計的 tier 軸線在重用決策上被當成隱形。

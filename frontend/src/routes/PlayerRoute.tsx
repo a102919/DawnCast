@@ -1,12 +1,10 @@
 import { useState, useEffect, useMemo, useCallback, useRef } from 'react'
 import { useParams } from 'react-router-dom'
-import { AnimatePresence, motion } from 'framer-motion'
-import { AlertCircle, RotateCcw, PlayCircle } from 'lucide-react'
-import { VideoPlayer } from '../components/player/VideoPlayer'
+import { AlertCircle, RotateCcw, Sparkles, BookMarked, FileText } from 'lucide-react'
+import { AudioPlayer } from '../components/player/AudioPlayer'
 import { PlayerControls } from '../components/player/PlayerControls'
-import { CueDisplay } from '../components/player/CueDisplay'
+import { LyricsView } from '../components/lyrics/LyricsView'
 import { PlayerBottomBar } from '../components/player/PlayerBottomBar'
-import { TranscriptPanel } from '../components/transcript/TranscriptPanel'
 import { MobileTranscriptSheet } from '../components/transcript/MobileTranscriptSheet'
 import { WordCardPanel } from '../components/wordcard/WordCardPanel'
 import { VocabDrawer } from '../components/vocab/VocabDrawer'
@@ -68,9 +66,6 @@ export function PlayerRoute() {
   }, [id])
 
   useEffect(() => {
-    // mount 時載入 episode：async data loading 是 effect 內 setState 的正當用法
-    // (https://react.dev/reference/react/useEffect#fetching-data-with-effects)
-    // eslint-disable-next-line react-hooks/set-state-in-effect
     void loadEpisode()
   }, [loadEpisode])
 
@@ -83,13 +78,9 @@ export function PlayerRoute() {
   }, [episode])
 
   useEffect(() => {
-    // P0-1：載入已儲存播放進度。loadProgress 本身會先看本機 localStorage，
-    // 沒有的話退回 ActivityProvider 的 lastPlayed（GET /activity 非同步回來後
-    // loadProgress 參照會變、這個 effect 因此重跑，達成換裝置後補套用進度）。
     if (!episode || initialSeekAppliedRef.current) return
     const progress = loadProgress(episode.id)
     if (!progress.exists) return
-    // 等 video element 就緒後套用
     const trySeek = () => {
       if (initialSeekAppliedRef.current) return
       const v = videoRef.current
@@ -130,11 +121,6 @@ export function PlayerRoute() {
     [episode, currentTime],
   )
 
-  const allSpeakers = useMemo(
-    () => episode ? [...new Set(episode.cues.map(c => c.speaker))] : [],
-    [episode],
-  )
-
   const handleWordClick = async (word: string, cue: Cue) => {
     setSelectedWord(word)
     setSelectedCue(cue)
@@ -144,7 +130,6 @@ export function PlayerRoute() {
     try {
       const entry = await api.lookupDict(word)
       setDictEntry(entry)
-      // 寫入活動查詞計數（給 ProgressRoute 顯示用）
       const ymLookup = new Date().toLocaleDateString('en-CA').slice(0, 7)
       addLookupCount(ymLookup, 1)
     } catch {
@@ -176,108 +161,73 @@ export function PlayerRoute() {
 
   if (!episode) {
     return (
-      <div className="flex flex-col lg:flex-row h-[calc(100dvh-152px)] lg:h-[calc(100dvh-56px)] overflow-hidden">
-        {/* 左側骨架 */}
-        <div className="flex flex-col flex-1 min-w-0 overflow-y-auto">
-          <div className="p-4 lg:p-5 animate-pulse">
-            {/* VideoPlayer 佔位（16:9） */}
-            <div className="w-full aspect-video rounded-lg bg-bg-secondary" />
-            {/* PlayerControls 佔位（desktop only） */}
-            <div className="mt-3 space-y-2 hidden lg:block">
-              <div className="h-1.5 rounded-full bg-bg-secondary" />
-              <div className="flex items-center gap-3">
-                <div className="h-8 w-8 rounded-full bg-bg-secondary" />
-                <div className="h-8 w-8 rounded-full bg-bg-secondary" />
-                <div className="h-8 w-8 rounded-full bg-bg-secondary" />
-                <div className="ml-auto h-4 w-20 rounded bg-bg-secondary" />
-              </div>
-            </div>
-            {/* CueDisplay 佔位 */}
-            <div className="mt-4 space-y-2">
-              <div className="h-5 w-3/4 rounded bg-bg-secondary" />
-              <div className="h-5 w-1/2 rounded bg-bg-secondary" />
-            </div>
-          </div>
-        </div>
-        {/* 右側逐字稿骨架（desktop） */}
-        <div className="hidden lg:flex flex-col w-96 border-l border-border gap-3 p-4 animate-pulse">
-          <div className="h-5 w-1/3 rounded bg-bg-secondary" />
-          {Array.from({ length: 8 }).map((_, i) => (
-            <div key={i} className="space-y-1.5">
-              <div className="h-3 w-1/4 rounded bg-bg-secondary" />
-              <div className="h-4 rounded bg-bg-secondary" />
-              <div className="h-4 w-5/6 rounded bg-bg-secondary" />
-            </div>
-          ))}
-        </div>
+      <div className="flex flex-col items-center justify-center h-64 gap-3">
+        <Sparkles size={24} className="text-accent animate-pulse" />
+        <p className="text-text-tertiary text-sm">載入中…</p>
       </div>
     )
   }
 
-  const activeCue = activeCueIdx >= 0 ? episode.cues[activeCueIdx] : null
   const selectedCueIdx = selectedCue ? episode.cues.indexOf(selectedCue) : -1
 
   return (
-    <div className="flex flex-col lg:flex-row h-[calc(100dvh-152px)] lg:h-[calc(100dvh-56px)] overflow-hidden">
-      {/* 左側：影片 + 字幕 */}
-      <div className="flex flex-col flex-1 min-w-0 overflow-y-auto">
-        <div className="p-4 lg:p-5">
-          <VideoPlayer videoUrl={episode.videoUrl} />
-          <div className="mt-3 hidden lg:block">
-            <PlayerControls duration={episode.cues[episode.cues.length - 1]?.end ?? 0} />
-          </div>
-          <div className="mt-4">
-            <AnimatePresence mode="wait">
-              {activeCue ? (
-                <motion.div
-                  key={activeCue.index}
-                  initial={{ opacity: 0, y: 4 }}
-                  animate={{ opacity: 1, y: 0 }}
-                  exit={{ opacity: 0, y: -4 }}
-                  transition={{ duration: 0.18, ease: [0.2, 0.8, 0.2, 1] }}
-                >
-                  <CueDisplay cue={activeCue} onWordClick={handleWordClick} allSpeakers={allSpeakers} />
-                </motion.div>
-              ) : (
-                <motion.div
-                  key="placeholder"
-                  className="flex items-center gap-2 text-text-tertiary"
-                  initial={{ opacity: 0 }}
-                  animate={{ opacity: 1 }}
-                  exit={{ opacity: 0 }}
-                  transition={{ duration: 0.18, ease: [0.2, 0.8, 0.2, 1] }}
-                >
-                  <PlayCircle size={16} className="shrink-0" />
-                  <span className="text-sm">按播放開始學習</span>
-                </motion.div>
-              )}
-            </AnimatePresence>
-          </div>
+    <div className="-mx-4 sm:-mx-6 lg:-mx-8 -my-6 lg:-my-8 bg-black min-h-[calc(100dvh-56px)] text-white flex flex-col">
+      {/* 隱形音檔綁時間軸（不上視） */}
+      <AudioPlayer audioUrl={episode.audioUrl} />
+
+      {/* Header：podcast cover + metadata */}
+      <header className="flex items-center gap-4 px-4 lg:px-8 pt-6 pb-4 shrink-0">
+        <div className="w-16 h-16 lg:w-20 lg:h-20 rounded-xl bg-gradient-to-br from-accent via-accent/70 to-accent/30 flex items-center justify-center shrink-0">
+          <Sparkles size={28} className="text-white/90" />
         </div>
-      </div>
+        <div className="min-w-0 flex-1">
+          <div className="text-[10px] uppercase tracking-widest text-white/50 mb-1">
+            Podcast
+          </div>
+          <h1 className="text-base lg:text-lg font-semibold truncate">{episode.title}</h1>
+        </div>
+      </header>
 
-      {/* 右側：Transcript Panel（desktop 固定，mobile 可折疊） */}
-      <div className="hidden lg:block w-96 border-l border-border overflow-hidden">
-        <TranscriptPanel
+      {/* 大歌詞：佔滿中間剩餘空間 */}
+      <main className="flex-1 min-h-0 relative">
+        <LyricsView
           cues={episode.cues}
-          activeCueIdx={activeCueIdx}
+          currentTime={currentTime}
           onWordClick={handleWordClick}
-          onCueClick={() => {
-            // seekTo handled by TranscriptPanel directly
-          }}
         />
-      </div>
+      </main>
 
-      {/* Mobile 逐字稿底部 Sheet */}
-      <MobileTranscriptSheet
-        isOpen={isTranscriptOpen}
+      {/* 控制列（桌面） */}
+      <footer className="hidden lg:block px-8 pb-6 pt-4 shrink-0 bg-gradient-to-t from-black via-black/95 to-transparent">
+        <PlayerControls duration={episode.cues[episode.cues.length - 1]?.end ?? 0} />
+        <div className="flex items-center justify-center gap-4 mt-3">
+          <button
+            onClick={() => setIsTranscriptOpen(true)}
+            className="flex items-center gap-1.5 text-xs text-white/60 hover:text-white transition-colors"
+          >
+            <FileText size={14} />
+            逐字稿
+          </button>
+          <button
+            onClick={() => setIsVocabDrawerOpen(true)}
+            className="flex items-center gap-1.5 text-xs text-white/60 hover:text-white transition-colors"
+          >
+            <BookMarked size={14} />
+            我的單字本
+          </button>
+        </div>
+      </footer>
+
+      {/* mobile bottom bar */}
+      <PlayerBottomBar
+        duration={episode.cues[episode.cues.length - 1]?.end ?? 0}
         cues={episode.cues}
         activeCueIdx={activeCueIdx}
-        onWordClick={handleWordClick}
-        onClose={() => setIsTranscriptOpen(false)}
+        onTranscriptOpen={() => setIsTranscriptOpen(true)}
+        onVocabOpen={() => setIsVocabDrawerOpen(true)}
       />
 
-      {/* 底部詞卡面板 */}
+      {/* 詞卡面板 */}
       <WordCardPanel
         isOpen={isWordCardOpen}
         word={selectedWord}
@@ -296,19 +246,19 @@ export function PlayerRoute() {
         }}
       />
 
+      {/* Mobile 逐字稿底部 Sheet（沿用既有元件，傳 cues 給逐句列表） */}
+      <MobileTranscriptSheet
+        isOpen={isTranscriptOpen}
+        cues={episode.cues}
+        activeCueIdx={activeCueIdx}
+        onWordClick={handleWordClick}
+        onClose={() => setIsTranscriptOpen(false)}
+      />
+
       {/* 單字本側拉面板 */}
       <VocabDrawer
         isOpen={isVocabDrawerOpen}
         onClose={() => setIsVocabDrawerOpen(false)}
-      />
-
-      {/* Mobile 統一播放控制面板（取代 BottomNav） */}
-      <PlayerBottomBar
-        duration={episode.cues[episode.cues.length - 1]?.end ?? 0}
-        cues={episode.cues}
-        activeCueIdx={activeCueIdx}
-        onTranscriptOpen={() => setIsTranscriptOpen(true)}
-        onVocabOpen={() => setIsVocabDrawerOpen(true)}
       />
     </div>
   )

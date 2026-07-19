@@ -108,7 +108,7 @@ async def test_pod_happy_path() -> None:
     )
     assert eid
     assert len(repo.deliveries) == 2  # u1, u2
-    assert len(r2.objects) == 3  # mp3 / mp4 / srt
+    assert len(r2.objects) == 2  # mp3 / srt
     assert chat._call_count == 2  # writer + judge
 
 
@@ -184,8 +184,8 @@ async def test_idempotent_second_call_skips_render() -> None:
         queue=queue,
         renderer=renderer,
     )
-    # 第一次：3 個 R2 物件
-    assert len(r2.objects) == 3
+    # 第一次：2 個 R2 物件 (mp3 + srt)
+    assert len(r2.objects) == 2
     # 第二次同 body：already_rendered=True → 跳過 render + upload
     eid2 = await run_pod(
         _body(),
@@ -197,7 +197,7 @@ async def test_idempotent_second_call_skips_render() -> None:
     )
     assert eid1 == eid2
     # 第二次沒新增 R2 物件
-    assert len(r2.objects) == 3
+    assert len(r2.objects) == 2
     # MockRepo insert_delivery 模擬 ON CONFLICT DO NOTHING → 同 (user, ep, date)
     # 第二次不會新增。所以最終只有 2 筆（u1, u2 各一）。
     assert len(repo.deliveries) == 2
@@ -225,7 +225,6 @@ async def test_r2_failure_falls_back_to_local_keys_null() -> None:
     ep = repo.get_episode(eid)
     assert ep is not None
     assert ep.audio_key is None
-    assert ep.mp4_key is None
     assert ep.srt_key is None
     # 仍交付
     assert len(repo.deliveries) == 2

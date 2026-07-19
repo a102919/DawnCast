@@ -5,7 +5,6 @@ import { formatTimestamp, formatPos } from '../../lib'
 import { api } from '../../api'
 import type { DictEntry, VocabItem } from '../../api/types'
 import type { Cue } from '../../types/episode'
-import { EPISODES } from '../../routes/episodeData'
 import { PronounceButton } from '../wordcard/PronounceButton'
 import { WordCardPanel } from '../wordcard/WordCardPanel'
 
@@ -25,7 +24,11 @@ const cardVariants = {
 
 export function VocabEntryCard({ item, onSeek, onRemove, variant = 'page' }: VocabEntryCardProps) {
   const isDrawer = variant === 'drawer'
-  const sourceEp = EPISODES.find(e => e.id === item.sourceEpisodeId)
+  // ponytail: 來源集數的 titleZh 暫不在 VocabItem 上，目前顯示 slug 短碼讓使用者知道來源是哪一集；
+  // 等 VocabItem 加 sourceEpisodeTitle 欄位後再換成中文標題。
+  const sourceLabel = item.sourceEpisodeId
+    ? `E${item.sourceEpisodeId.replace(/^episode_/, '').slice(0, 6)}`
+    : null
   const [isPanelOpen, setIsPanelOpen] = useState(false)
   const [dictEntry, setDictEntry] = useState<DictEntry | null>(null)
   const [lookupError, setLookupError] = useState<string | null>(null)
@@ -85,7 +88,7 @@ export function VocabEntryCard({ item, onSeek, onRemove, variant = 'page' }: Voc
                 <>
                   <div className="font-medium text-text-primary">{item.word}</div>
                   <div className="flex items-center gap-2 mt-0.5">
-                    <PronounceButton audioUrl={dictEntry?.audioUrl} size={12} />
+                    <PronounceButton audioUrl={dictEntry?.audioUrl} text={item.word} size={12} />
                     {item.ipa && (
                       <span className="text-xs font-mono text-text-tertiary">{item.ipa}</span>
                     )}
@@ -97,7 +100,7 @@ export function VocabEntryCard({ item, onSeek, onRemove, variant = 'page' }: Voc
               ) : (
                 <div className="flex items-baseline gap-2 flex-wrap">
                   <span className="font-semibold text-text-primary">{item.word}</span>
-                  <PronounceButton audioUrl={dictEntry?.audioUrl} size={12} />
+                  <PronounceButton audioUrl={dictEntry?.audioUrl} text={item.word} size={12} />
                   {item.ipa && (
                     <span className="text-xs font-mono text-text-tertiary">{item.ipa}</span>
                   )}
@@ -121,8 +124,8 @@ export function VocabEntryCard({ item, onSeek, onRemove, variant = 'page' }: Voc
                   className="mt-1.5 inline-flex items-center gap-1 text-xs text-text-tertiary hover:text-accent transition-colors duration-fast focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent rounded"
                 >
                   <ExternalLink size={10} />
-                  {sourceEp
-                    ? `E${sourceEp.episode} ${sourceEp.titleZh} · ${formatTimestamp(item.sourceTimestamp)}`
+                  {sourceLabel
+                    ? `${sourceLabel} · ${formatTimestamp(item.sourceTimestamp)}`
                     : formatTimestamp(item.sourceTimestamp)}
                 </button>
               )}

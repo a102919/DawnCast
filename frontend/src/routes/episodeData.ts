@@ -33,73 +33,28 @@ export function formatDateZhTW(isoDate: string): string {
   return new Intl.DateTimeFormat('zh-TW', { month: 'long', day: 'numeric' }).format(d)
 }
 
-// ─── Static data ─────────────────────────────────────────────────────────────
-
-export const EPISODES: readonly MockEpisode[] = [
-  {
-    id: 'loop_engineering',
-    title: 'Loop Engineering',
-    titleZh: '迴圈工程',
-    topic: 'tech',
-    cefrLevel: 'B1',
-    episode: 1,
-    publishedAt: '2026-06-16',
-  },
-  {
-    id: 'startup_culture',
-    title: 'Startup Culture',
-    titleZh: '新創文化',
-    topic: 'business',
-    cefrLevel: 'B1',
-    isFeatured: true,
-    episode: 2,
-    publishedAt: '2026-06-09',
-  },
-  {
-    id: 'climate_change',
-    title: 'Climate Change',
-    titleZh: '氣候變遷',
-    topic: 'science',
-    cefrLevel: 'B1',
-    isFeatured: true,
-    episode: 3,
-    publishedAt: '2026-06-02',
-  },
-  {
-    id: 'remote_work',
-    title: 'Remote Work',
-    titleZh: '遠端工作',
-    topic: 'culture',
-    cefrLevel: 'B1',
-    episode: 4,
-    publishedAt: '2026-05-26',
-  },
-  {
-    id: 'ai_revolution',
-    title: 'AI Revolution',
-    titleZh: 'AI 革命',
-    topic: 'tech',
-    cefrLevel: 'B1',
-    episode: 5,
-    publishedAt: '2026-05-19',
-  },
-  {
-    id: 'coffee_culture',
-    title: 'Coffee Culture',
-    titleZh: '咖啡文化',
-    topic: 'culture',
-    cefrLevel: 'A2',
-    episode: 6,
-    publishedAt: '2026-05-12',
-  },
-] as const
-
 export const CEFR_COLOR: Record<CefrLevel, string> = {
   A2: 'bg-cefr-a2-bg text-cefr-a2',
   B1: 'bg-cefr-b1-bg text-cefr-b1',
   B2: 'bg-cefr-b2-bg text-cefr-b2',
 } as const
 
+// ─── 測試 fixture 專用（保留 seed 假資料給 *.test.tsx 用） ─────────────────
+//
+// Runtime 不再 export EPISODES 假資料——所有畫面從 `api.listEpisodes()` 拿 DB 真資料。
+// 測試若需要固定資料再從這裡 import；production code 不該碰到這份。
+export const SEED_EPISODES_FOR_TEST: readonly MockEpisode[] = [
+  {
+    id: 'episode_test_seed_1',
+    title: 'Test Seed Episode',
+    titleZh: '測試用 seed 集數',
+    topic: 'tech',
+    cefrLevel: 'B1',
+    episode: 1,
+    publishedAt: '2026-07-01',
+  },
+] as const
+
 export function episodeTitleById(id: string): string {
-  return EPISODES.find(ep => ep.id === id)?.titleZh ?? id
+  return id
 }

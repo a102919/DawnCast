@@ -46,7 +46,6 @@ class _EpisodeRow:
     input_tokens: int = 0
     output_tokens: int = 0
     audio_key: str | None = None
-    mp4_key: str | None = None
     srt_key: str | None = None
     script_json: dict[str, Any] | None = None
     cues: list[dict[str, Any]] | None = None
@@ -130,7 +129,6 @@ class MockRepo:
         episode_id: str,
         *,
         audio_key: str | None,
-        mp4_key: str | None,
         srt_key: str | None,
         script_json: dict[str, Any],
         cues: list[Any],
@@ -141,7 +139,6 @@ class MockRepo:
         if row is None:
             raise RuntimeError(f"mock: episode {episode_id} not found")
         row.audio_key = audio_key
-        row.mp4_key = mp4_key
         row.srt_key = srt_key
         row.script_json = script_json
         row.cues = [c.model_dump() if hasattr(c, "model_dump") else c for c in cues]
@@ -221,21 +218,19 @@ class MockQueue:
 
 @dataclass
 class MockRenderer:
-    """模擬 render_episode：產空白 mp3 + mp4 placeholder + cues 從 script 計算。
+    """模擬 render_episode：產空白 mp3 placeholder + cues 從 script 計算。
 
-    用 tempfile 寫實際檔案讓 mp4_path 真實存在（pod 寫到 workdir）。
+    用 tempfile 寫實際檔案讓 mp3_path 真實存在（pod 寫到 workdir）。
     """
 
     workdir: Path
 
     def render(
         self, script_payload: dict[str, Any]
-    ) -> tuple[Path, Path, str, list[dict[str, Any]]]:
+    ) -> tuple[Path, str, list[dict[str, Any]]]:
         self.workdir.mkdir(parents=True, exist_ok=True)
         mp3 = self.workdir / "episode.mp3"
-        mp4 = self.workdir / "episode.mp4"
         mp3.write_bytes(b"\x00" * 64)  # mock：64 bytes
-        mp4.write_bytes(b"\x00" * 128)
         cues: list[dict[str, Any]] = []
         t = 0.0
         pause = 0.3
@@ -253,7 +248,7 @@ class MockRenderer:
             )
             t += line_dur + pause
         srt = self._to_srt(cues)
-        return mp3, mp4, srt, cues
+        return mp3, srt, cues
 
     @staticmethod
     def _to_srt(cues: list[dict[str, Any]]) -> str:
@@ -289,7 +284,7 @@ def make_mock_workdir() -> Path:
     return Path(tempfile.mkdtemp(prefix="pod-mock-"))
 
 
-def safe_local_fallback(mp4_src: Path, slug: str, local_media_dir: str) -> None:
+def safe_local_fallback(mp3_src: Path, slug: str, local_media_dir: str) -> None:
     """對應 production _upload_artifacts 的本地 fallback 邏輯。"""
     if not local_media_dir:
         return
@@ -298,7 +293,7 @@ def safe_local_fallback(mp4_src: Path, slug: str, local_media_dir: str) -> None:
         return
     # production 也是 warn-and-continue；用 suppress 取代 try/except/pass
     with contextlib.suppress(OSError):
-        shutil.copy2(mp4_src, target / f"{slug}.mp4")
+        shutil.copy2(mp3_src, target / f"{slug}.mp3")
 
 
 # ── local preview dump（demo 印出最終 json）───────────────

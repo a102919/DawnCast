@@ -24,7 +24,6 @@ from typing import Any
 
 import pytest
 from fastapi.testclient import TestClient
-from jose import jwt
 
 from app.routers import account as account_router
 from shared.config import get_settings
@@ -286,16 +285,14 @@ def client() -> TestClient:
     return TestClient(create_app(), raise_server_exceptions=False)
 
 
-def _token(user_id: str, *, email: str | None = None) -> str:
+def _auth(user_id: str, *, email: str | None = None) -> dict[str, str]:
+    from tests._auth import sign_test_token
+
     settings = get_settings()
     payload: dict[str, Any] = {"sub": user_id, "aud": settings.supabase_jwt_audience}
     if email is not None:
         payload["email"] = email
-    return jwt.encode(payload, settings.supabase_jwt_secret, algorithm="HS256")
-
-
-def _auth(user_id: str, *, email: str | None = None) -> dict[str, str]:
-    return {"Authorization": f"Bearer {_token(user_id, email=email)}"}
+    return {"Authorization": f"Bearer {sign_test_token(user_id, **payload)}"}
 
 
 # ── (e) 授權 ──────────────────────────────────────────────────────

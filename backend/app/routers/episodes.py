@@ -75,7 +75,7 @@ async def _fetch_authorized(cur: Any, slug: str, user_id: str) -> dict[str, Any]
     await cur.execute(
         """
         select e.id, e.slug, e.title, e.title_zh, e.topic, e.cefr_level,
-               e.is_free, e.script_json, e.mp4_r2_key, e.audio_r2_key,
+               e.is_free, e.script_json, e.audio_r2_key,
                exists (
                  select 1 from public.deliveries d
                  where d.episode_id = e.id and d.user_id = %s
@@ -112,19 +112,20 @@ async def get_episode(slug: str, user_id: str = Depends(get_current_user)) -> Ap
 async def get_episode_url(slug: str, user_id: str = Depends(get_current_user)) -> ApiResponse[str]:
     """產 R2 簽章 URL。先驗授權（免費或有 delivery），通過才 presign。
 
-    本機 fallback：當 R2 key 為 NULL 且 LOCAL_MEDIA_DIR 設定時，
-    回傳指向 /media/{slug}.{mp4|mp3} 的絕對 URL（讓 <video src> 直接吃）。
+    本機 fallback：當 R2 key 為 NULL 且 LOCAL_MEDIA_DIR 設定時，回 /media/{slug}.mp3
+    （router 只關 mp3，不再產 mp4）。
     """
     async with connection() as conn, conn.cursor(row_factory=dict_row) as cur:
         row = await _fetch_authorized(cur, slug, user_id)
-    key = row["mp4_r2_key"] or row["audio_r2_key"]
+    key = row["audio_r2_key"]
     if not key:
         settings = get_settings()
         media_dir = settings.local_media_dir
         if media_dir:
-            base = settings.public_base_url.rstrip("/")
-            for ext in ("mp4", "mp3"):
-                if (Path(media_dir) / f"{slug}.{ext}").is_file():
-                    return ok(f"{base}/media/{slug}.{ext}")
+            mp3_local = Path(media_dir) / f"{slug}.mp3"
+            if mp3_local.is_file():
+                # ponytail: 回相對路徑讓 vite proxy / 同源 origin 處理，
+                # 不寫死 host（devtunnel 是 HTTPS，localhost:8000 會被瀏覽器擋）。
+                return ok(f"/media/{slug}.mp3")
         raise NotFoundError("此集數尚無媒體檔")
     return ok(r2.presigned_get_url(key))

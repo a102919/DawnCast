@@ -138,4 +138,3 @@ async def test_時間軸對照ground_truth(tmp_path: Path) -> None:
         assert abs(be - ne) <= _TOLERANCE, f"cue {i} end 差 {abs(be - ne):.3f}s"
 
     assert artifacts.mp3_path.exists() and artifacts.mp3_path.stat().st_size > 0
-    assert artifacts.mp4_path.exists() and artifacts.mp4_path.stat().st_size > 0

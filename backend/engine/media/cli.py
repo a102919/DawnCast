@@ -3,7 +3,7 @@
 用法：
     python -m engine.media.cli ../scripts/loop_engineering.json [out_dir]
 
-把成品（episode.mp3/mp4、subtitles.srt/vtt/json）寫到 out_dir，
+把成品（episode.mp3、subtitles.srt/vtt/json）寫到 out_dir，
 out_dir 預設為 /tmp/dc_media_<slug>。直接渲染到指定目錄，不經 TemporaryDirectory。
 """
 
@@ -44,7 +44,6 @@ async def _run(script_path: Path, out_dir: Path) -> None:
     total = artifacts.cues[-1].end if artifacts.cues else 0.0
     print(f"✓ Done. {len(artifacts.cues)} cues, ~{total:.1f}s")
     print(f"  mp3: {artifacts.mp3_path}")
-    print(f"  mp4: {artifacts.mp4_path}")
 
 
 def main() -> None:

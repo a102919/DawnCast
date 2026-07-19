@@ -22,13 +22,13 @@ import logging
 from typing import Any
 
 from fastapi import APIRouter, Depends, Header
-from jose import JWTError, jwt  # type: ignore[import-untyped]  # python-jose 無 stubs
 from psycopg.rows import dict_row
 
-from app.deps import get_current_user
+from app.deps import _decode_payload, get_current_user
 from app.response import ApiResponse, ok
 from shared.config import get_settings
 from shared.db.pool import connection
+from shared.errors import AuthError
 from shared.models import AccountInfo
 
 logger = logging.getLogger(__name__)
@@ -68,13 +68,8 @@ async def _jwt_email(authorization: str | None = Header(default=None)) -> str:
     if not token:
         return ""
     try:
-        payload = jwt.decode(
-            token,
-            settings.supabase_jwt_secret,
-            algorithms=["HS256"],
-            audience=settings.supabase_jwt_audience,
-        )
-    except JWTError:
+        payload = _decode_payload(token)
+    except AuthError:
         return ""
     email = payload.get("email")
     return str(email) if email else ""

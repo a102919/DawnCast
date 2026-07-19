@@ -199,7 +199,6 @@ async def update_episode_keys(
     episode_id: str,
     *,
     audio_key: str | None,
-    mp4_key: str | None,
     srt_key: str | None,
     script_json: dict[str, Any],
     cues: list[Cue],
@@ -214,7 +213,6 @@ async def update_episode_keys(
             """
             update public.episodes
             set audio_r2_key = %s,
-                mp4_r2_key = %s,
                 srt_r2_key = %s,
                 script_json = %s::jsonb,
                 extracted_facts = %s::jsonb,
@@ -223,7 +221,6 @@ async def update_episode_keys(
             """,
             (
                 audio_key,
-                mp4_key,
                 srt_key,
                 json.dumps(payload, ensure_ascii=False),
                 json.dumps(extracted_facts, ensure_ascii=False)

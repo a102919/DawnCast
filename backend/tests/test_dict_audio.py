@@ -20,11 +20,9 @@ from typing import Any
 
 import pytest
 from fastapi.testclient import TestClient
-from jose import jwt
 
 from app.routers import dict as dict_router
 from engine.media import dict_audio
-from shared.config import get_settings
 from shared.db import pool as db_pool
 
 USER_ID = "11111111-1111-1111-1111-111111111111"
@@ -152,13 +150,9 @@ def client() -> TestClient:
 
 
 def _auth(user_id: str) -> dict[str, str]:
-    settings = get_settings()
-    token = jwt.encode(
-        {"sub": user_id, "aud": settings.supabase_jwt_audience},
-        settings.supabase_jwt_secret,
-        algorithm="HS256",
-    )
-    return {"Authorization": f"Bearer {token}"}
+    from tests._auth import auth_header
+
+    return auth_header(user_id)
 
 
 def _async_fn(sync_fn: Any) -> Any:

@@ -16,6 +16,9 @@ dist-ssr
 .env
 .env.*
 !.env.example
+# 例外：prod 公開設定可提交（Supabase URL / anon key 是 browser-public，
+# 不是 secret）。首次部署後若 API host 不是 dawncast-api.fly.dev，記得改。
+!.env.production
 
 # Editor directories and files
 .vscode/*

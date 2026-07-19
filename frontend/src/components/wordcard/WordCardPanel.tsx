@@ -109,7 +109,7 @@ export function WordCardPanel({ isOpen, word, entry, lookupError, onRetry, activ
                   </h3>
                   {entry && (
                     <div className="flex items-center gap-2 mt-0.5">
-                      <PronounceButton audioUrl={entry.audioUrl} />
+                      <PronounceButton audioUrl={entry.audioUrl} text={word} />
                       {entry.ipa && (
                         <span className="text-xs text-text-tertiary font-mono">{entry.ipa}</span>
                       )}
@@ -187,8 +187,9 @@ export function WordCardPanel({ isOpen, word, entry, lookupError, onRetry, activ
                   {(entry.exampleEn || entry.exampleZh) && (
                     <div className="border-l-2 border-border pl-3 py-1 space-y-1">
                       {entry.exampleEn && (
-                        <p className="text-sm leading-relaxed text-text-primary">
-                          {entry.exampleEn}
+                        <p className="text-sm leading-relaxed text-text-primary flex items-start gap-1.5">
+                          <span>{entry.exampleEn}</span>
+                          <PronounceButton audioUrl={null} text={entry.exampleEn} size={12} label="播放例句發音" />
                         </p>
                       )}
                       {entry.exampleZh && (

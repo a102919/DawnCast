@@ -18,10 +18,8 @@ from typing import Any
 
 import pytest
 from fastapi.testclient import TestClient
-from jose import jwt
 
 from app.routers import favorites as favorites_router
-from shared.config import get_settings
 
 USER_A = "11111111-1111-1111-1111-111111111111"
 USER_B = "22222222-2222-2222-2222-222222222222"
@@ -158,12 +156,9 @@ def client() -> TestClient:
 
 
 def _token(user_id: str) -> str:
-    cfg = get_settings()
-    return jwt.encode(
-        {"sub": user_id, "aud": cfg.supabase_jwt_audience},
-        cfg.supabase_jwt_secret,
-        algorithm="HS256",
-    )
+    from tests._auth import sign_test_token
+
+    return sign_test_token(user_id)
 
 
 def _auth(user_id: str) -> dict[str, str]:

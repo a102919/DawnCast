@@ -21,13 +21,11 @@ from typing import Any
 
 import pytest
 from fastapi.testclient import TestClient
-from jose import jwt
 
 from app.routers import activity as activity_router
 from app.routers import daily_orders as daily_orders_router
 from app.routers import episodes as episodes_router
 from app.routers import vocab as vocab_router
-from shared.config import get_settings
 from shared.db import repo as db_repo
 
 # ── 測試資料：兩個 user，各自的 vocab；三集（免費 / A 有授權 / 都無授權）──
@@ -78,9 +76,9 @@ VOCAB_BY_USER: dict[str, list[dict[str, Any]]] = {
 
 # slug → (is_free, A 是否有 delivery, B 是否有 delivery, 有無媒體 key)
 EPISODES: dict[str, dict[str, Any]] = {
-    "ep-free": {"is_free": True, "deliveries": set(), "key": "media/ep-free.mp4"},
-    "ep-a-only": {"is_free": False, "deliveries": {USER_A}, "key": "media/ep-a.mp4"},
-    "ep-locked": {"is_free": False, "deliveries": set(), "key": "media/ep-locked.mp4"},
+    "ep-free": {"is_free": True, "deliveries": set(), "key": "media/ep-free.mp3"},
+    "ep-a-only": {"is_free": False, "deliveries": {USER_A}, "key": "media/ep-a.mp3"},
+    "ep-locked": {"is_free": False, "deliveries": set(), "key": "media/ep-locked.mp3"},
 }
 
 # (user_id, deliver_date) → 對應交付集數的 slug list。模擬 user 在指定日期的交付事實。
@@ -130,8 +128,7 @@ class FakeCursor:
                     "cefr_level": "B1",
                     "is_free": ep["is_free"],
                     "script_json": None,
-                    "mp4_r2_key": ep["key"],
-                    "audio_r2_key": None,
+                    "audio_r2_key": ep["key"],
                     "has_delivery": user_id in ep["deliveries"],
                 }
             ]
@@ -155,8 +152,7 @@ class FakeCursor:
                         "cefr_level": "B1",
                         "is_free": ep["is_free"],
                         "script_json": None,
-                        "mp4_r2_key": ep["key"],
-                        "audio_r2_key": None,
+                        "audio_r2_key": ep["key"],
                     }
                 )
             return
@@ -237,12 +233,9 @@ def client() -> TestClient:
 
 
 def _token(user_id: str) -> str:
-    settings = get_settings()
-    return jwt.encode(
-        {"sub": user_id, "aud": settings.supabase_jwt_audience},
-        settings.supabase_jwt_secret,
-        algorithm="HS256",
-    )
+    from tests._auth import sign_test_token
+
+    return sign_test_token(user_id)
 
 
 def _auth(user_id: str) -> dict[str, str]:
