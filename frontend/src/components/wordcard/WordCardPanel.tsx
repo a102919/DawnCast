@@ -55,7 +55,7 @@ export function WordCardPanel({ isOpen, word, entry, lookupError, onRetry, activ
     try {
       await addVocab({
         word,
-        lemma: word,
+        lemma: entry.word,
         pos: entry.pos[0],
         translation: entry.translation,
         ipa: entry.ipa,

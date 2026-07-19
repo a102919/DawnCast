@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import json
 import logging
-from typing import Any, cast
+from typing import Any
 
 from fastapi import APIRouter, Depends, Query
 from psycopg.rows import dict_row
@@ -21,6 +21,7 @@ from app.response import ApiResponse, ok
 from engine.llm.translate import translate_word
 from engine.media.dict_audio import synthesize_word_audio
 from shared.db.pool import connection
+from shared.lemmatize import lemmatize
 from shared.models import DictEntry
 
 logger = logging.getLogger(__name__)
@@ -69,25 +70,36 @@ async def lookup_dict(
     if not word:
         return ok(None)
 
-    # ── 主路徑 ────────────────────────────────────────────
+    # Lemma 候選：衍生先、原 word 最後。例：「trees」→ ["tre", "tree", "trees"]。
+    # SQL 用 ORDER BY array_position DESC 取最像 lemma 的命中。
+    candidates = lemmatize(word)
+
+    # ── 主路徑：以 lemma 候選清單查 cache，命中優先取最像 lemma 者 ──
+    # （解決「點複數、查完整釋義」：lemma 條目存在時壓過原 word 命中）
     async with connection() as conn, conn.cursor(row_factory=dict_row) as cur:
         await cur.execute(
             """select word, ipa, pos, translation, exchange, audio_url, example_en, example_zh
-               from public.dict_cache where word = %s""",
-            (word,),
+               from public.dict_cache
+               where word = any(%s::text[])
+               order by array_position(%s::text[], word) desc nulls last
+               limit 1""",
+            (candidates, candidates),
         )
         row = await cur.fetchone()
     if row is not None:
-        return ok(await _ensure_audio_url(word, _row_to_entry(row)))
+        # row["word"] 是 cache 實際存的 lemma key，用它跑 TTS / 對齊前端 entry.word。
+        return ok(await _ensure_audio_url(row["word"], _row_to_entry(row)))
 
-    # ── LLM fallback（MiniMax，與 podcast 生成同帳號）────
+    # ── LLM fallback（MiniMax，與 podcast 生成同帳號；給原始 word 帶 context）──
     payload = await translate_word(word)
     if payload is None or "translation" not in payload:
         return ok(None)
 
+    # 寫回 dict_cache 用原 word（已存在的髒 key 不會被覆蓋，行為相容於改動前）。
+    # 新查詢的 garbage-key 風險由候選 SQL 順序吸收：下次第 i 個變化形命中時，仍會優先回 lemma 條目。
     # 寫回 dict_cache（缺項補，不覆蓋已有）
     try:
-        async with connection() as conn, conn.cursor() as cur:
+        async with connection() as conn, conn.cursor(row_factory=dict_row) as cur:
             await cur.execute(
                 """
                 insert into public.dict_cache (word, ipa, pos, translation, example_en, example_zh)
@@ -124,7 +136,7 @@ async def lookup_dict(
         return ok(await _ensure_audio_url(word, fallback))
 
     if row2 is not None:
-        return ok(await _ensure_audio_url(word, _row_to_entry(cast("dict[str, Any]", row2))))
+        return ok(await _ensure_audio_url(row2["word"], _row_to_entry(row2)))
     return ok(
         DictEntry(
             word=word,
