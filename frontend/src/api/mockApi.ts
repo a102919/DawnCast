@@ -1,6 +1,29 @@
+import { z } from 'zod'
 import type { AccountInfo, Activity, ActivityPatch, Api, DailyOrder, DictEntry, Settings, VocabItem } from './types'
 import type { Episode } from '../types/episode'
+import { CueSchema } from './httpApi'
 import { SEED_EPISODES_FOR_TEST } from '../routes/episodeData'
+
+// mock fixture（public/data/episode.json）是手寫的單一示範檔，只需要滿足前端 domain
+// Episode 型別（id/title/audioUrl/cues）；後端真實 wire schema（httpApi.ts 的
+// EpisodeContentSchema）多出的 topic/cefrLevel/isFree 是驗「後端有沒有送」用的，
+// 跟這份 demo fixture 是兩件事，故用獨立、範圍對齊 domain 型別的 schema，
+// 不共用同一份會逼 fixture 硬塞不相關欄位。
+// fixture 欄位漂移（見 lessons.md 2026-07-19 videoUrl→audioUrl 教訓）在這裡一樣會直接炸，
+// 不會靜默播出無聲音檔。
+const MockEpisodeContentSchema = z.object({
+  id: z.string(),
+  title: z.string(),
+  audioUrl: z.string(),
+  cues: z.array(CueSchema),
+}) satisfies z.ZodType<Episode>
+
+async function fetchMockEpisode(): Promise<Episode> {
+  const res = await fetch('/data/episode.json')
+  if (!res.ok) throw new Error(`HTTP ${res.status}`)
+  const data: unknown = await res.json()
+  return MockEpisodeContentSchema.parse(data)
+}
 
 const VOCAB_KEY = 'dawncast:vocab'
 const SETTINGS_KEY = 'dawncast:settings'
@@ -328,19 +351,13 @@ export const mockApi: Api = {
   // mock 模式只有單一示範節目檔，無論 slug 一律回 /data/episode.json，
   // 與 Phase 4a 前的既有行為（HomeRoute/PlayerRoute 直接 fetch 此檔）完全一致。
   async getEpisode(_slug) {
-    const res = await fetch('/data/episode.json')
-    if (!res.ok) throw new Error(`HTTP ${res.status}`)
-    const data: unknown = await res.json()
-    return data as Episode
+    return fetchMockEpisode()
   },
 
   // mock 模式無 daily-orders 對應邏輯；直接回示範集（讓 PlayerRoute ?date= 連結在
   // mock 下也可走通）。null 路徑靠 mock 自行決定，這裡採非 null 簡化。
   async getDeliveredEpisode(_date) {
-    const res = await fetch('/data/episode.json')
-    if (!res.ok) throw new Error(`HTTP ${res.status}`)
-    const data: unknown = await res.json()
-    return data as Episode
+    return fetchMockEpisode()
   },
 
   // T1：mock 模式沒有真 worker，setOrder 仍會呼叫此處但純 noop

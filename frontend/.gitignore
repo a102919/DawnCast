@@ -20,6 +20,11 @@ dist-ssr
 # 不是 secret）。首次部署後若 API host 不是 dawncast-api.fly.dev，記得改。
 !.env.production
 
+# 後端 OpenAPI 匯出（由 backend/scripts/export_openapi.py 產生，build input，
+# 不是事實來源本身——事實來源是 backend/shared/models.py）。
+# 產生的 src/api/generated.ts 要 commit，這份原始 JSON 不用。
+openapi.json
+
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json

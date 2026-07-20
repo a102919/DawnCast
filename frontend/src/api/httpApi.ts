@@ -9,9 +9,15 @@ import type {
   Settings,
   VocabItem,
 } from './types'
-import type { Episode } from '../types/episode'
+import type { components } from './generated'
+import type { Cue, Episode } from '../types/episode'
 import type { MockEpisode } from '../routes/episodeData'
 import { getAccessToken } from '../lib/supabaseClient'
+
+// components['schemas'][X] 是後端 backend/shared/models.py 的唯一事實來源
+// （由 `uv run poe export-openapi && npm run gen:api-types` 產生，見 generated.ts）。
+// 下面每個 zod schema 的 `satisfies` 同時釘住「前端手寫型別」與「後端實際契約」兩邊——
+// 後端改欄位名/型別但前端忘記跟著改時，這裡會直接編譯錯誤，不用等到 runtime 才發現撈不到資料。
 
 // ─── 錯誤型別 ──────────────────────────────────────────────────────────────
 
@@ -121,7 +127,7 @@ const DictEntrySchema = z.object({
   audioUrl: z.string().nullable().optional(),
   exampleEn: z.string().nullable().optional(),
   exampleZh: z.string().nullable().optional(),
-}) satisfies z.ZodType<DictEntry>
+}) satisfies z.ZodType<DictEntry> & z.ZodType<components['schemas']['DictEntry']>
 
 const VocabItemSchema = z.object({
   id: z.string(),
@@ -142,7 +148,7 @@ const VocabItemSchema = z.object({
   ease: z.number().nullable().optional(),
   exampleEn: z.string().nullable().optional(),
   exampleZh: z.string().nullable().optional(),
-}) satisfies z.ZodType<VocabItem>
+}) satisfies z.ZodType<VocabItem> & z.ZodType<components['schemas']['VocabItem']>
 
 const VocabListSchema = z.array(VocabItemSchema)
 
@@ -154,7 +160,7 @@ const SettingsSchema = z.object({
   theme: z.enum(['light', 'dark', 'auto']),
   preferredTopics: z.array(z.string()),
   defaultDeliveryTime: z.string(),
-}) satisfies z.ZodType<Settings>
+}) satisfies z.ZodType<Settings> & z.ZodType<components['schemas']['Settings']>
 
 const DailyOrderStatusSchema = z.enum(['pending', 'queued', 'played']) satisfies z.ZodType<DailyOrderStatus>
 
@@ -167,33 +173,41 @@ const DailyOrderSchema = z.object({
   createdAt: z.string(),
   updatedAt: z.string(),
   playedAt: z.string().optional(),
-  // Phase 4：向後相容舊 client / 舊 localStorage，兩個新欄位皆 optional。
-  entryMode: z.enum(['news', 'topic', 'knowledge', 'skill']).optional(),
-  lengthTier: z.enum(['short', 'medium', 'long']).optional(),
-}) satisfies z.ZodType<DailyOrder>
+  // 後端 DailyOrder model 兩欄皆有 DB default（見 lessons.md 2026-07-15），
+  // 這裡驗的是即時 HTTP 回應（見下方呼叫端），不是 localStorage 舊單快取，
+  // 故不用再放寬——真的缺欄位應該讓 zod 直接炸，而不是默默補 undefined。
+  entryMode: z.enum(['news', 'topic', 'knowledge', 'skill']),
+  lengthTier: z.enum(['short', 'medium', 'long']),
+}) satisfies z.ZodType<DailyOrder> & z.ZodType<components['schemas']['DailyOrder']>
 
 const DailyOrderListSchema = z.array(DailyOrderSchema)
 
 const FavoritesSchema = z.array(z.string())
 
-const CueSchema = z.object({
+export const CueSchema = z.object({
   index: z.number(),
   speaker: z.string(),
   text: z.string(),
   zh: z.string(),
   start: z.number(),
   end: z.number(),
-})
+}) satisfies z.ZodType<Cue> & z.ZodType<components['schemas']['Cue']>
 
 // audioUrl 由 /episodes/{slug}/url 補上，list 內容沒有 cues。
 // server get_episode Episode model 沒設 audioUrl 欄位會回 null（不是 undefined），
 // 故 .nullable() 否則 zod 在 null 時拋 schema_mismatch。
+// titleZh/topic/cefrLevel/isFree 後端本來就會送（見 shared/models.py Episode），
+// 前端目前用不到但要收進來，不然 satisfies 抓不到後端這幾欄之後改型別/改名。
 const EpisodeContentSchema = z.object({
   id: z.string(),
   title: z.string(),
+  titleZh: z.string().nullable().optional(),
+  topic: z.string(),
+  cefrLevel: z.string(),
+  isFree: z.boolean(),
   audioUrl: z.string().nullable().optional(),
   cues: z.array(CueSchema),
-})
+}) satisfies z.ZodType<components['schemas']['Episode']>
 
 // server /episodes/{slug}/url 的 data 是字串網址本身（不是 {url: ...} 物件）。
 const SignedUrlSchema = z.string()
@@ -204,10 +218,13 @@ const MockEpisodeSchema = z.object({
   titleZh: z.string(),
   topic: z.enum(['tech', 'business', 'culture', 'science']),
   cefrLevel: z.enum(['A2', 'B1', 'B2']),
-  isFeatured: z.boolean().optional(),
+  // isFree：後端 EpisodeListItem 本來就會送，前端 MockEpisode 目前沒有消費它
+  // （不是本次範圍要加的 UI 功能），但既然後端送了就該收進來驗證，不能悄悄丟掉。
+  isFree: z.boolean(),
+  isFeatured: z.boolean(),
   episode: z.number(),
   publishedAt: z.string(),
-}) satisfies z.ZodType<MockEpisode>
+}) satisfies z.ZodType<MockEpisode> & z.ZodType<components['schemas']['EpisodeListItem']>
 
 const EpisodeListSchema = z.array(MockEpisodeSchema)
 
@@ -219,7 +236,7 @@ const ActivitySchema = z.object({
   lastPlayedEpisodeId: z.string().nullable().optional(),
   lastPlayedPosition: z.number().nullable().optional(),
   lastPlayedAt: z.string().nullable().optional(),
-}) satisfies z.ZodType<Activity>
+}) satisfies z.ZodType<Activity> & z.ZodType<components['schemas']['Activity']>
 
 // T4 帳號自我管理：後端 CamelModel 保證 camelCase；email 為空字串時仍合法（JWT 無 email claim）。
 const AccountInfoSchema = z.object({
@@ -228,7 +245,7 @@ const AccountInfoSchema = z.object({
   tz: z.string(),
   deliveryTime: z.string(),
   createdAt: z.string(),
-}) satisfies z.ZodType<AccountInfo>
+}) satisfies z.ZodType<AccountInfo> & z.ZodType<components['schemas']['AccountInfo']>
 
 // ─── 實作 ─────────────────────────────────────────────────────────────────
 

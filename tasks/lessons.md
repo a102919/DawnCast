@@ -105,3 +105,60 @@
 - 模組型章節一律分至少三小節：**為何選這套（vs 業界各家）→ 互動設計（產品決策）→ 資料流與資料模型（實作）**。
 - 授權矩陣放第一節、UX 表放第二節、schema/介面放第三節，讓反對點落在哪一節一目了然。
 - 「業界共通模式」當理由時要標一句來源（Voscreen / LingQ / Language Reactor），別偽裝成你自己做的研究——peer session 的素材是二手資料，不寫進自己的決策依據。
+
+## 2026-07-19 — 改 wire schema（欄位改名 / 型別）時，mock fixture 與 public/ 靜態檔也要同步
+
+**情境**：commit `16d5699 feat: 改用 audio-only 播放並前端做字幕同步高亮` 把 frontend 的 `Episode.videoUrl` 改成 `Episode.audioUrl`、`<video>` 換成 `<audio>`。但 `frontend/public/data/episode.json` 這個 mock fixture 沒跟著改，繼續用 `videoUrl` 指向 `http://localhost:8000/media/quantum-computing-basics.mp4`。結果預設 mock mode 下 `episode.audioUrl === undefined`，`<audio src={undefined}>` 沒拉任何東西，使用者回報「播放完全沒有英文的聲音，只有雜音」。
+
+**規則**：
+- **改 schema 欄位名時，列出所有「會產出這個欄位」的來源**：TS type / http schema (zod) / mock API 回傳 / mock fixture (`public/data/*.json`) / DB seed。任何一個漏改，下游就是 `undefined` 開獎。
+- **跑 `grep -rn '"舊欄位名"'` 在 commit 前先掃一遍**（不限 .ts/.tsx，JSON / .md / fixture 都要），找出所有字面值出現的地方再決定哪些要 rename、哪些是歷史文件可以保留。
+- **mock fixture 是隱形契約**：mock 模式的意義是「在沒有 backend 的情況下 UI 也能跑」，因此它的 JSON 結構必須 100% 對齊「http 模式會收到的 response shape」——任一欄位缺，mock 就會假裝成功但 runtime 拿到 undefined，比 500 更難抓。
+- **靜態資產放在 `public/` 下不會被 typecheck 掃到**：Vite TS 設定只 compile `src/`，`public/data/*.json` 連編輯器都不看。改 schema 時一定要手動 grep + 手動改，別以為「typecheck 過就代表全 codebase 一致」。
+
+
+## 2026-07-20 — Podcast 5 集 enqueue 撞的 3 個 bug 全都是 production 等級
+
+**情境**：user 派「建立 5 部 podcast」任務，直接走 pgmq enqueue + worker 收菜。預期 5-10 分鐘完成，實際花了 1 小時，因為連環碰到 3 個 production bug：
+
+1. **`cluster_id` 是 uuid 型別，enqueue 卻塞字串**：`backend/shared/db/repo.py:146` 的 `upsert_episode` 用 `on conflict (idempotency_key) do nothing`，但 `source_cluster_id` 是 uuid 欄位；塞 `cluster_renaissance_001` → `InvalidTextRepresentation: invalid input syntax for type uuid`。**規則**：enqueue script 寫 body 時，所有欄位都要先看 DB schema 對齊型別；`source_cluster_id` / `deliver_date` / `big_topic` 三個欄位最常撞。
+2. **M2.7 是 reasoning model，舊 `max_tokens=4096` 把預算吃完 response 沒 text 區塊**：`engine/pipeline/langgraph_pod/chat.py` 的 `MiniMaxChatModel` 沒顯式帶 `thinking` 欄位，LLM 把 4096 拿去 reasoning 就不吐 text → `EngineError: 寫稿回應 content 無 text 區塊`。**規則**：reasoning model payload 一律顯式 `thinking={"type": "enabled", "budget_tokens": N}` 把 reasoning 鎖在固定值，並把 `max_tokens` 拉到 `reasoning + 預期 text * 2`（給 text 留 buffer）；當前值 `16384` + `4096`。
+3. **FK violation 死循環**：自己之前加的 DELETE-on-failure 補償（`update_episode_keys_node` 在 R2 + local fallback 都失敗時刪 row + raise）會把 episode row 砍了，但 LangGraph state 還記得 `episode_id`，下一個 `insert_deliveries_node` 跑 `INSERT INTO deliveries` 就 `deliveries_episode_id_fkey` violation → worker 走 retry → 又卡同一個 FK → 死循環。**修法**：`engine/pipeline/langgraph_pod/nodes.py:916` 包 `try/except ForeignKeyViolation`，當作「這集本輪失敗、不交付」log warning 後略過，不讓 graph 終止。
+
+**規則**：
+- **新增 DELETE-on-failure 補償時，要檢查下游所有使用 row id 的節點**：它們必須 catch「parent row 已不存在」這個邊界條件，否則 graph 會 fail-fast 把整條 retry 鎖死。`psycopg.errors.ForeignKeyViolation` 必須顯式 import（不要再依賴 SQLAlchemy ORM 自動轉譯）。
+- **reasoning model（claude / gpt-5 / m2.7 / o 系列）的 max_tokens 不等於「text 預算」**：它會在 `output_tokens` 內部分配 `thinking + text`。預期 text 8000 → max_tokens 至少 12288、reasoning budget 4096；預期 text 10000 → max_tokens 至少 16384。
+- **podcast script prompt 太長會被切斷**：medium tier (6-8 分鐘 / 8 chapters + facts + vocab) 的完整 JSON 對話要 ~10000+ text tokens。**預設用 short tier** 跑通整條 pipeline；長篇是 V2 quality pass 的範疇，不該跟「能跑出來」混在一起。
+- **enqueue script 跟 worker body schema 必須有一個 fixture 對齊**：寫一次性 enqueue script 時，所有必填欄位要對齊 `engine/pipeline/generate_job.py:run_generate_job` 的 docstring（`big_topic, angle?, cluster_id?, deliver_date, user_ids[]`）。cluster_id 是 uuid——產生器用 `str(uuid.uuid4())`，不要自己編字串。
+- **production chat 改完先對 LangGraph pod 跑 smoke test 1 集**：直接灌完整 dialogue 端到端，驗 LLM 回應 text 區塊、JSON parse OK、render 出 mp3、FK 不炸。token 預算 + 解析 + 媒體落地三件事一起驗，不要各拆開測（測試 mock 層騙你的）。
+
+## 2026-07-20 — 前後端 URL prefix 的「兩層轉換」沒看清楚，別亂加 prefix 對齊 prod spec
+
+**情境**：前端 `httpApi.ts` 用 `${API_BASE_URL}${path}` 組 URL，dev 時 `API_BASE_URL=/api`，瀏覽器打 `/api/episodes`。
+- vite dev proxy 收到後，config 寫 `rewrite: (path) => path.replace(/^\/api/, '')`，把 `/api/episodes` 改成 `/episodes` 才送後端（localhost:8000）。
+- 後端 router prefix 是 `/episodes`（沒 `/api`），兩邊搭起來 → 200。
+
+prod 部署時 `API_BASE_URL=https://dawncast-api.fly.dev`，fly.io reverse proxy 負責剝外層 `/api`，後端還是看 `/episodes`。
+
+debug 時看到首頁全 0 集 0 個 0 張，看到 vite proxy 把 `/api` strip 掉送 `/episodes` 給後端 → 直覺反應是「後端少加 `/api` prefix」。**加完反而全炸**——vite proxy 是把 `/api` 剝掉的，後端收到的是裸 `/episodes`，加 `/api` prefix 後變 `/api/episodes` 但 request 是 `/episodes` → 全部 404。
+
+curl 直接打 8000 帶 `/api/episodes` 是 200（用 prefix 加完的版本），但瀏覽器透過 vite proxy 打 5173 拿到 404 → 矛盾信號花了一個小時繞。
+
+**規則**：
+- **改 dev 環境的 URL 結構前，先看 proxy/rewrite 是否已經在轉換**：`grep -A10 "proxy" frontend/vite.config.ts` 看 rewrite 規則。proxy 跟後端 prefix 是**兩條獨立路徑**，哪條該剝 `/api` 就只讓那一條負責，不要兩邊都加。
+- **debug 時別只看「直接 curl 後端」**：要驗的是「瀏覽器→vite→後端」的整條鏈。直接 curl 8000 跟瀏覽器實際請求差在 path（被 rewrite 過），看到 200 vs 404 的矛盾就要去看 proxy config，而不是改後端 prefix。
+- **看後端 access log 不要只信瀏覽器 console**：`tail /private/tmp/dc_backend.log` 看 uvicorn 收到的真實 path（`GET /episodes` vs `GET /api/episodes`），比對 proxy rewrite 設定就知道 mismatch 在哪。
+- **「對齊 prod spec」不是無腦理由**：spec 寫 `/api/...` 是給 prod reverse proxy 看的；dev 通常有 vite proxy 處理掉外層。改前先 trace 一輪鏈路確認誰負責剝 prefix。
+
+## 2026-07-20 — 「撈不到資料」反覆發生的根因：API 契約沒有唯一事實來源
+
+**情境**：上面好幾條 lessons（URL prefix、mock fixture videoUrl→audioUrl、TS barrel 漏 export、idempotency key 漏軸）表面上是不同 bug，深度盤查後發現同一個結構性根因：後端 13 個透過 router 曝露的 Pydantic model，形狀被人工手抄到前端最多 4 個地方（`api/types.ts` 手寫 TS type、`httpApi.ts` 手寫 zod schema、`mockApi.ts` 內嵌字面量、`public/data/*.json` mock fixture），彼此間零自動化比對；FastAPI 免費產生的 `/openapi.json` 完全沒被使用。
+
+**修法**：backend/shared/models.py 立成唯一事實來源 → `backend/scripts/export_openapi.py`（`uv run poe export-openapi`）匯出 OpenAPI schema → 前端 `openapi-typescript`（`npm run gen:api-types`）產生 `frontend/src/api/generated.ts` → `httpApi.ts` 每個 zod schema 補 `satisfies z.ZodType<TS型別> & z.ZodType<components['schemas']['X']>`，後端改欄位但前端沒跟上時直接編譯錯誤。`backend/tests/test_openapi_contract.py` 用 schema hash snapshot 防止「改了 models.py 卻忘記重新產生」。
+
+**修的過程中自己又撞了一次同類 bug**：mockApi.ts 的 `getEpisode` 原本 `data as Episode` 盲轉型，改成用 zod 驗證是對的方向，但**直接重用 httpApi.ts 驗真實後端回應的 `EpisodeContentSchema`**——這份 schema 因為要對齊後端 `Episode` model 而要求 `topic`/`cefrLevel`/`isFree`，但 `public/data/episode.json` 是手寫的極簡示範 fixture，從來沒有這些欄位，也不需要（domain `Episode` 型別根本沒有這幾個欄位）。結果 mock 模式 PlayerRoute 直接開天窗「節目資料載入失敗」。
+
+**規則**：
+- **「後端 wire schema」跟「mock fixture schema」是兩個不同的驗證目標，不要共用同一份 zod schema**：前者要跟後端 model 的每個欄位對齊（含前端用不到但後端會送的欄位）；後者只要滿足前端 domain 型別實際會用到的欄位。硬共用會逼 mock fixture 塞不相關欄位，或（更危險）逼 mock fixture 驗證失敗。
+- **改完 schema 一定要各模式各跑一次**：`VITE_USE_MOCK=true npm run dev` 跟 `VITE_USE_MOCK=false npm run dev`（接真後端）都要手動點開 PlayerRoute，兩條路徑分開驗證，不能只驗其中一條就當作全部過了。
+- **OpenAPI `required` 只代表「input 驗證要不要求」，不等於「response 保證有值」**：Pydantic 欄位有 `default`（非 `default_factory`）時，openapi-typescript 會標成非 optional（`defaultNonNullable` 行為），但 `default_factory`（list/dict 等 mutable default）欄位仍標 optional。直接把 `components['schemas']['X']` 拿來取代手寫 app 型別，會讓這類欄位對下游消費者變成噪音式 optional——這種情況改用 `satisfies` 釘住 zod schema 就好，不要動 app 層手寫型別。

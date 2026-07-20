@@ -35,6 +35,7 @@ lint = "ruff check ."
 format = "ruff format ."
 type-check = "mypy app engine shared"
 test = "pytest"
+export-openapi = "python -m scripts.export_openapi"
 
 [tool.ruff]
 line-length = 100
