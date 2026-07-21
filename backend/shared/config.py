@@ -35,6 +35,10 @@ class Settings(BaseSettings):
     environment: Environment = "dev"
 
     # 允許的前端 origin（CORS）。prod 由 env 帶入真實網域，禁止 '*'。
+    # ponytail: env 值必須是 JSON list（pydantic-settings 對 list[str] 預設 json.loads）。
+    # dev 本機 .env 給 ["http://localhost:5173","http://127.0.0.1:5173"]，
+    # Zeabur prod 給 ["https://dawncast.app"]。純字串 "https://dawncast.app" 會炸
+    # JSONDecodeError（已踩過一次雷）。
     cors_allowed_origins: list[str] = Field(
         default=["http://localhost:5173", "http://127.0.0.1:5173"],
     )
