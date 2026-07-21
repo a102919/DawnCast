@@ -6,11 +6,13 @@ FastAPI 與 worker 共用同一份 Settings。
 
 from __future__ import annotations
 
+import json
 from functools import lru_cache
-from typing import Literal
+from typing import Annotated, Literal
 
-from pydantic import Field
+from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic_settings.sources.types import NoDecode
 
 from shared.errors import ConfigError
 
@@ -35,13 +37,23 @@ class Settings(BaseSettings):
     environment: Environment = "dev"
 
     # 允許的前端 origin（CORS）。prod 由 env 帶入真實網域，禁止 '*'。
-    # ponytail: env 值必須是 JSON list（pydantic-settings 對 list[str] 預設 json.loads）。
-    # dev 本機 .env 給 ["http://localhost:5173","http://127.0.0.1:5173"]，
-    # Zeabur prod 給 ["https://dawncast.app"]。純字串 "https://dawncast.app" 會炸
-    # JSONDecodeError（已踩過一次雷）。
-    cors_allowed_origins: list[str] = Field(
+    # ponytail: NoDecode 跳過 pydantic-settings 預設對 list 走的 json.loads —
+    # Zeabur 變數面板會 strip 字串引號，餵 JSON list 進容器會壞掉；改用純字串餵
+    # + before validator 兩種形式都收。同時驗證看 test_cors_middleware 仍預期 list[str]。
+    cors_allowed_origins: Annotated[list[str], NoDecode] = Field(
         default=["http://localhost:5173", "http://127.0.0.1:5173"],
     )
+
+    @field_validator("cors_allowed_origins", mode="before")
+    @classmethod
+    def _coerce_cors(cls, v: object) -> object:
+        if isinstance(v, str):
+            stripped = v.strip()
+            if stripped.startswith("["):
+                return json.loads(stripped)  # JSON list 形式（dev .env）
+            return [s.strip() for s in stripped.split(",") if s.strip()]
+        return v
+
     # origin regex 補充（e.g. devtunnels 子網域）。空字串表示不啟用。
     # 預設空：fail-secure；prod 帶值會被 assert_secure() 拒絕，dev 想用請於
     # 本機 .env 顯式設定 CORS_ALLOWED_ORIGIN_REGEX（dotenv 格式，不寫 Python r""）。
@@ -194,9 +206,7 @@ class Settings(BaseSettings):
         if "*" in self.cors_allowed_origins:
             raise ConfigError("prod 的 CORS_ALLOWED_ORIGINS 不可包含 '*'")
         if self.cors_allowed_origin_regex.strip():
-            raise ConfigError(
-                "prod 的 CORS_ALLOWED_ORIGIN_REGEX 不可設定（dev-only；prod 留空）"
-            )
+            raise ConfigError("prod 的 CORS_ALLOWED_ORIGIN_REGEX 不可設定（dev-only；prod 留空）")
         if self.admin_token == "":
             raise ConfigError("prod 未設定 ADMIN_TOKEN（不可用空字串）")
 
