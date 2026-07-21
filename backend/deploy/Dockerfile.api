@@ -63,6 +63,11 @@ RUN chmod +x /app/entrypoint-api.sh
 USER appuser
 EXPOSE 8080
 
+# 啟動時先跑 APPLY_MIGRATIONS_ON_BOOT（見 backend/deploy/entrypoint-api.sh），
+# 把 supabase_admin role 建好 + 跑 DawnCast 自己的 DB schema，再 exec CMD。
+# 沒設 ENTRYPOINT 的話 CMD 會 bypass entrypoint script，apply_migrations.py 永遠不跑。
+ENTRYPOINT ["/app/entrypoint-api.sh"]
+
 # 綁 0.0.0.0:$PORT（Zeabur 內部 health check 與外部流量都打這）。
 # 用 shell 形式才能展開 $PORT；Zeabur 會注入 PORT，本機 fallback 8080。
 CMD ["sh", "-c", "uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-8080}"]
