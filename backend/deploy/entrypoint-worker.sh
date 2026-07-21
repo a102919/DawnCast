@@ -7,12 +7,16 @@
 
 set -eu
 
+# ponytail: stderr 強制 flush，Zeabur log 查得到（解「entrypoint 跑沒 print」謎團）。
+echo "[entrypoint-worker] START pid=$$ APPLY=${APPLY_MIGRATIONS_ON_BOOT:-0}" >&2
+
 if [ "${APPLY_MIGRATIONS_ON_BOOT:-0}" = "1" ]; then
-    echo "[entrypoint-worker] APPLY_MIGRATIONS_ON_BOOT=1，跑 migrations…"
+    echo "[entrypoint-worker] APPLY_MIGRATIONS_ON_BOOT=1，跑 migrations…" >&2
     export POSTGRES_HOST="${POSTGRES_HOST:-db}"
     export POSTGRES_PORT="${POSTGRES_PORT:-5432}"
     export POSTGRES_DB="${POSTGRES_DB:-postgres}"
-    python -m scripts.apply_migrations
+    python -u -m scripts.apply_migrations
+    echo "[entrypoint-worker] migrations done" >&2
 fi
 
 exec "$@"
