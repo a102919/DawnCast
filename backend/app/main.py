@@ -9,6 +9,7 @@ from __future__ import annotations
 import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from typing import Any
 
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
@@ -70,7 +71,9 @@ def create_app() -> FastAPI:
 
     # CORS kwargs：env-aware。dev 才啟用 PNA + origin regex（opt-in 相容路徑，
     # 給不走 vite proxy、直接打後端的場景留後路；prod 完全不開，fail-secure）。
-    cors_kwargs: dict[str, object] = {
+    # dict[str, Any]（非 object）：add_middleware 的 **kwargs 是異質型別，object 會讓
+    # mypy 對每個參數位報 arg-type。
+    cors_kwargs: dict[str, Any] = {
         "allow_origins": settings.cors_allowed_origins,
         "allow_credentials": True,
         "allow_methods": ["*"],
@@ -104,6 +107,10 @@ def create_app() -> FastAPI:
         body = err("internal_error", "伺服器發生錯誤")
         return JSONResponse(status_code=500, content=body.model_dump())
 
+    # 不加 /api 前綴——前端 dev 走 vite proxy，proxy 設定
+    #   rewrite: (path) => path.replace(/^\/api/, '')
+    # 會把 /api/episodes 改成 /episodes 才送過來。prod 直連時 reverse proxy
+    # （fly.io / cloudflare）負責把外層 /api 剝掉，後端只看裸路徑。
     app.include_router(vocab.router)
     app.include_router(settings_router.router)
     app.include_router(favorites.router)

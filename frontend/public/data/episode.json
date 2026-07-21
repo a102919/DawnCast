@@ -1,7 +1,7 @@
 {
   "id": "quantum-computing-basics",
   "title": "Quantum Computing: What It Is and Why It Matters",
-  "videoUrl": "http://localhost:8000/media/quantum-computing-basics.mp4",
+  "audioUrl": "/episodes/loop_engineering.mp4",
   "cues": [
     {
       "index": 1,

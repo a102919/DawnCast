@@ -162,3 +162,18 @@ SMTP/SendGrid/Resend/SES 欄位），也沒有排程觸發機制可掛實際 dis
 5. T4 / T9 → MVP 完整度
 6. T6 → 文件清理
 7. T7 / T8 → 真的有規模再說
+
+## 生成流程修復（2026-07-21）
+- [x] 1. 入口對映：projection SQL 把 entry_mode(topic/knowledge) 正規化成 TopicType(product/evergreen)
+- [x] 2. CEFR 全鏈路：users.cefr_target → settings API/UI → orchestrate → pod state → 分級 prompt → TTS 語速 → 落庫真實值 → reuse 過濾
+- [x] 3. angle 輪替 + avoid_facts：查已交付集，選未用過角度、餵舊 facts
+- [x] 4. judge 修復：剝 code fence + 解析失敗 fail-open（不殺整條 graph）
+- [x] 5. 小修：TONE 重複前綴、長篇 chapter/angle 矛盾、monologue few-shot、writer/failover 重複碼合併
+- [x] 6. 驗證：backend lint/type-check/test + export-openapi + frontend gen:api-types/lint/typecheck/test
+
+## TTS 切換 MiniMax + 刪舊引擎（2026-07-21）
+- [x] MiniMax speech（t2a_v2）為 TTS 主路徑：訂閱 token、雙主持/Nova 聲線、CEFR→speed
+- [x] edge-tts 降級 fallback（整份腳本為單位切換，不逐行混音）
+- [x] 刪除退役碼：api_key/claude_code/minimax 三引擎 + factory、build_messages、normalize.py、
+      state 死欄位（generation_request/mp4_key）、healthcheck 舊引擎檢查、generation_max_attempts
+- [x] 真實端對端驗證：8 行雙人對話經 MiniMax 合成成功（scratchpad/dialogue_sample_a2.mp3）

@@ -70,7 +70,11 @@ class MiniMaxChatModel(BaseChatModel):
     base_url: str
     auth_token: SecretStr
     model: str
-    max_tokens: int = 4096
+    # 預設 16384：M2.7 reasoning (4k) + 完整 podcast script (12k)。
+    # 12288 仍不夠寫 dialogue 腳本（text 被切在 column 12452）。
+    max_tokens: int = 16384
+    # 顯式給 reasoning 預算避免 LLM 把整個 max_tokens 拿去思考。
+    thinking_budget_tokens: int = 4096
     connect_timeout: float = 5.0
     read_timeout: float = 30.0
     max_retries: int = 3
@@ -177,6 +181,9 @@ class MiniMaxChatModel(BaseChatModel):
             "max_tokens": self.max_tokens,
             "system": system,
             "messages": conversation,
+            # 顯式啟用 extended thinking 並鎖住 reasoning 預算，
+            # 否則 LLM 把整個 max_tokens 吃掉就不吐 text 區塊。
+            "thinking": {"type": "enabled", "budget_tokens": self.thinking_budget_tokens},
         }
         data = await self._post_with_retry(payload)
         raw_text = self._extract_text(data)

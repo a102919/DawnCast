@@ -12,11 +12,21 @@ import re
 import shutil
 from pathlib import Path
 
+import httpx
 import pytest
 
 from engine.media import render_episode
+from engine.media import tts as tts_mod
 from engine.media.subtitles import build_timeline, cues_to_json, write_srt, write_vtt
-from engine.media.tts import VOICES, SynthSegment
+from engine.media.tts import (
+    MINIMAX_VOICES,
+    VOICES,
+    SynthSegment,
+    _minimax_tts_request,
+    synth_script,
+)
+from shared.config import Settings
+from shared.errors import TTSError
 from shared.models import Cue, ScriptJSON
 
 _ROOT = Path(__file__).resolve().parents[2]
@@ -88,6 +98,78 @@ def test_cues_to_json_camelCase() -> None:
 
 def test_voices_兩位主持人與單人口白都有對應() -> None:
     assert set(VOICES) == {"Alex", "Sarah", "Nova"}
+    assert set(MINIMAX_VOICES) == {"Alex", "Sarah", "Nova"}
+
+
+# ── MiniMax TTS：請求解析與 fallback 佈線（mock transport，無網路）──
+
+
+def _tts_settings(**overrides: object) -> Settings:
+    base: dict[str, object] = {
+        "minimax_auth_token": "test-token",
+        "minimax_tts_url": "https://example.test/v1/t2a_v2",
+        "http_max_retries": 1,
+    }
+    base.update(overrides)
+    return Settings(**base)  # type: ignore[arg-type]
+
+
+def _client_with(handler) -> httpx.AsyncClient:  # type: ignore[no-untyped-def]
+    return httpx.AsyncClient(transport=httpx.MockTransport(handler))
+
+
+async def test_minimax_tts_request_decodes_hex() -> None:
+    payload_audio = b"ID3-fake-mp3-bytes"
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={"base_resp": {"status_code": 0}, "data": {"audio": payload_audio.hex()}},
+        )
+
+    async with _client_with(handler) as client:
+        audio = await _minimax_tts_request(client, _tts_settings(), {"text": "hi"})
+    assert audio == payload_audio
+
+
+async def test_minimax_tts_request_business_error_raises() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200, json={"base_resp": {"status_code": 1004, "status_msg": "login fail"}}
+        )
+
+    async with _client_with(handler) as client:
+        with pytest.raises(TTSError, match="1004"):
+            await _minimax_tts_request(client, _tts_settings(), {"text": "hi"})
+
+
+async def test_synth_script_falls_back_to_edge_on_minimax_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """MiniMax 任一行失敗 → 整份腳本改走 edge-tts，不會混音、不會炸 render。"""
+    monkeypatch.setattr(tts_mod, "get_settings", lambda: _tts_settings())
+
+    def failing_synth(*_args: object, **_kwargs: object) -> object:
+        raise TTSError("mock: minimax down")
+
+    monkeypatch.setattr(tts_mod, "_make_minimax_line_synth", lambda *a: failing_synth)
+
+    edge_calls: list[str] = []
+
+    async def fake_edge(index: int, speaker: str, text: str, out_path: Path, rate: str) -> float:
+        edge_calls.append(f"{speaker}:{rate}")
+        out_path.write_bytes(b"mp3")
+        return 1.0
+
+    monkeypatch.setattr(tts_mod, "_synth_line_edge", fake_edge)
+
+    script = ScriptJSON.model_validate_json(_FIXTURE.read_text(encoding="utf-8"))
+    segs = await synth_script(script, tmp_path, cefr="A2")
+
+    assert len(segs) == len(script.script)
+    # 全部行都由 edge 合成，且 A2 語速（-20%）有帶到
+    assert len(edge_calls) == len(script.script)
+    assert all(call.endswith(":-20%") for call in edge_calls)
 
 
 # ── 端對端時間軸對照 ──────────────────────────────────────────
@@ -118,9 +200,14 @@ def _tools_available() -> bool:
 
 @pytest.mark.skipif(not _BASELINE_SRT.exists(), reason="缺少 ground truth SRT")
 @pytest.mark.skipif(not _tools_available(), reason="缺少 ffmpeg / ffprobe")
-async def test_時間軸對照ground_truth(tmp_path: Path) -> None:
-    """跑真實 pipeline，逐 cue 比對既有正確 SRT，容差 0.3s。需要網路（edge-tts）。"""
+async def test_時間軸對照ground_truth(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """跑真實 pipeline，逐 cue 比對既有正確 SRT，容差 0.3s。需要網路（edge-tts）。
+
+    強制走 edge-tts：baseline SRT 是 edge 聲線錄的，MiniMax 聲線時長不同會誤判；
+    也避免測試消耗 MiniMax 配額。
+    """
     pytest.importorskip("edge_tts")
+    monkeypatch.setattr(tts_mod, "get_settings", lambda: _tts_settings(minimax_auth_token=""))
     script = ScriptJSON.model_validate_json(_FIXTURE.read_text(encoding="utf-8"))
 
     try:

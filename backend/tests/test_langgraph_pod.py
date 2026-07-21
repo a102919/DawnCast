@@ -50,6 +50,7 @@ def _script_json(*, format: str = "dialogue") -> str:
     return json.dumps(
         {
             "topic": "Quantum",
+            "topic_zh": "量子力學入門",
             "extracted_facts": facts,
             "target_vocab": [{"word": "quantum", "explanation": "tiny unit"}],
             "format": format,
@@ -228,6 +229,40 @@ async def test_r2_failure_falls_back_to_local_keys_null() -> None:
     assert ep.srt_key is None
     # 仍交付
     assert len(repo.deliveries) == 2
+
+
+# ── 5b. R2 失敗 + 本機 fallback 也失敗 → DELETE row + raise ────
+
+
+async def test_r2_failure_with_no_local_fallback_deletes_row() -> None:
+    """媒體雙重失敗不能留殭屍 row：先 DELETE 再 raise。
+
+    觸發條件：local_media_dir 沒設 → safe_local_fallback 不寫檔 →
+    update_episode_keys_node 偵測 storage_failed + 無本機 mp3 → DELETE + raise。
+    """
+    chat = _make_passing_chat()
+    repo, r2, queue = get_mocks(reset=True)
+    r2.fail_put = True
+    renderer = MockRenderer(make_mock_workdir())
+
+    # local_media_dir=None → 沒有任何本機 fallback 機會
+    settings = get_settings().model_copy(update={"local_media_dir": None})
+
+    with pytest.raises(RuntimeError, match="雙重失敗"):
+        await run_pod(
+            _body(),
+            chat=chat,
+            repo=repo,
+            r2=r2,
+            queue=queue,
+            renderer=renderer,
+            settings=settings,
+        )
+
+    # row 被補償清掉、沒交付
+    assert len(repo.episodes) == 0
+    assert len(repo.by_idem) == 0
+    assert repo.deliveries == []
 
 
 # ── 6. rate-limit + 無 failover → degrade（raise RateLimitError）
@@ -439,3 +474,79 @@ async def test_retrieve_sources_no_provider_keeps_ungrounded() -> None:
     ep = repo.get_episode(eid)
     assert ep is not None
     assert ep.grounded is False
+
+
+# ── judge 韌性：code fence 與 fail-open ────────────────────
+
+
+async def test_judge_fenced_json_still_parses() -> None:
+    """judge 回應包 ```json fence → 剝掉照常解析，不觸發 rewrite、不殺 graph。"""
+    chat = FakeChatModel(
+        responses=[_script_json()],
+        judge_responses=[f"```json\n{_judge_json(0.8)}\n```"],
+    )
+    repo, r2, queue = get_mocks(reset=True)
+    renderer = MockRenderer(make_mock_workdir())
+
+    eid = await run_pod(_body(), chat=chat, repo=repo, r2=r2, queue=queue, renderer=renderer)
+    assert eid
+    assert chat._call_count == 2  # writer + judge，無 rewrite
+
+
+async def test_judge_garbage_fails_open() -> None:
+    """judge 回垃圾（非 JSON）→ fail-open 視為通過，稿子照常出，不整集重跑。"""
+    chat = FakeChatModel(
+        responses=[_script_json()],
+        judge_responses=["oops not json at all"],
+    )
+    repo, r2, queue = get_mocks(reset=True)
+    renderer = MockRenderer(make_mock_workdir())
+
+    eid = await run_pod(_body(), chat=chat, repo=repo, r2=r2, queue=queue, renderer=renderer)
+    assert eid
+    ep = repo.get_episode(eid)
+    assert ep is not None
+
+
+# ── CEFR 全鏈路：state → prompt → 落庫 ─────────────────────
+
+
+async def test_cefr_flows_from_body_to_episode_row() -> None:
+    """body 帶 cefr=A2 → episodes.cefr_level 落 A2（不再硬寫 B1）。"""
+    chat = _make_passing_chat()
+    repo, r2, queue = get_mocks(reset=True)
+    renderer = MockRenderer(make_mock_workdir())
+
+    body = {**_body(), "cefr": "A2"}
+    eid = await run_pod(body, chat=chat, repo=repo, r2=r2, queue=queue, renderer=renderer)
+    ep = repo.get_episode(eid)
+    assert ep is not None
+    assert ep.cefr_level == "A2"
+
+
+def test_build_pod_messages_cefr_and_avoid_facts() -> None:
+    """分級指令與 avoid_facts 真的進到 system/user prompt；monologue 用自己的 few-shot。"""
+    from engine.pipeline.langgraph_pod.nodes import _build_pod_messages
+
+    common: dict[str, Any] = {
+        "canonical_topic": "量子力學",
+        "big_topic": "科技",
+        "topic_type": "evergreen",
+        "angle": "定義",
+        "tone": "playful",
+        "avoid_summary": None,
+    }
+    a2 = _build_pod_messages(cefr="A2", avoid_facts=("old fact",), **common)
+    b2 = _build_pod_messages(cefr="B2", avoid_facts=(), **common)
+    a2_system = a2[0]["content"]
+    b2_system = b2[0]["content"]
+
+    assert a2_system != b2_system  # 等級指令有差異，不是只換字數
+    assert "1,500 most common" in a2_system
+    assert "native-like vocabulary" in b2_system
+    assert "old fact" in a2_system  # avoid_facts 進 BAN LIST
+    assert "TONE: TONE" not in a2_system  # 修掉的重複前綴不回歸
+
+    mono = _build_pod_messages(cefr="B1", avoid_facts=(), format="monologue", **common)
+    assert "Nova" in mono[0]["content"]
+    assert "Sarah: Mmm." not in mono[0]["content"]  # dialogue few-shot 不混進 monologue

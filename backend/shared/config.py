@@ -14,7 +14,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from shared.errors import ConfigError
 
-EngineName = Literal["minimax", "api_key", "claude_code"]
+EngineName = Literal["minimax", "api_key"]
 FailoverMode = Literal["degrade", "failover"]
 Environment = Literal["dev", "prod"]
 
@@ -85,6 +85,11 @@ class Settings(BaseSettings):
     minimax_auth_token: str = ""
     minimax_model: str = "MiniMax-M2.5"
 
+    # ── MiniMax speech TTS（同一顆訂閱 token；已實測 t2a_v2 可用）──────
+    # token 未設或呼叫失敗時整份腳本 fallback 到 edge-tts（見 media/tts.py）。
+    minimax_tts_url: str = "https://api.minimax.io/v1/t2a_v2"
+    minimax_tts_model: str = "speech-02-turbo"
+
     # 嵌入（V2 才接主流程，MVP 留設定）
     embedding_base_url: str = "https://api.openai.com/v1"
     embedding_api_key: str = ""
@@ -99,8 +104,6 @@ class Settings(BaseSettings):
     http_connect_timeout: float = 5.0
     http_read_timeout: float = 30.0
     http_max_retries: int = 3
-    # 寫稿語意層重試硬上限（PRD §6 防重生風暴）
-    generation_max_attempts: int = 3
 
     # ── Rate limit（T5）──────────────────────────────────────
     # /dict/lookup 每分鐘每 client 允許的查詢次數（單一 process 的 in-memory 限制；

@@ -15,7 +15,7 @@ import {
   Timer,
   Hourglass,
 } from 'lucide-react'
-import { Button, Chip } from '../primitives'
+import { Button, Chip, StatusBadge } from '../primitives'
 import { TOPIC_LABELS, formatDateZhTW } from '../../routes/episodeData'
 import type { TopicKey } from '../../routes/episodeData'
 import type { DailyOrder, EntryMode, LengthTier } from '../../api'
@@ -215,7 +215,7 @@ export function DailyOrderForm({
           <h2 className="text-sm font-semibold text-text-primary">
             {existing ? '編輯訂單' : isDateInPast ? '補點（過去）' : '新增訂單'}
           </h2>
-          <StatusBadge existing={existing} locked={locked} />
+          <StatusBadge order={existing} locked={locked} display="badge" />
         </div>
         <p className="text-xs text-text-secondary leading-relaxed">
           {isDateInPast
@@ -398,50 +398,6 @@ function initialTopics(existing: DailyOrder | null): readonly TopicChoice[] {
   return existing.selectedTopics.filter(isTopicChoice)
 }
 
-function StatusBadge({
-  existing,
-  locked,
-}: {
-  readonly existing: DailyOrder | null
-  readonly locked: boolean
-}) {
-  if (!existing) {
-    return (
-      <span className="text-[10px] px-2 py-0.5 rounded-full bg-bg-secondary text-text-tertiary border border-border">
-        未點
-      </span>
-    )
-  }
-  if (existing.status === 'played') {
-    return (
-      <span className="inline-flex items-center gap-1 text-[10px] px-2 py-0.5 rounded-full bg-success/10 text-success border border-success/20">
-        <CheckCircle2 size={10} />
-        已播放
-      </span>
-    )
-  }
-  if (locked) {
-    return (
-      <span className="inline-flex items-center gap-1 text-[10px] px-2 py-0.5 rounded-full bg-warning/10 text-warning border border-warning/20">
-        <Lock size={10} />
-        已鎖定
-      </span>
-    )
-  }
-  if (existing.status === 'queued') {
-    return (
-      <span className="text-[10px] px-2 py-0.5 rounded-full bg-accent/10 text-accent border border-accent/20">
-        已排入
-      </span>
-    )
-  }
-  return (
-    <span className="text-[10px] px-2 py-0.5 rounded-full bg-accent/10 text-accent border border-accent/20">
-      已送出
-    </span>
-  )
-}
-
 function LockedBanner({ existing }: { readonly existing: DailyOrder | null }) {
   if (existing?.status === 'played') {
     return (
@@ -533,7 +489,7 @@ function CollapsedSummaryCard({
         <div className="flex-1 min-w-0 space-y-1.5">
           <div className="flex items-center gap-2 flex-wrap">
             <span className="text-xs text-text-tertiary">{formatDateZhTW(date)}</span>
-            <StatusBadge existing={existing} locked={locked} />
+            <StatusBadge order={existing} locked={locked} display="badge" />
           </div>
           <div className="text-sm text-text-primary truncate">
             {existing ? (

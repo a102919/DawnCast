@@ -17,7 +17,7 @@ export function CueLine({ cue, isActive, onWordClick, onSeek }: CueLineProps) {
 
   return (
     <div
-      className={`p-3 rounded-md cursor-pointer transition-colors duration-fast focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent ${
+      className={`p-3 rounded-md cursor-pointer transition-[background-color,border-color,transform] duration-fast active:scale-[0.99] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent ${
         isActive ? 'bg-accent/8 border border-accent/20' : 'hover:bg-bg-secondary'
       }`}
       aria-current={isActive ? 'true' : undefined}

@@ -1,10 +1,13 @@
 import { useState } from 'react'
-import { Link, useNavigate } from 'react-router-dom'
+import { useNavigate } from 'react-router-dom'
 import { motion, AnimatePresence } from 'framer-motion'
 import { Sparkles, ArrowLeft, Check, X as XIcon, BookOpen, CalendarCheck } from 'lucide-react'
 import { useVocab } from '../state'
 import type { VocabItem } from '../api/types'
 import { episodeTitleById } from './episodeData'
+import { EmptyState } from '../components/primitives/EmptyState'
+import { StatCard } from '../components/primitives/StatCard'
+import { useSprings } from '../lib/motion'
 
 function buildDeck(items: readonly VocabItem[]): readonly VocabItem[] {
   if (items.length === 0) return []
@@ -23,6 +26,7 @@ type Phase = 'answer' | 'result'
 export function FlashcardRoute() {
   const { items, updateCardReview } = useVocab()
   const navigate = useNavigate()
+  const { gentle } = useSprings()
 
   const [deck] = useState<readonly VocabItem[]>(() => buildDeck(items))
   const [idx, setIdx] = useState(0)
@@ -54,19 +58,12 @@ export function FlashcardRoute() {
           <ArrowLeft size={14} />
           回到單字本
         </button>
-        <div className="flex flex-col items-center justify-center py-20 text-center gap-3">
-          <div className="w-12 h-12 rounded-full bg-bg-secondary flex items-center justify-center text-text-tertiary">
-            <BookOpen size={22} />
-          </div>
-          <p className="font-medium text-text-primary">單字本是空的</p>
-          <p className="text-sm text-text-secondary">先到播放頁收錄幾個單字，再來這裡練習</p>
-          <Link
-            to="/player"
-            className="mt-2 inline-flex items-center gap-1.5 px-4 py-2 text-sm font-medium rounded-md bg-accent text-white hover:bg-accent-hover transition-colors duration-fast"
-          >
-            去播放頁收錄
-          </Link>
-        </div>
+        <EmptyState
+          icon={BookOpen}
+          title="單字本是空的"
+          description="先到播放頁收錄幾個單字，再來這裡練習"
+          action={{ label: '去播放頁收錄', to: '/player' }}
+        />
       </div>
     )
   }
@@ -81,13 +78,7 @@ export function FlashcardRoute() {
           <ArrowLeft size={14} />
           回到單字本
         </button>
-        <div className="flex flex-col items-center justify-center py-20 text-center gap-3">
-          <div className="w-12 h-12 rounded-full bg-bg-secondary flex items-center justify-center text-text-tertiary">
-            <CalendarCheck size={22} />
-          </div>
-          <p className="font-medium text-text-primary">今天沒有到期的卡片</p>
-          <p className="text-sm text-text-secondary">表現很好！明天繼續複習</p>
-        </div>
+        <EmptyState icon={CalendarCheck} title="今天沒有到期的卡片" description="表現很好！明天繼續複習" />
       </div>
     )
   }
@@ -124,14 +115,8 @@ export function FlashcardRoute() {
               {unknown === 0 ? '全部認識！太強了' : '本輪複習完成'}
             </h2>
             <div className="grid grid-cols-2 gap-3 max-w-xs mx-auto">
-              <div className="rounded-lg bg-success/10 border border-success/30 p-3">
-                <p className="text-2xl font-bold text-success">{known}</p>
-                <p className="text-xs text-text-secondary mt-0.5">認識</p>
-              </div>
-              <div className="rounded-lg bg-warning/10 border border-warning/30 p-3">
-                <p className="text-2xl font-bold text-warning">{unknown}</p>
-                <p className="text-xs text-text-secondary mt-0.5">不認識</p>
-              </div>
+              <StatCard label="認識" value={known} tone="success" />
+              <StatCard label="不認識" value={unknown} tone="warning" />
             </div>
             {unknown > 0 && (
               <p className="text-sm text-text-secondary">{unknown} 個不認識的明天再複習</p>
@@ -155,50 +140,40 @@ export function FlashcardRoute() {
             <button
               type="button"
               onClick={() => setFlipped(f => !f)}
-              className="block w-full rounded-xl border border-border bg-bg-primary p-10 text-center min-h-[240px] hover:border-accent/40 transition-colors duration-fast focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+              aria-label={flipped ? '顯示單字面' : '顯示翻譯面'}
+              className="block w-full min-h-[240px] text-left [perspective:1600px] rounded-xl focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
             >
-              <AnimatePresence mode="wait">
-                {!flipped ? (
-                  <motion.div
-                    key="front"
-                    initial={{ opacity: 0 }}
-                    animate={{ opacity: 1 }}
-                    exit={{ opacity: 0 }}
-                    transition={{ duration: 0.15 }}
-                  >
-                    <p className="text-[10px] font-semibold tracking-wider text-text-tertiary uppercase mb-3">單字</p>
-                    <p className="text-3xl font-bold text-text-primary break-all">{current.word}</p>
-                    {current.ipa && (
-                      <p className="text-sm text-text-tertiary font-mono mt-2">{current.ipa}</p>
-                    )}
-                    <p className="text-xs text-text-tertiary mt-6">點擊卡片查看翻譯</p>
-                  </motion.div>
-                ) : (
-                  <motion.div
-                    key="back"
-                    initial={{ opacity: 0 }}
-                    animate={{ opacity: 1 }}
-                    exit={{ opacity: 0 }}
-                    transition={{ duration: 0.15 }}
-                    className="space-y-3 text-left"
-                  >
-                    <p className="text-[10px] font-semibold tracking-wider text-text-tertiary uppercase">翻譯</p>
-                    <p className="text-2xl font-medium text-text-primary break-words">{current.translation}</p>
-                    <p className="text-sm text-text-secondary break-all">
-                      <span className="text-text-primary font-medium">{current.word}</span>
-                      {current.ipa && <span className="text-text-tertiary font-mono"> {current.ipa}</span>}
-                    </p>
-                    {current.sourceSentence && (
-                      <div className="mt-2 border-t border-border pt-3 space-y-1">
-                        <p className="text-xs text-text-tertiary leading-relaxed italic">{current.sourceSentence}</p>
-                        <p className="text-[10px] text-text-tertiary">
-                          來自《{episodeTitleById(current.sourceEpisodeId)}》
-                        </p>
-                      </div>
-                    )}
-                  </motion.div>
-                )}
-              </AnimatePresence>
+              <motion.div
+                className="relative w-full h-full min-h-[240px] [transform-style:preserve-3d]"
+                animate={{ rotateY: flipped ? 180 : 0 }}
+                transition={gentle}
+              >
+                <div className="absolute inset-0 [backface-visibility:hidden] rounded-xl border border-border bg-bg-primary p-10 text-center hover:border-accent/40 transition-colors duration-fast">
+                  <p className="text-[10px] font-semibold tracking-wider text-text-tertiary uppercase mb-3">單字</p>
+                  <p className="text-3xl font-bold text-text-primary break-all">{current.word}</p>
+                  {current.ipa && (
+                    <p className="text-sm text-text-tertiary font-mono mt-2">{current.ipa}</p>
+                  )}
+                  <p className="text-xs text-text-tertiary mt-6">點擊卡片查看翻譯</p>
+                </div>
+
+                <div className="absolute inset-0 [backface-visibility:hidden] [transform:rotateY(180deg)] rounded-xl border border-border bg-bg-primary p-10 text-left space-y-3 overflow-y-auto hover:border-accent/40 transition-colors duration-fast">
+                  <p className="text-[10px] font-semibold tracking-wider text-text-tertiary uppercase">翻譯</p>
+                  <p className="text-2xl font-medium text-text-primary break-words">{current.translation}</p>
+                  <p className="text-sm text-text-secondary break-all">
+                    <span className="text-text-primary font-medium">{current.word}</span>
+                    {current.ipa && <span className="text-text-tertiary font-mono"> {current.ipa}</span>}
+                  </p>
+                  {current.sourceSentence && (
+                    <div className="mt-2 border-t border-border pt-3 space-y-1">
+                      <p className="text-xs text-text-tertiary leading-relaxed italic">{current.sourceSentence}</p>
+                      <p className="text-[10px] text-text-tertiary">
+                        來自《{episodeTitleById(current.sourceEpisodeId)}》
+                      </p>
+                    </div>
+                  )}
+                </div>
+              </motion.div>
             </button>
 
             <div className="grid grid-cols-2 gap-3">

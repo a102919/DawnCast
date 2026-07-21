@@ -1,9 +1,9 @@
 import { useState } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
-import { ChevronDown, CheckCircle2, Lock, Play } from 'lucide-react'
-import { Button } from '../primitives'
+import { ChevronDown, Play } from 'lucide-react'
+import { Button, StatusBadge, SectionLabel } from '../primitives'
 import { TOPIC_LABELS, formatDateZhTW } from '../../routes/episodeData'
-import type { DailyOrder, DailyOrderStatus } from '../../api'
+import type { DailyOrder } from '../../api'
 import { isOrderLocked, isToday, getWeekdayLabel } from '../../lib/dailyOrderDate'
 
 const COLLAPSED_LIMIT = 3
@@ -30,7 +30,7 @@ export function DailyOrderHistory({ today, orders, selectedDate, onSelectDate }:
 
   return (
     <section className="space-y-4">
-      <h2 className="text-sm font-semibold text-text-tertiary uppercase tracking-wider">訂單紀錄</h2>
+      <SectionLabel>訂單紀錄</SectionLabel>
 
       {!hasAny && (
         <div className="rounded-lg border border-dashed border-border bg-bg-secondary/30 px-4 py-6 text-center text-xs text-text-tertiary">
@@ -154,30 +154,16 @@ function OrderRow({
           </div>
           <div className="flex items-center gap-2 mt-1 text-[11px] text-text-tertiary">
             <span>出餐 {order.deliveryTime}</span>
-            <StatusText status={order.status} locked={locked} />
+            <StatusBadge order={order} locked={locked} display="text" />
           </div>
         </div>
         <div className="shrink-0 flex items-center gap-1">
-          <StatusIcon status={order.status} locked={locked} />
+          <StatusBadge order={order} locked={locked} display="icon" />
           <PlayHint selected={selected} />
         </div>
       </div>
     </button>
   )
-}
-
-function StatusText({ status, locked }: { readonly status: DailyOrderStatus; readonly locked: boolean }) {
-  if (status === 'played') return <span className="text-success">已播放</span>
-  if (locked) return <span className="text-warning">已鎖定</span>
-  if (status === 'queued') return <span className="text-accent">已排入</span>
-  return <span className="text-accent">已送出</span>
-}
-
-function StatusIcon({ status, locked }: { readonly status: DailyOrderStatus; readonly locked: boolean }) {
-  if (status === 'played') return <CheckCircle2 size={14} className="text-success" aria-hidden />
-  if (locked) return <Lock size={14} className="text-warning" aria-hidden />
-  if (status === 'queued') return <CheckCircle2 size={14} className="text-accent" aria-hidden />
-  return <CheckCircle2 size={14} className="text-accent" aria-hidden />
 }
 
 function PlayHint({ selected }: { readonly selected: boolean }) {

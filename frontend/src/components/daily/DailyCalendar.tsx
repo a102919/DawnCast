@@ -1,6 +1,7 @@
 import { Lock, CheckCircle2, Plus } from 'lucide-react'
 import { isOrderLocked, getWeekdayLabel } from '../../lib/dailyOrderDate'
 import type { DailyOrder } from '../../api'
+import { StatusBadge } from '../primitives'
 
 function getDayNumber(iso: string): string {
   const parts = iso.split('-')
@@ -46,7 +47,7 @@ export function DailyCalendar({ today, dates, selectedDate, getOrder, onSelect }
               <span className="text-[10px] text-text-tertiary">{getWeekdayLabel(date)}</span>
               <span className="text-base font-semibold leading-none">{getDayNumber(date)}</span>
               <span className="text-[10px] mt-0.5 h-3 flex items-center justify-center">
-                <DayIndicator order={order} locked={locked} />
+                <StatusBadge order={order} locked={locked} display="icon" size={12} />
               </span>
             </button>
           )
@@ -57,19 +58,6 @@ export function DailyCalendar({ today, dates, selectedDate, getOrder, onSelect }
       </p>
     </section>
   )
-}
-
-function DayIndicator({ order, locked }: { readonly order: DailyOrder | null; readonly locked: boolean }) {
-  if (!order) {
-    return <Plus size={12} className="text-text-tertiary" aria-hidden />
-  }
-  if (locked || order.status === 'played') {
-    if (order.status === 'played') {
-      return <CheckCircle2 size={12} className="text-success" aria-hidden />
-    }
-    return <Lock size={12} className="text-warning" aria-hidden />
-  }
-  return <CheckCircle2 size={12} className="text-accent" aria-hidden />
 }
 
 function PlusIcon() {

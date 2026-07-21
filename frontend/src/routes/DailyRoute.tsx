@@ -9,6 +9,7 @@ import { DailyCalendar } from '../components/daily/DailyCalendar'
 import { DailyOrderForm, type DailyOrderFormSubmitResult } from '../components/daily/DailyOrderForm'
 import { DailyOrderHistory } from '../components/daily/DailyOrderHistory'
 import { DEFAULT_DELIVERY_TIME, nextNDays, toIsoDate } from '../lib/dailyOrderDate'
+import { SectionLabel } from '../components/primitives/SectionLabel'
 
 export function DailyRoute() {
   const { todayDate, orders, getOrder, setOrder, deleteOrder } = useDailyOrder()
@@ -123,7 +124,7 @@ export function DailyRoute() {
       {/* 推薦試聽（只顯示今日 / 未來） */}
       {selectedDate >= todayDate && recommendedEpisode && (
         <section className="space-y-3">
-          <h2 className="text-sm font-semibold text-text-tertiary uppercase tracking-wider">先試聽這集</h2>
+          <SectionLabel>先試聽這集</SectionLabel>
           <a
             href={`/player?date=${selectedDate}`}
             className="block p-4 rounded-lg border border-border bg-bg-primary hover:border-accent/40 hover:bg-accent/5 transition-colors duration-fast group"

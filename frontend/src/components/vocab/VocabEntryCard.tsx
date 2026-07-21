@@ -76,7 +76,7 @@ export function VocabEntryCard({ item, onSeek, onRemove, variant = 'page' }: Voc
             if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); setIsPanelOpen(true) }
           }}
           className={[
-            'border border-border hover:border-accent/30 transition-colors duration-fast cursor-pointer',
+            'border border-border hover:border-accent/30 transition-[border-color,transform] duration-fast active:scale-[0.99] cursor-pointer',
             isDrawer
               ? 'group p-3 rounded-md bg-bg-secondary'
               : 'p-4 rounded-lg bg-bg-primary',

@@ -50,6 +50,7 @@ class UpdateSettingsBody(CamelModel):
     theme: Literal["light", "dark", "auto"] | None = None
     preferred_topics: list[str] | None = None
     default_delivery_time: str | None = None
+    cefr_level: Literal["A2", "B1", "B2"] | None = None
 
 
 class ListenMinutesDelta(CamelModel):

@@ -21,13 +21,16 @@ import logging
 import re
 import shutil
 import uuid
+from pathlib import Path
 from typing import Any, Literal, TypedDict
 
 from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_core.runnables import RunnableConfig
 from langgraph.graph import END
+from psycopg.errors import ForeignKeyViolation
 
 from engine.generation.prompt import (
+    _strip_code_fence,
     parse_engine_result,
 )
 from engine.media import (
@@ -66,6 +69,27 @@ _LENGTH_TIERS: dict[str, _TierConfig] = {
 # CEFR → 語速（wpm）。取代原本寫死的「550-750 字」，用語速反推目標字數，
 # 避免長度加長時語速被迫失真（研究發現：舊寫死值隱含 137-250wpm，超出自然語速）。
 _CEFR_WPM: dict[str, int] = {"A2": 120, "B1": 140, "B2": 150}
+
+# CEFR → 等級專屬寫作規範。沒有這塊時 A2 和 B2 拿到一模一樣的指令，
+# 「分級」只剩字數差，聽者感受不到難度差異。
+_CEFR_GUIDE: dict[str, str] = {
+    "A2": (
+        "Use ONLY high-frequency everyday words (roughly the 1,500 most common English words). "
+        "Keep sentences under 12 words. Stick to present simple, past simple, and going-to "
+        "future; avoid perfect tenses, passives, idioms, and phrasal verbs. "
+        "If a harder word is unavoidable, explain it immediately in one short simple sentence."
+    ),
+    "B1": (
+        "Use common everyday vocabulary (roughly the 3,000 most common English words), mostly "
+        "simple sentences with some compound sentences. Explain any technical term on the spot "
+        "in plain English. Use idioms sparingly and only with a quick natural explanation."
+    ),
+    "B2": (
+        "Use natural, native-like vocabulary; idioms and phrasal verbs are welcome (briefly "
+        "gloss only the rare ones). Vary sentence structure freely, but keep a natural spoken "
+        "rhythm — this is audio, not an essay."
+    ),
+}
 
 
 def resolve_format(topic_type: str, length_tier: str) -> ScriptFormat:
@@ -181,7 +205,7 @@ _MONOLOGUE_VOICE = """
 （"here's the thing", "let's back up", "so what does that actually mean"）。
 """
 
-_FEW_SHOTS = """
+_FEW_SHOTS_DIALOGUE = """
 # Few-shot exemplars（開場鉤子示範，非逐字模仿）
 
 Example 1 (curiosity gap, topic="量子力學"):
@@ -197,6 +221,19 @@ Sarah: Let's say he's now a very enthusiastic fan of... index funds.
 Example 3 (counter-intuitive stat, topic="remote work"):
 Alex: Companies that went fully remote saw output go UP, not down. Nobody predicted that.
 Sarah: Wait, really? Everyone I know assumed the opposite.
+"""
+
+_FEW_SHOTS_MONOLOGUE = """
+# Few-shot exemplars（單人口白開場鉤子示範，非逐字模仿）
+
+Example 1 (counter-intuitive stat):
+Nova: Here's a number that shouldn't exist: emergency room visits went UP forty percent — \
+right after people GOT health insurance. Stay with me, because the reason tells you \
+everything about how incentives really work.
+
+Example 2 (in medias res):
+Nova: The server room went silent at 2:14 in the morning. Not quiet — silent. And for the \
+engineers on call, silence was the worst sound in the world.
 """
 
 
@@ -217,8 +254,9 @@ def _structure_block(length_tier: str) -> str:
         chapter_line = "- Body：圍繞指定角度單線推進，不要分 chapter。"
     else:
         chapter_line = (
-            f"- Body 拆成 {chapters} 個 chapter，每個對應 ANGLES taxonomy 中不同的一個角度"
-            "（例如：定義→歷史→應用場景→常見誤解），各自有 hook→development→payoff 的小結構；"
+            f"- Body 拆成 {chapters} 個 chapter，每個從指定角度的不同切面推進"
+            "（例如：具體案例→背後機制→常見誤解澄清→實際應用），"
+            "各自有 hook→development→payoff 的小結構；"
             "chapter 之間插入明確的 reset/transition 句（簡短回顧前段 + 一句話帶到下一段），"
             "該行的 pause_before 設 true。"
         )
@@ -293,30 +331,35 @@ def _build_pod_messages(
     if format == "monologue":
         cast_line = "Write a solo narration by ONE host: Nova, speaking directly to the listener."
         voice_block = _MONOLOGUE_VOICE
+        few_shots = _FEW_SHOTS_MONOLOGUE
         schema_speaker = '"Nova"'
     else:
         cast_line = "Write a natural, friendly conversation between TWO hosts: Alex and Sarah."
         voice_block = _DIALOGUE_CHEMISTRY
+        few_shots = _FEW_SHOTS_DIALOGUE
         schema_speaker = '"Alex"|"Sarah"'
 
+    cefr_guide = _CEFR_GUIDE.get(cefr, _CEFR_GUIDE["B1"])
     system = (
         f"You are the head writer for DawnCast, a daily English-learning podcast. {cast_line}\n\n"
-        f"# AUDIENCE & LEVEL\n- CEFR {cefr}. Common everyday vocabulary, simple sentences.\n\n"
+        f"# AUDIENCE & LEVEL\n- CEFR {cefr}. {cefr_guide}\n\n"
         f"# LENGTH\n- {lo}-{hi} minutes spoken, about {word_target} English words total.\n\n"
         f"# ANGLE\n- {angle}（{angle_desc}）— 全集都圍繞這個角度。\n\n"
         "# BILINGUAL\n- Every line MUST have `zh` in natural Taiwan Mandarin (台灣正體中文), "
         "translate the meaning naturally, NOT word-for-word.\n\n"
+        "# TITLE\n- `topic_zh`：一句吸引人的中文標題（台灣正體中文），"
+        "呈現這集的角度與鉤子，不是 `topic` 的逐字翻譯。\n\n"
         "# OUTPUT\n- Output ONLY the JSON object. No markdown, no code fences, no commentary.\n\n"
-        f"TONE: {tones_block}\n"
+        f"{tones_block}\n"
         f"{_HOOK_TECHNIQUES}"
         f"{_EXPLAINER_SPINE}"
         f"{voice_block}"
         f"{_BAN_LIST.format(avoid_block=avoid_block)}"
         f"{_structure_block(length_tier)}\n\n"
-        f"{_FEW_SHOTS}"
+        f"{few_shots}"
         f"{_sources_block(sources or [])}\n\n"
         "JSON SCHEMA (must match exactly):\n"
-        '{"topic": str, '
+        '{"topic": str, "topic_zh": str, '
         '"extracted_facts": [{"claim": str, "source_ids": [str]}], '
         '"target_vocab": [{"word": str, "explanation": str}], '
         f'"format": "{format}", '
@@ -418,100 +461,41 @@ def tone_selector_node(state: PodState, config: RunnableConfig) -> dict[str, Any
 # ── Node 2: write_script ─────────────────────────────────
 
 
-async def write_script_node(state: PodState, config: RunnableConfig) -> dict[str, Any]:
-    """打 LLM 寫稿。RateLimitError → 設 rate_limited=True，不 raise。
+async def _invoke_writer(
+    chat: Any, state: PodState, settings: Settings, *, engine_label: str, usage_node: str
+) -> dict[str, Any]:
+    """primary / failover 共用的寫稿呼叫：組 prompt → 打 LLM → 解析。
 
-    GenerationError 由 RetryPolicy（max_attempts=3）重試；語意層重生風暴由 policy 守。
+    RateLimitError → 回 rate_limited=True 讓 conditional edge 路由，不 raise。
+    GenerationError 照樣 propagate 給 RetryPolicy（max_attempts=3 防重生風暴）。
     """
-    chat = _ctx(config)["chat"]
-    settings = _ctx(config)["settings"]
-
-    feedback = state.get("judge_feedback") or None
     msgs = _build_pod_messages(
         canonical_topic=state["canonical_topic"],
         big_topic=state["big_topic"],
         topic_type=state["topic_type"],
         angle=state["angle"],
-        cefr=settings.cefr_level if hasattr(settings, "cefr_level") else "B1",
+        cefr=state.get("cefr") or settings.cefr_level,
         tone=state.get("tone", "playful"),
         length_tier=state.get("length_tier") or "medium",
         format=state.get("format", "dialogue"),
         sources=state.get("sources"),
         avoid_summary=None,
-        avoid_facts=(),
-        feedback=feedback,
-    )
-
-    try:
-        ai_msg = await chat.ainvoke(_to_lc_messages(msgs))
-    except RateLimitError:
-        logger.warning("write_script 撞限流 big_topic=%s", state["big_topic"])
-        return {"rate_limited": True, "engine_used": "primary"}
-
-    usage = _usage_from_ai_msg(ai_msg)
-    try:
-        result = parse_engine_result(
-            ai_msg.content,
-            engine=getattr(chat, "_llm_type", "chat"),
-            model=getattr(chat, "model", "unknown"),
-            usage=usage,
-        )
-    except Exception:
-        # 語意層失敗：GenerationError → 給 RetryPolicy；其他解析錯誤也照樣 raise
-        raise
-
-    return {
-        "script": result.script,
-        "engine_used": result.engine,
-        "rate_limited": False,
-        "token_usage": [{"node": "write_script", **usage}],
-    }
-
-
-# ── Node 3: failover_write_script ────────────────────────
-
-
-async def failover_write_script_node(state: PodState, config: RunnableConfig) -> dict[str, Any]:
-    """failover_mode=failover 時由 conditional edge 路由過來。
-
-    用 config 裡預建好的 chat_failover（api_key 引擎）重打一次。
-    """
-    chat = _ctx(config).get("chat_failover")
-    if chat is None:
-        return {
-            "rate_limited": False,
-            "errors": ["failover requested but no chat_failover configured"],
-        }
-
-    settings = _ctx(config)["settings"]
-    msgs = _build_pod_messages(
-        canonical_topic=state["canonical_topic"],
-        big_topic=state["big_topic"],
-        topic_type=state["topic_type"],
-        angle=state["angle"],
-        cefr=settings.cefr_level if hasattr(settings, "cefr_level") else "B1",
-        tone=state.get("tone", "playful"),
-        length_tier=state.get("length_tier") or "medium",
-        format=state.get("format", "dialogue"),
-        sources=state.get("sources"),
-        avoid_summary=None,
-        avoid_facts=(),
+        avoid_facts=tuple(state.get("avoid_facts") or ()),
         feedback=state.get("judge_feedback") or None,
     )
 
     try:
         ai_msg = await chat.ainvoke(_to_lc_messages(msgs))
     except RateLimitError:
-        return {
-            "rate_limited": True,
-            "engine_used": "failover",
-            "errors": ["failover engine also rate-limited"],
-        }
+        logger.warning("%s 撞限流 big_topic=%s", usage_node, state["big_topic"])
+        return {"rate_limited": True, "engine_used": engine_label}
 
     usage = _usage_from_ai_msg(ai_msg)
     result = parse_engine_result(
         ai_msg.content,
-        engine="failover",
+        engine=(
+            engine_label if engine_label == "failover" else getattr(chat, "_llm_type", "chat")
+        ),
         model=getattr(chat, "model", "unknown"),
         usage=usage,
     )
@@ -519,8 +503,45 @@ async def failover_write_script_node(state: PodState, config: RunnableConfig) ->
         "script": result.script,
         "engine_used": result.engine,
         "rate_limited": False,
-        "token_usage": [{"node": "write_script_failover", **usage}],
+        "token_usage": [{"node": usage_node, **usage}],
     }
+
+
+async def write_script_node(state: PodState, config: RunnableConfig) -> dict[str, Any]:
+    """打 LLM 寫稿。RateLimitError → 設 rate_limited=True，不 raise。"""
+    ctx = _ctx(config)
+    return await _invoke_writer(
+        ctx["chat"],
+        state,
+        ctx["settings"],
+        engine_label="primary",
+        usage_node="write_script",
+    )
+
+
+# ── Node 3: failover_write_script ────────────────────────
+
+
+async def failover_write_script_node(state: PodState, config: RunnableConfig) -> dict[str, Any]:
+    """failover_mode=failover 時由 conditional edge 路由過來，用 chat_failover 重打一次。"""
+    ctx = _ctx(config)
+    chat = ctx.get("chat_failover")
+    if chat is None:
+        return {
+            "rate_limited": False,
+            "errors": ["failover requested but no chat_failover configured"],
+        }
+
+    out = await _invoke_writer(
+        chat,
+        state,
+        ctx["settings"],
+        engine_label="failover",
+        usage_node="write_script_failover",
+    )
+    if out.get("rate_limited"):
+        out["errors"] = ["failover engine also rate-limited"]
+    return out
 
 
 # ── Node 4: quality_judge ─────────────────────────────────
@@ -610,7 +631,18 @@ async def quality_judge_node(state: PodState, config: RunnableConfig) -> dict[st
             [SystemMessage(content=_JUDGE_SYSTEM), HumanMessage(content=user)]
         )
         usage = _usage_from_ai_msg(msg)
-        verdict = JudgeVerdict.model_validate_json(msg.content)
+        # judge 也可能包 ```json fence（寫稿路徑早有同樣防護，這裡補齊）。
+        verdict = JudgeVerdict.model_validate_json(_strip_code_fence(msg.content))
+    except Exception as exc:
+        # judge 是品質加分項，不是出稿硬依賴：呼叫 / 解析失敗一律 fail-open
+        # 當全數通過，讓已寫好的稿照常出——不然一個壞 judge 回應會殺掉整條
+        # graph，worker vt-retry 整集重跑，白燒已花掉的寫稿 tokens。
+        logger.warning(
+            "quality_judge 失敗，fail-open 視為通過 big_topic=%s: %s",
+            state.get("big_topic"),
+            exc,
+        )
+        return {"judge_scores": default_scores}
     finally:
         if prev_role is not None and hasattr(judge_chat, "role"):
             judge_chat.role = prev_role
@@ -676,6 +708,7 @@ async def upsert_episode_node(state: PodState, config: RunnableConfig) -> dict[s
     canonical = state["canonical_topic"]
     length_tier = state.get("length_tier") or "medium"
     topic_type = state.get("topic_type") or "evergreen"
+    cefr = state.get("cefr") or "B1"
 
     # 冪等鍵同帶 length_tier 與 topic_type：同日同 big_topic 但不同入口或長度
     # 的請求不能共用同一列（否則後送的會覆蓋先前已渲染的集數）。
@@ -689,44 +722,24 @@ async def upsert_episode_node(state: PodState, config: RunnableConfig) -> dict[s
     total_in = sum(int(u.get("input_tokens", 0)) for u in usage_log)
     total_out = sum(int(u.get("output_tokens", 0)) for u in usage_log)
 
-    if hasattr(repo, "upsert_episode"):  # MockRepo
-        episode_id, already_rendered = await repo.upsert_episode(
-            idempotency_key=idem_key,
-            slug=slug,
-            title=script.topic,
-            topic=_classify_topic(big_topic),
-            big_topic=big_topic,
-            angle=angle,
-            topic_type=state["topic_type"],
-            cefr_level="B1",
-            title_zh=big_topic,
-            cluster_id=cluster_id,
-            length_tier=length_tier,
-            format=script_format,
-            grounded=grounded,
-            input_tokens=total_in,
-            output_tokens=total_out,
-        )
-    else:
-        from shared.db import repo as real_repo  # noqa: PLC0415
-
-        episode_id, already_rendered = await real_repo.upsert_episode(
-            idempotency_key=idem_key,
-            slug=slug,
-            title=script.topic,
-            topic=_classify_topic(big_topic),
-            big_topic=big_topic,
-            angle=angle,
-            topic_type=state["topic_type"],
-            cefr_level="B1",
-            title_zh=big_topic,
-            cluster_id=cluster_id,
-            length_tier=length_tier,
-            format=script_format,
-            grounded=grounded,
-            input_tokens=total_in,
-            output_tokens=total_out,
-        )
+    # repo 是 MockRepo 或 shared.db.repo 模組，surface 相同——直接呼叫，不做 hasattr 分派。
+    episode_id, already_rendered = await repo.upsert_episode(
+        idempotency_key=idem_key,
+        slug=slug,
+        title=script.topic,
+        topic=_classify_topic(big_topic),
+        big_topic=big_topic,
+        angle=angle,
+        topic_type=state["topic_type"],
+        cefr_level=cefr,
+        title_zh=script.topic_zh,
+        cluster_id=cluster_id,
+        length_tier=length_tier,
+        format=script_format,
+        grounded=grounded,
+        input_tokens=total_in,
+        output_tokens=total_out,
+    )
 
     if usage_log:
         logger.info(
@@ -739,7 +752,12 @@ async def upsert_episode_node(state: PodState, config: RunnableConfig) -> dict[s
             len(usage_log),
         )
 
-    return {"episode_id": episode_id, "slug": slug, "already_rendered": already_rendered}
+    return {
+        "episode_id": episode_id,
+        "slug": slug,
+        "idempotency_key": idem_key,
+        "already_rendered": already_rendered,
+    }
 
 
 def render_branch_decision(state: PodState) -> Literal["render", "deliveries"]:
@@ -778,7 +796,7 @@ async def render_episode_node(state: PodState, config: RunnableConfig) -> dict[s
     # upload_artifacts_node（下一個 node）讀完才能刪，見 upload_artifacts_node 的 finally。
     _settings: Settings = ctx["settings"]  # noqa: F841  預留觀測 / 後續設定接入
     workdir = make_job_workdir()
-    artifacts = await render_episode(script, workdir)
+    artifacts = await render_episode(script, workdir, cefr=state.get("cefr") or "B1")
     return {"artifacts": artifacts}
 
 
@@ -847,34 +865,42 @@ async def upload_artifacts_node(state: PodState, config: RunnableConfig) -> dict
 async def update_episode_keys_node(state: PodState, config: RunnableConfig) -> dict[str, Any]:
     ctx = _ctx(config)
     repo = ctx["repo"]
+    settings: Settings = ctx["settings"]
     art: EpisodeArtifacts = state["artifacts"]
     script: ScriptJSON = state["script"]
     # extracted_facts 現在是 SourcedFact 物件（非純字串），jsonb 落庫前先轉 dict。
     facts_payload = [f.model_dump(by_alias=False) for f in script.extracted_facts]
 
-    if hasattr(repo, "update_episode_keys"):
-        await repo.update_episode_keys(
-            state["episode_id"],
-            audio_key=state.get("audio_key"),
-            srt_key=state.get("srt_key"),
-            script_json=script.model_dump(by_alias=False),
-            cues=art.cues,
-            extracted_facts=facts_payload,
-            target_vocab=[v.model_dump(by_alias=False) for v in script.target_vocab],
+    # ponytail：媒體落地保護。R2 失敗 + 本機 fallback 也沒檔 → 不能留 row，
+    # 否則播放頁會 404（DB row 有 script_json、無 audio）— DELETE 該 row 並 raise，
+    # 讓 _process 走 retry / dead-letter，不留沒聲音的殭屍集數。
+    slug = state["slug"]
+    storage_failed = bool(state.get("storage_failed"))
+    media_dir = settings.local_media_dir
+    local_mp3 = Path(media_dir, f"{slug}.mp3") if media_dir else None
+    no_local = local_mp3 is None or not local_mp3.is_file()
+    if storage_failed and no_local:
+        episode_id = state["episode_id"]
+        idem_key = state["idempotency_key"]
+        logger.warning(
+            "媒體雙重失敗，刪除半完成 row（id=%s slug=%s idem=%s），讓 worker 重試 / dead-letter",
+            episode_id,
+            slug,
+            idem_key,
         )
-    else:
-        from shared.db import repo as real_repo  # noqa: PLC0415
+        await repo.delete_episode_by_idem(idem_key)
+        raise RuntimeError(f"upload_artifacts 雙重失敗且無本機 fallback，row 已清。slug={slug}")
 
-        await real_repo.update_episode_keys(
-            state["episode_id"],
-            audio_key=state.get("audio_key"),
-            mp4_key=state.get("mp4_key"),
-            srt_key=state.get("srt_key"),
-            script_json=script.model_dump(by_alias=False),
-            cues=art.cues,
-            extracted_facts=facts_payload,
-            target_vocab=[v.model_dump(by_alias=False) for v in script.target_vocab],
-        )
+    # repo 是 MockRepo 或 shared.db.repo 模組，surface 相同——直接呼叫，不做 hasattr 分派。
+    await repo.update_episode_keys(
+        state["episode_id"],
+        audio_key=state.get("audio_key"),
+        srt_key=state.get("srt_key"),
+        script_json=script.model_dump(by_alias=False),
+        cues=art.cues,
+        extracted_facts=facts_payload,
+        target_vocab=[v.model_dump(by_alias=False) for v in script.target_vocab],
+    )
     return {}
 
 
@@ -890,12 +916,19 @@ async def insert_deliveries_node(state: PodState, config: RunnableConfig) -> dic
     deliver_date = state["deliver_date"]
 
     for uid in user_ids:
-        if hasattr(repo, "insert_delivery"):
+        try:
             await repo.insert_delivery(uid, episode_id, deliver_date)
-        else:
-            from shared.db import repo as real_repo  # noqa: PLC0415
-
-            await real_repo.insert_delivery(uid, episode_id, deliver_date)
+        except ForeignKeyViolation:
+            # 上游補償（update_episode_keys_node 的 DELETE-on-failure 或 worker
+            # _compensate_generate_failure）已把這筆 episode row 刪掉 —
+            # 沒對應 row 就沒人可以交付，當作「這集本輪失敗、不交付」，
+            # 不讓 FK violation 終止整個 graph（否則 graph 失敗 → worker 走
+            # vt-retry → 又卡同一個 FK → 死循環）。
+            logger.warning(
+                "insert_delivery 找不到對應 episode（id=%s uid=%s），上輪補償刪掉了，略過",
+                episode_id,
+                uid,
+            )
 
     return {}
 

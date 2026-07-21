@@ -49,7 +49,13 @@ SETTINGS_BY_USER: dict[str, dict[str, Any] | None] = {
 }
 
 
+# user_id → users.cefr_target（cefr_level 存 users 表，與 user_settings 分開模擬）
+CEFR_BY_USER: dict[str, str] = {USER_A: "B1", USER_B: "B1"}
+
+
 def _reset_state() -> None:
+    CEFR_BY_USER[USER_A] = "B1"
+    CEFR_BY_USER[USER_B] = "B1"
     SETTINGS_BY_USER[USER_A] = {
         "popup_enabled": True,
         "popup_dont_show_again": False,
@@ -83,15 +89,21 @@ class FakeCursor:
     async def execute(self, sql: str, params: tuple[Any, ...] = ()) -> None:
         s = " ".join(sql.split())
 
-        # SELECT from public.user_settings where user_id = %s（GET 與 PATCH 後的回讀）
-        if (
-            "from public.user_settings" in s
-            and "where user_id = %s" in s
-            and "insert" not in s
-        ):
+        # SELECT users left join user_settings（GET 與 PATCH 後的回讀）：
+        # settings 無列時模擬 left join 的全 NULL 欄位（只有 cefr_level 有值），
+        # router 端 _row_to_settings 會丟 None 讓預設值補。
+        if "left join public.user_settings" in s:
             user_id = params[0]
             row = SETTINGS_BY_USER.get(user_id)
-            self._rows = [row] if row else []
+            merged = dict(row) if row else {}
+            merged["cefr_level"] = CEFR_BY_USER.get(user_id, "B1")
+            self._rows = [merged]
+            return
+
+        # UPDATE users.cefr_target（PATCH 帶 cefrLevel 時）
+        if "update public.users set cefr_target" in s:
+            CEFR_BY_USER[params[1]] = params[0]
+            self._rows = []
             return
 
         # upsert（PATCH）：15 個 params，patch 為 None 時沿用既有值
@@ -306,3 +318,23 @@ def test_patch_settings_does_not_leak_to_other_user(client: TestClient) -> None:
     data_a = res_a.json()["data"]
     # A 必須維持原值（1.0）；B 改 3.0 不應擴散
     assert data_a["playbackRate"] == 1.0
+
+
+# ── cefr_level：存 users.cefr_target，PATCH / GET / 授權收斂 ────
+
+
+def test_patch_cefr_level_updates_users_table(client: TestClient) -> None:
+    res = client.patch("/settings", json={"cefrLevel": "A2"}, headers=_auth(USER_A))
+    assert res.status_code == 200
+    assert res.json()["data"]["cefrLevel"] == "A2"
+    assert CEFR_BY_USER[USER_A] == "A2"
+    # 不帶 cefrLevel 的 PATCH 不動它
+    client.patch("/settings", json={"theme": "dark"}, headers=_auth(USER_A))
+    assert CEFR_BY_USER[USER_A] == "A2"
+    # 其他 user 不受影響
+    assert CEFR_BY_USER[USER_B] == "B1"
+
+
+def test_patch_cefr_level_rejects_unknown_value(client: TestClient) -> None:
+    res = client.patch("/settings", json={"cefrLevel": "C2"}, headers=_auth(USER_A))
+    assert res.status_code in (400, 422)  # Literal 驗證擋在邊界層

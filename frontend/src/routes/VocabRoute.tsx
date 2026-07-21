@@ -4,6 +4,7 @@ import { Search, BookOpen, SearchX, Sparkles } from 'lucide-react'
 import { useNavigate, Link } from 'react-router-dom'
 import { useVocab, usePlayer } from '../state'
 import { Chip } from '../components/primitives/Chip'
+import { EmptyState } from '../components/primitives/EmptyState'
 import { VocabEntryCard } from '../components/vocab/VocabEntryCard'
 import type { VocabItem } from '../api/types'
 
@@ -97,21 +98,11 @@ export function VocabRoute() {
 
       {/* 列表 */}
       {isLoading ? null : filtered.length === 0 ? (
-        <div className="flex flex-col items-center justify-center py-20 text-center gap-3">
-          <div className="w-12 h-12 rounded-full bg-bg-secondary flex items-center justify-center text-text-tertiary">
-            {items.length === 0 ? <BookOpen size={22} /> : <SearchX size={22} />}
-          </div>
-          <div className="text-text-secondary text-sm">
-            {items.length === 0 ? (
-              <>
-                <p className="font-medium text-text-primary mb-1">單字本是空的</p>
-                <p>在播放頁點擊字幕中的單字即可收錄</p>
-              </>
-            ) : (
-              '找不到符合的單字'
-            )}
-          </div>
-        </div>
+        items.length === 0 ? (
+          <EmptyState icon={BookOpen} title="單字本是空的" description="在播放頁點擊字幕中的單字即可收錄" />
+        ) : (
+          <EmptyState icon={SearchX} title="找不到符合的單字" />
+        )
       ) : (
         <div className="space-y-2">
           <AnimatePresence mode="popLayout" initial={false}>

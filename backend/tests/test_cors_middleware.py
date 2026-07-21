@@ -1,7 +1,8 @@
 """CORS middleware 行為測試。
 
 驗證 dev / prod 在 Private Network Access (PNA) 與 origin regex 上的差異：
-  - dev 帶 PNA preflight（Access-Control-Request-Private-Network: true）→ 200 + ACA-Private-Network: true
+  - dev 帶 PNA preflight（Access-Control-Request-Private-Network: true）
+    → 200 + ACA-Private-Network: true
   - dev 帶 origin 命中 devtunnels regex → 200 + ACA-Origin 回填該 origin
   - prod 帶同樣 PNA preflight → 400 + **不帶** ACA-Private-Network
   - prod origin regex 不啟用 → 非 cors_allowed_origins 內的 origin 400
@@ -16,11 +17,9 @@ from __future__ import annotations
 from typing import Any
 
 import pytest
-from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from shared.config import Settings, get_settings
-
 
 DEV_ORIGIN_LOCAL = "http://localhost:5173"
 DEV_ORIGIN_TUNNEL = "https://abc12345-5173.jpe1.devtunnels.ms"
@@ -125,7 +124,7 @@ def test_prod_preflight_omits_pna_header(make_client: Any) -> None:
     )
     assert r.status_code == 400
     assert "access-control-allow-private-network" not in {
-        k.lower() for k in r.headers.keys()
+        k.lower() for k in r.headers
     }
 
 

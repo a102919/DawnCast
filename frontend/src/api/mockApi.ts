@@ -50,6 +50,7 @@ const DEFAULT_SETTINGS: Settings = {
   theme: 'auto',
   preferredTopics: [],
   defaultDeliveryTime: '07:00',
+  cefrLevel: 'B1',
 } as const
 
 function readVocab(): VocabItem[] {

@@ -71,7 +71,15 @@ async def project_orders_to_requests(request_date: str) -> int:
                     ) is null then 'fallback'
                     else 'specified'
                 end as source,
-                o.entry_mode as topic_type,
+                -- 入口對映：daily_orders.entry_mode 是使用者值域（news/topic/knowledge/skill），
+                -- topic_requests.topic_type 是引擎值域（news/product/evergreen/skill）。
+                -- 這裡是唯一轉換邊界——不轉的話 source factory / tone_map / resolve_format
+                -- 全部查不到值，grounding 與格式選擇整條靜默失效。
+                case o.entry_mode
+                    when 'topic' then 'product'
+                    when 'knowledge' then 'evergreen'
+                    else o.entry_mode
+                end as topic_type,
                 o.length_tier as length_tier
             from public.daily_orders o
             join public.users u on u.id = o.user_id
@@ -90,17 +98,20 @@ async def list_requests_for_date(request_date: str) -> list[dict[str, Any]]:
 
     Phase 4：多帶 topic_type / length_tier 給 _orchestrate，傳給 resolve_for_user
     與 find_reusable_episode。format 是 derived，跳過不重複帶。
+    cefr 從 users.cefr_target join 出來（不落 topic_requests，讀取時取最新值即可）。
     """
     async with connection() as conn, conn.cursor(row_factory=dict_row) as cur:
         await cur.execute(
             """
-            select user_id::text as user_id,
-                   raw_topic as big_topic,
-                   topic_type,
-                   length_tier
-            from public.topic_requests
-            where request_date = %s and raw_topic is not null
-            order by user_id
+            select r.user_id::text as user_id,
+                   r.raw_topic as big_topic,
+                   r.topic_type,
+                   r.length_tier,
+                   u.cefr_target as cefr
+            from public.topic_requests r
+            join public.users u on u.id = r.user_id
+            where r.request_date = %s and r.raw_topic is not null
+            order by r.user_id
             """,
             (request_date,),
         )
@@ -111,6 +122,7 @@ async def list_requests_for_date(request_date: str) -> list[dict[str, Any]]:
             "big_topic": r["big_topic"],
             "topic_type": r["topic_type"],
             "length_tier": r["length_tier"],
+            "cefr": r["cefr"] or "B1",
         }
         for r in rows
     ]
@@ -232,20 +244,39 @@ async def update_episode_keys(
         )
 
 
+async def delete_episode_by_idem(idempotency_key: str) -> int:
+    """compensation：用 idempotency_key 刪除半完成 episode row。
+
+    只刪 audio_r2_key IS NULL 的列，避免 worker 重試在 race condition 下誤殺
+    已正常完成的 row。回傳實際刪除列數。
+    """
+    async with connection() as conn, conn.cursor() as cur:
+        await cur.execute(
+            """
+            delete from public.episodes
+            where idempotency_key = %s and audio_r2_key is null
+            """,
+            (idempotency_key,),
+        )
+        return cur.rowcount
+
+
 async def find_reusable_episode(
     big_topic: str,
     user_id: str,
     *,
     length_tier: str = "medium",
+    cefr: str = "B1",
 ) -> str | None:
     """重用核心查詢——單一 anti-join，禁特例分支（PRD §4.5）。
 
-    同大主題 + 同長度 tier + 新鮮度未過期 + 該 user 未聽過 → 取最新一集。
+    同大主題 + 同長度 tier + 同 CEFR 等級 + 新鮮度未過期 + 該 user 未聽過 → 取最新一集。
     「過期」與「已交付」都是 WHERE 的一部分，沒有 if/else 拆支。
 
     Phase 4：加 length_tier WHERE；topic_type 不加（與 length_tier 一起決定 format
     但兩者若同時過濾會把「同 big_topic 不同 entry_mode」的兩條邏輯拆成四種組合，
     且 idempotency_key 已含 topic_type，重用不會撞——見 nodes.upsert_episode_node）。
+    CEFR 過濾：A2 使用者不能拿到 B2 集，語言難度是內容契約的一部分。
     """
     async with connection() as conn, conn.cursor(row_factory=dict_row) as cur:
         await cur.execute(
@@ -254,6 +285,7 @@ async def find_reusable_episode(
             from public.episodes e
             where e.big_topic = %(big_topic)s
               and e.length_tier = %(length_tier)s
+              and e.cefr_level = %(cefr)s
               and (e.expires_at is null or now() < e.expires_at)
               and not exists (
                   select 1 from public.deliveries d
@@ -262,10 +294,39 @@ async def find_reusable_episode(
             order by e.created_at desc
             limit 1
             """,
-            {"big_topic": big_topic, "user_id": user_id, "length_tier": length_tier},
+            {
+                "big_topic": big_topic,
+                "user_id": user_id,
+                "length_tier": length_tier,
+                "cefr": cefr,
+            },
         )
         row = await cur.fetchone()
     return str(row["id"]) if row else None
+
+
+async def list_prior_episode_meta(
+    user_id: str, big_topic: str, *, limit: int = 5
+) -> list[dict[str, Any]]:
+    """該 user 在同 big_topic 已交付集的 angle 與 extracted_facts（新→舊）。
+
+    給 resolve_for_user 做角度輪替與 avoid_facts 餵入——同主題重複點餐時，
+    新集拿舊集的角度避開、facts 避重，不再每次都生「定義」角度的相似內容。
+    """
+    async with connection() as conn, conn.cursor(row_factory=dict_row) as cur:
+        await cur.execute(
+            """
+            select e.angle, e.extracted_facts
+            from public.episodes e
+            join public.deliveries d on d.episode_id = e.id
+            where d.user_id = %s and e.big_topic = %s
+            order by e.created_at desc
+            limit %s
+            """,
+            (user_id, big_topic, limit),
+        )
+        rows = await cur.fetchall()
+    return [{"angle": r["angle"], "extracted_facts": r["extracted_facts"] or []} for r in rows]
 
 
 async def insert_delivery(user_id: str, episode_id: str, deliver_date: str) -> bool:
@@ -391,9 +452,7 @@ def _cues_from_script_json(script_json: Any) -> list[Cue]:
     return [Cue.model_validate(c) for c in raw]
 
 
-async def find_delivered_episode(
-    user_id: str, deliver_date: str
-) -> Episode | None:
+async def find_delivered_episode(user_id: str, deliver_date: str) -> Episode | None:
     """取當天交付給該 user 的集數，找不到回 None。
 
     undelivered_users 的 NOT EXISTS 邏輯保證同 user+date 至多一列；

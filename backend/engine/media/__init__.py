@@ -43,12 +43,17 @@ class EpisodeArtifacts:
     cues: list[Cue]
 
 
-async def render_episode(script: ScriptJSON, workdir: Path) -> EpisodeArtifacts:
-    """把腳本渲染成 mp3 + 字幕字串 + cues 時間軸，全部產到 workdir。"""
+async def render_episode(
+    script: ScriptJSON, workdir: Path, *, cefr: str = "B1"
+) -> EpisodeArtifacts:
+    """把腳本渲染成 mp3 + 字幕字串 + cues 時間軸，全部產到 workdir。
+
+    cefr 決定 TTS 語速（A2 慢速輸入，見 tts.CEFR_SPEED / _CEFR_RATE_EDGE）。
+    """
     settings = get_settings()
     workdir.mkdir(parents=True, exist_ok=True)
 
-    segs = await synth_script(script, workdir)
+    segs = await synth_script(script, workdir, cefr=cefr)
 
     mp3_path = workdir / "episode.mp3"
     concat_segments(

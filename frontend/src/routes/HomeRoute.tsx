@@ -1,14 +1,18 @@
 import { useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { AnimatePresence, motion } from 'framer-motion'
-import { Play, Captions, MousePointerClick, BookOpen, Mic, AlertCircle, RotateCcw, SearchX, Headphones, Brain, Star } from 'lucide-react'
+import { Play, Captions, MousePointerClick, BookOpen, Headphones, Brain, Star, SearchX } from 'lucide-react'
 import type { Episode } from '../types/episode'
 import { Button } from '../components/primitives/Button'
 import { Chip } from '../components/primitives/Chip'
+import { SectionLabel } from '../components/primitives/SectionLabel'
+import { StatCard } from '../components/primitives/StatCard'
+import { ErrorBanner } from '../components/primitives/ErrorBanner'
 import { useListened, useVocab } from '../state'
 import { EpisodeCard } from '../components/EpisodeCard'
+import { EpisodeRow } from '../components/shared/EpisodeRow'
 import { api } from '../api'
-import { TOPIC_LABELS, CEFR_COLOR, formatDateZhTW } from './episodeData'
+import { TOPIC_LABELS, CEFR_COLOR } from './episodeData'
 import type { TopicKey, MockEpisode } from './episodeData'
 import { storageGet } from '../lib/storage'
 
@@ -75,6 +79,9 @@ export function HomeRoute() {
   const lastPlayed = (() => {
     const episodeId = storageGet<string>('dawncast:player:lastEpisodeId')
     if (!episodeId) return null
+    // LS 可能殘留「已壞掉」的舊 episode（mp3 不在了）→ 用 episodes 列表驗證還在線，
+    // 不在線就 fallback 到最新一集，避免按鈕把使用者帶進 404。
+    if (episodes.length > 0 && !episodes.some(ep => ep.id === episodeId)) return null
     const saved = storageGet<{ episodeId: string; currentTime: number }>('dawncast:player:currentTime')
     if (!saved || saved.episodeId !== episodeId || saved.currentTime <= 0) return null
     const mm = Math.floor(saved.currentTime / 60)
@@ -91,7 +98,7 @@ export function HomeRoute() {
           <Star size={12} fill="currentColor" />
           全功能免費開放
         </div>
-        <h1 className="text-2xl lg:text-4xl font-bold text-text-primary leading-tight tracking-tight">
+        <h1 className="text-display lg:text-4xl tracking-display leading-display font-bold text-text-primary">
           繼續你的學習之旅
         </h1>
         <div className="flex flex-col sm:flex-row items-center justify-center gap-3 pt-2">
@@ -125,60 +132,15 @@ export function HomeRoute() {
       {latestEpisode && (
       <section className="space-y-3">
         <div className="flex items-center justify-between">
-          <h2 className="text-sm font-semibold text-text-tertiary uppercase tracking-wider">今日推薦</h2>
+          <SectionLabel>今日推薦</SectionLabel>
           <span className={`text-[10px] font-semibold px-1.5 py-0.5 rounded ${CEFR_COLOR[latestEpisode.cefrLevel]}`}>
             {latestEpisode.cefrLevel}
           </span>
         </div>
         {fetchError !== null && (
-          <div className="flex items-center gap-2 px-3 py-2 rounded-lg bg-danger/10 border border-danger/20 text-danger text-xs">
-            <AlertCircle size={14} className="shrink-0" />
-            <span className="flex-1">{fetchError}</span>
-            <button
-              type="button"
-              onClick={() => setRetryKey(k => k + 1)}
-              className="flex items-center gap-1 font-medium rounded hover:opacity-80 transition-opacity duration-fast focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-danger/60"
-            >
-              <RotateCcw size={12} />
-              重試
-            </button>
-          </div>
+          <ErrorBanner variant="inline" message={fetchError} onRetry={() => setRetryKey(k => k + 1)} />
         )}
-        <Link to={`/player/${latestEpisode.id}`} className="block">
-          <div className="p-5 rounded-xl ring-1 ring-accent/20 bg-accent/5 hover:bg-accent/10 shadow-md transition-colors duration-fast group">
-            <div className="flex items-center justify-between gap-4">
-              <div className="space-y-1">
-                <div className="flex items-center gap-2 text-xs text-text-secondary">
-                  <span>E{latestEpisode.episode}</span>
-                  <span>·</span>
-                  <span>{TOPIC_LABELS[latestEpisode.topic]}</span>
-                  <span>·</span>
-                  <span>3 分鐘</span>
-                </div>
-                {episode === null ? (
-                  <>
-                    <div className="h-6 w-48 rounded bg-bg-secondary animate-pulse" />
-                    <div className="h-4 w-36 rounded bg-bg-secondary animate-pulse" />
-                  </>
-                ) : (
-                  <>
-                    <div className="font-semibold text-text-primary text-lg leading-tight">
-                      {episode.title}
-                    </div>
-                    <div className="text-sm text-text-secondary">{latestEpisode.titleZh}</div>
-                  </>
-                )}
-                <div className="flex items-center gap-1.5 text-xs text-text-tertiary mt-1">
-                  <Mic size={11} />
-                  <span>Alex &amp; Sarah · {formatDateZhTW(latestEpisode.publishedAt)}</span>
-                </div>
-              </div>
-              <div className="shrink-0 w-12 h-12 rounded-full bg-accent shadow-sm flex items-center justify-center text-white group-hover:scale-105 transition-transform duration-fast">
-                <Play size={20} fill="currentColor" />
-              </div>
-            </div>
-          </div>
-        </Link>
+        <EpisodeRow ep={latestEpisode} variant="hero" title={episode?.title ?? null} />
       </section>
       )}
 
@@ -203,22 +165,14 @@ export function HomeRoute() {
 
       {/* ── 學習統計 ── */}
       <section className="grid grid-cols-3 gap-3">
-        {([
-          { Icon: Headphones, label: '已聽集數', value: `${listenedIds.size} 集` },
-          { Icon: BookOpen,   label: '單字庫',   value: `${vocabItems.length} 個` },
-          { Icon: Brain,      label: '今日待複習', value: `${dueCount} 張` },
-        ] as const).map(({ Icon, label, value }) => (
-          <div key={label} className="flex flex-col items-center gap-1.5 p-4 rounded-xl bg-bg-secondary border border-border">
-            <Icon size={18} className="text-accent" />
-            <span className="text-lg font-bold text-text-primary">{value}</span>
-            <span className="text-[11px] text-text-tertiary">{label}</span>
-          </div>
-        ))}
+        <StatCard icon={Headphones} label="已聽集數" value={listenedIds.size} unit="集" />
+        <StatCard icon={BookOpen} label="單字庫" value={vocabItems.length} unit="個" />
+        <StatCard icon={Brain} label="今日待複習" value={dueCount} unit="張" />
       </section>
 
       {/* ── 集數庫 ── */}
       <section className="space-y-4">
-        <h2 className="text-sm font-semibold text-text-tertiary uppercase tracking-wider">所有集數</h2>
+        <SectionLabel>所有集數</SectionLabel>
         <div className="flex gap-1.5 flex-wrap">
           {(Object.keys(TOPIC_LABELS) as TopicKey[]).map(key => (
             <Chip
@@ -264,7 +218,7 @@ export function HomeRoute() {
 
       {/* ── 功能亮點 ── */}
       <section className="space-y-4">
-        <h2 className="text-sm font-semibold text-text-tertiary uppercase tracking-wider">不只是聆聽，真正學進去</h2>
+        <SectionLabel>不只是聆聽，真正學進去</SectionLabel>
         <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
           {FEATURES.map(({ Icon, title, desc }) => (
             <div key={title} className="flex items-start gap-3 sm:block sm:space-y-2 p-4 rounded-lg border border-border bg-bg-secondary">

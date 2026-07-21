@@ -1,10 +1,9 @@
 """夜間 pipeline 與 worker 的純邏輯 / mock 測試（不連 DB、不打外部 API）。
 
 驗證重點：
-  1. deterministic_normalize：正規化等價類。
-  2. reuse anti-join 分支：命中只交付、未命中才 enqueue（用 fake repo/queue）。
-  3. generate_job：串接順序、R2 key 格式、failover/degrade 行為（全 mock）。
-  4. worker dispatch：control/generate 路由、成功 delete、read_ct>=N archive、超時不 delete。
+  1. reuse anti-join 分支：命中只交付、未命中才 enqueue（用 fake repo/queue）。
+  2. generate_job：串接順序、R2 key 格式、failover/degrade 行為（全 mock）。
+  3. worker dispatch：control/generate 路由、成功 delete、read_ct>=N archive、超時不 delete。
 
 本機沒有 Supabase/pgmq，所以 DB/佇列/外部一律 monkeypatch 成 in-memory 假件，
 只驗 Python 側的決策邏輯。SQL 本身的正確性靠型別 + migration 保證（Phase 5 真連驗）。
@@ -23,29 +22,8 @@ from engine.pipeline import generate_job, reuse
 from engine.pipeline.cluster import connected_components, cosine_similarity
 from engine.pipeline.langgraph_pod.chat import FakeChatModel
 from engine.pipeline.langgraph_pod.mock import MockRenderer, make_mock_workdir
-from engine.pipeline.normalize import deterministic_normalize
 from shared.errors import RateLimitError
 from shared.models import Cue, ScriptJSON
-
-# ── 1. deterministic_normalize 等價類 ──────────────────────────────
-
-
-def test_normalize_equivalence_class() -> None:
-    base = deterministic_normalize("quantum computing")
-    assert deterministic_normalize("Quantum Computing") == base
-    assert deterministic_normalize("  quantum   computing  ") == base
-    assert deterministic_normalize("Quantum, Computing!") == base
-    # 全形空白 / 標點也收斂
-    assert deterministic_normalize("ＱＵＡＮＴＵＭ　ＣＯＭＰＵＴＩＮＧ") == base
-
-
-def test_normalize_distinguishes_real_difference() -> None:
-    assert deterministic_normalize("machine learning") != deterministic_normalize("deep learning")
-
-
-def test_normalize_preserves_cjk() -> None:
-    assert deterministic_normalize("量子 計算") == "量子 計算"
-
 
 # ── cluster 純函式（V2 骨架，仍要可測）─────────────────────────────
 
@@ -79,6 +57,8 @@ class FakeRepo:
         # 記下每次查詢收到的 length_tier，方便新測試斷言「介面真的傳到」。
         self.find_calls: list[tuple[str, str, str]] = []
         self.deliveries: list[tuple[str, str, str]] = []
+        # 角度輪替 / avoid_facts 用：測試可預先塞舊集 meta。
+        self.prior_meta: list[dict[str, Any]] = []
 
     async def find_reusable_episode(
         self,
@@ -86,9 +66,15 @@ class FakeRepo:
         user_id: str,
         *,
         length_tier: str = "medium",
+        cefr: str = "B1",
     ) -> str | None:
         self.find_calls.append((big_topic, user_id, length_tier))
         return self._reusable
+
+    async def list_prior_episode_meta(
+        self, user_id: str, big_topic: str, *, limit: int = 5
+    ) -> list[dict[str, Any]]:
+        return self.prior_meta[:limit]
 
     async def insert_delivery(self, user_id: str, episode_id: str, deliver_date: str) -> bool:
         self.deliveries.append((user_id, episode_id, deliver_date))
@@ -118,6 +104,7 @@ class _TieredFakeRepo(FakeRepo):
         user_id: str,
         *,
         length_tier: str = "medium",
+        cefr: str = "B1",
     ) -> str | None:
         self.find_calls.append((big_topic, user_id, length_tier))
         if length_tier == "short":
@@ -197,6 +184,46 @@ async def test_reuse_distinguishes_by_length_tier(monkeypatch: pytest.MonkeyPatc
     assert long_hit == "ep-long"
     # 兩個請求查了兩次，呼叫紀錄都帶到正確的 tier。
     assert repo.find_calls == [("ai", "u1", "short"), ("ai", "u1", "long")]
+
+
+async def test_reuse_rotates_angle_and_collects_avoid_facts(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """未命中 + 不指定 angle：依交付史選未用過的角度，並把舊 facts 塞進 body。"""
+    repo = FakeRepo(reusable=None)
+    repo.prior_meta = [
+        {"angle": "定義", "extracted_facts": [{"claim": "fact-1", "source_ids": []}]},
+        {"angle": "人物故事", "extracted_facts": ["fact-2"]},  # 舊格式純字串也要吃
+    ]
+    q = FakeQueue()
+    monkeypatch.setattr(reuse, "repo", repo)
+    monkeypatch.setattr(reuse, "queue", q)
+
+    result = await reuse.resolve_for_user(
+        user_id="u1", big_topic="ai", deliver_date="2026-07-21", cefr="A2"
+    )
+    assert result is None
+    _, body = q.sent[0]
+    # 定義 / 人物故事 已用過 → 下一個是「常見誤解」。
+    assert body["angle"] == "常見誤解"
+    assert body["avoid_facts"] == ["fact-1", "fact-2"]
+    assert body["cefr"] == "A2"
+
+
+async def test_reuse_angle_cycles_beyond_window(monkeypatch: pytest.MonkeyPatch) -> None:
+    """交付史窗口（5 集）塞滿 → 選窗口外那個角度，輪替自然循環不卡死。"""
+    from shared.models import ANGLES
+
+    repo = FakeRepo(reusable=None)
+    # FakeRepo 依 limit=5 只回前 5 筆 → 第 6 個角度（對比）在窗口外 → 被選中。
+    repo.prior_meta = [{"angle": a, "extracted_facts": []} for a, _ in ANGLES]
+    q = FakeQueue()
+    monkeypatch.setattr(reuse, "repo", repo)
+    monkeypatch.setattr(reuse, "queue", q)
+
+    await reuse.resolve_for_user(user_id="u1", big_topic="ai", deliver_date="2026-07-21")
+    _, body = q.sent[0]
+    assert body["angle"] == ANGLES[5][0]
 
 
 # ── 3. generate_job 串接 ───────────────────────────────────────────

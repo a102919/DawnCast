@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 from typing import Any
 
@@ -19,6 +20,8 @@ from shared.db.pool import connection
 from shared.errors import ForbiddenError, NotFoundError
 from shared.models import Cue, Episode, EpisodeListItem
 from shared.storage import r2
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/episodes", tags=["episodes"])
 
@@ -127,5 +130,14 @@ async def get_episode_url(slug: str, user_id: str = Depends(get_current_user)) -
                 # ponytail: 回相對路徑讓 vite proxy / 同源 origin 處理，
                 # 不寫死 host（devtunnel 是 HTTPS，localhost:8000 會被瀏覽器擋）。
                 return ok(f"/media/{slug}.mp3")
+            # ponytail: 半完成 record 偵測——有 .mp4 但無 .mp3 多半是早期 pipeline stub，
+            # 留著會 silent fail（player 整頁炸、log 無線索），主動 log + 明確錯誤訊息。
+            mp4_local = Path(media_dir) / f"{slug}.mp4"
+            if mp4_local.is_file():
+                logger.warning(
+                    "半完成 episode：%s 有 .mp4 stub 但無 .mp3 / R2 key（size=%d bytes）",
+                    slug, mp4_local.stat().st_size,
+                )
+                raise NotFoundError("此集數媒體尚未完成轉檔（找到 .mp4 stub）")
         raise NotFoundError("此集數尚無媒體檔")
     return ok(r2.presigned_get_url(key))

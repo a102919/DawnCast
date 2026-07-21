@@ -3,7 +3,7 @@
 檢查三件事：
   1. DB pool 可連（worker 沒 DB 等於空轉，必檢）。
   2. ffmpeg 在 PATH 且可執行（media 合成的硬依賴，漏裝整條生成都掛）。
-  3. 生成引擎 health（可選；引擎暫時不健康不該無限重啟容器，故失敗只警告不致命）。
+  3. 生成引擎憑證有設（可選；只驗設定存在，不打外部 API——失敗只警告不致命）。
 
 整體包硬 timeout，避免 DB 卡住時 health check 永遠不回、Fly 誤判超時。
 """
@@ -45,12 +45,12 @@ def _check_ffmpeg() -> None:
     )
 
 
-async def _check_engine() -> bool:
-    """生成引擎自報健康。可選：失敗只警告，不讓容器重啟。"""
-    from engine.generation.factory import make_engine
+def _check_engine_config() -> bool:
+    """寫稿憑證有設即視為健康（不打外部 API，health check 要快且不耗配額）。"""
+    from shared.config import get_settings
 
-    engine = make_engine()
-    return await engine.health()
+    cfg = get_settings()
+    return bool(cfg.minimax_auth_token or cfg.api_key)
 
 
 async def _run() -> int:
@@ -60,12 +60,9 @@ async def _run() -> int:
     # 2. ffmpeg（致命）
     _check_ffmpeg()
 
-    # 3. 引擎（非致命：暫時不健康時靠 evergreen + 重試兜底，別狂重啟）
-    try:
-        if not await _check_engine():
-            print("warn: 生成引擎 health() 回 False（非致命）", file=sys.stderr)
-    except Exception as exc:  # noqa: BLE001 — 引擎檢查刻意吞例外，僅警告
-        print(f"warn: 生成引擎 health 檢查例外（非致命）：{exc}", file=sys.stderr)
+    # 3. 引擎憑證（非致命：缺憑證時靠 evergreen + 重試兜底，別狂重啟）
+    if not _check_engine_config():
+        print("warn: 未設定任何寫稿憑證（MINIMAX_AUTH_TOKEN / API_KEY）", file=sys.stderr)
 
     return 0
 

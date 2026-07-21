@@ -18,18 +18,24 @@ from shared.models import Settings
 
 router = APIRouter(prefix="/settings", tags=["settings"])
 
+# cefr_level 存 users.cefr_target（生成引擎讀同一欄），其餘存 user_settings。
+# 從 users 出發 left join：user_settings 無列時 settings 欄位全 NULL，
+# 由 _row_to_settings 丟掉 None 讓 model 預設值補——「無列」不再是特殊情況。
 _SELECT = """
-  select popup_enabled, popup_dont_show_again, playback_rate,
-         font_size, theme, preferred_topics,
-         to_char(default_delivery_time, 'HH24:MI') as default_delivery_time
-  from public.user_settings where user_id = %s
+  select s.popup_enabled, s.popup_dont_show_again, s.playback_rate,
+         s.font_size, s.theme, s.preferred_topics,
+         to_char(s.default_delivery_time, 'HH24:MI') as default_delivery_time,
+         u.cefr_target as cefr_level
+  from public.users u
+  left join public.user_settings s on s.user_id = u.id
+  where u.id = %s
 """
 
 
 def _row_to_settings(row: dict[str, Any] | None) -> Settings:
     if row is None:
         return Settings()  # 預設值對齊前端 DEFAULT_SETTINGS
-    return Settings.model_validate(row)
+    return Settings.model_validate({k: v for k, v in row.items() if v is not None})
 
 
 @router.get("", response_model=ApiResponse[Settings])
@@ -86,6 +92,11 @@ async def update_settings_ep(
                 body.default_delivery_time,
             ),
         )
+        if body.cefr_level is not None:
+            await cur.execute(
+                "update public.users set cefr_target = %s where id = %s",
+                (body.cefr_level, user_id),
+            )
         await cur.execute(_SELECT, (user_id,))
         row = await cur.fetchone()
         await conn.commit()

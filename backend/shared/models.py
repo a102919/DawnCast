@@ -78,6 +78,7 @@ class ScriptJSON(BaseModel):
     """寫稿引擎的輸出契約。LLM 回應先剝 code fence 再 model_validate_json。"""
 
     topic: str = Field(min_length=1)
+    topic_zh: str = Field(min_length=1)  # 中文標題，非逐字翻譯——LLM 直接生成自然標題
     extracted_facts: list[SourcedFact] = Field(min_length=1)
     target_vocab: list[TargetVocab] = Field(min_length=1)
     script: list[ScriptLine] = Field(min_length=8)  # 太短直接判失敗
@@ -160,6 +161,9 @@ class Settings(CamelModel):
     theme: Literal["light", "dark", "auto"] = "auto"
     preferred_topics: list[str] = Field(default_factory=list)
     default_delivery_time: str = "07:00"  # 'HH:MM'
+    # 英文難度等級：存 users.cefr_target（0001 就有的欄位，現在才真正接上），
+    # 影響寫稿詞彙/句構規範、目標字數與 TTS 語速（見 nodes._CEFR_GUIDE、tts.CEFR_RATE）。
+    cefr_level: Literal["A2", "B1", "B2"] = "B1"
 
 
 DailyOrderStatus = Literal["pending", "queued", "played"]
@@ -189,7 +193,7 @@ class Cue(CamelModel):
 
 
 class Episode(CamelModel):
-    """前端播放頁需要的集數內容。videoUrl 由服務層產簽章 URL 後填入。"""
+    """前端播放頁需要的集數內容。audioUrl 由服務層產簽章 URL 後填入。"""
 
     id: str  # 對外用 slug
     title: str
@@ -197,7 +201,7 @@ class Episode(CamelModel):
     topic: str
     cefr_level: str = "B1"
     is_free: bool = False
-    video_url: str | None = None
+    audio_url: str | None = None
     cues: list[Cue] = Field(default_factory=list)
 
 
@@ -217,7 +221,7 @@ class Activity(CamelModel):
 
 
 class EpisodeListItem(CamelModel):
-    """集數列表項，鏡像前端 MockEpisode（列表頁用，不含 cues / videoUrl）。
+    """集數列表項，鏡像前端 MockEpisode（列表頁用，不含 cues / audioUrl）。
 
     title_zh / episode / published_at 在 DB 可為 NULL，但前端 zod 要求非空，
     故查詢端一律 coalesce 出預設值（見 episodes.list_episodes）。

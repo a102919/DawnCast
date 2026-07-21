@@ -5,22 +5,22 @@ import { useEffect } from 'react'
 import { AuthProvider, ActivityProvider, PlayerProvider, VocabProvider, SettingsProvider, ListenedProvider, FavoritesProvider, DailyOrderProvider, useAuth } from './state'
 import { TopBar, BottomNav } from './components/layout'
 import { HomeRoute, PlayerRoute, VocabRoute, FavoritesRoute, SettingsRoute, ProgressRoute, FlashcardRoute, DailyRoute, LoginRoute } from './routes'
+import { useSprings } from './lib/motion'
 
+// 進入 PlayerRoute 用「往上推入」的位移感（呼應 Home 精選卡→播放頁的層級深入），
+// 其餘頁面互轉維持單純淡入淡出，避免非相關頁面切換也有位移感造成雜訊。
 const pageVariants = {
-  initial: { opacity: 0 },
-  animate: { opacity: 1 },
-  exit: { opacity: 0 },
-}
-
-const pageTransition = {
-  duration: 0.15,
-  ease: [0.2, 0.8, 0.2, 1] as const,
+  initial: (isPlayer: boolean) => ({ opacity: 0, y: isPlayer ? 16 : 0 }),
+  animate: { opacity: 1, y: 0 },
+  exit: (isPlayer: boolean) => ({ opacity: 0, y: isPlayer ? -16 : 0 }),
 }
 
 // 動畫 wrapper：依 location.pathname 切換並 scroll 重置。
 // auth gate 在外層 AppShell；這裡只管動畫。
 function AnimatedRoutes() {
   const location = useLocation()
+  const { gentle } = useSprings()
+  const isPlayer = location.pathname.startsWith('/player')
 
   useEffect(() => {
     window.scrollTo(0, 0)
@@ -30,11 +30,12 @@ function AnimatedRoutes() {
     <AnimatePresence mode="wait">
       <motion.div
         key={location.pathname}
+        custom={isPlayer}
         variants={pageVariants}
         initial="initial"
         animate="animate"
         exit="exit"
-        transition={pageTransition}
+        transition={gentle}
       >
         <Routes location={location}>
           <Route path="/" element={<HomeRoute />} />

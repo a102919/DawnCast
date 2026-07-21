@@ -1,9 +1,11 @@
 import { useState, useEffect, useMemo, useCallback, useRef } from 'react'
 import { useParams } from 'react-router-dom'
-import { AlertCircle, RotateCcw, Sparkles, BookMarked, FileText } from 'lucide-react'
+import { Sparkles, BookMarked, FileText } from 'lucide-react'
+import { ErrorBanner } from '../components/primitives/ErrorBanner'
 import { AudioPlayer } from '../components/player/AudioPlayer'
 import { PlayerControls } from '../components/player/PlayerControls'
 import { LyricsView } from '../components/lyrics/LyricsView'
+import { EpisodeCover } from '../components/shared/EpisodeCover'
 import { PlayerBottomBar } from '../components/player/PlayerBottomBar'
 import { MobileTranscriptSheet } from '../components/transcript/MobileTranscriptSheet'
 import { WordCardPanel } from '../components/wordcard/WordCardPanel'
@@ -66,6 +68,9 @@ export function PlayerRoute() {
   }, [id])
 
   useEffect(() => {
+    // 非同步資料載入的標準模式：setState 都在 await 之後才發生，
+    // 不會造成 render 迴圈；規則誤報，抑制之。
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     void loadEpisode()
   }, [loadEpisode])
 
@@ -145,17 +150,7 @@ export function PlayerRoute() {
 
   if (fetchError !== null) {
     return (
-      <div className="flex flex-col items-center justify-center h-64 gap-3">
-        <AlertCircle size={32} className="text-danger" />
-        <p className="text-danger text-sm">{fetchError}</p>
-        <button
-          className="flex items-center gap-1.5 px-4 py-2 text-sm text-text-secondary bg-bg-secondary hover:bg-border rounded-md transition-colors duration-fast focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
-          onClick={() => void loadEpisode()}
-        >
-          <RotateCcw size={14} />
-          重新載入
-        </button>
-      </div>
+      <ErrorBanner message={fetchError} onRetry={() => void loadEpisode()} retryLabel="重新載入" className="h-64" />
     )
   }
 
@@ -171,17 +166,15 @@ export function PlayerRoute() {
   const selectedCueIdx = selectedCue ? episode.cues.indexOf(selectedCue) : -1
 
   return (
-    <div className="-mx-4 sm:-mx-6 lg:-mx-8 -my-6 lg:-my-8 bg-black min-h-[calc(100dvh-56px)] text-white flex flex-col">
+    <div className="bg-bg-canvas h-[calc(100dvh-56px-env(safe-area-inset-top,0px))] overflow-hidden text-text-primary flex flex-col">
       {/* 隱形音檔綁時間軸（不上視） */}
       <AudioPlayer audioUrl={episode.audioUrl} />
 
       {/* Header：podcast cover + metadata */}
       <header className="flex items-center gap-4 px-4 lg:px-8 pt-6 pb-4 shrink-0">
-        <div className="w-16 h-16 lg:w-20 lg:h-20 rounded-xl bg-gradient-to-br from-accent via-accent/70 to-accent/30 flex items-center justify-center shrink-0">
-          <Sparkles size={28} className="text-white/90" />
-        </div>
+        <EpisodeCover episodeId={episode.id} size="lg" />
         <div className="min-w-0 flex-1">
-          <div className="text-[10px] uppercase tracking-widest text-white/50 mb-1">
+          <div className="text-[10px] uppercase tracking-widest text-text-tertiary mb-1">
             Podcast
           </div>
           <h1 className="text-base lg:text-lg font-semibold truncate">{episode.title}</h1>
@@ -191,6 +184,7 @@ export function PlayerRoute() {
       {/* 大歌詞：佔滿中間剩餘空間 */}
       <main className="flex-1 min-h-0 relative">
         <LyricsView
+          episodeId={episode.id}
           cues={episode.cues}
           currentTime={currentTime}
           onWordClick={handleWordClick}
@@ -198,19 +192,19 @@ export function PlayerRoute() {
       </main>
 
       {/* 控制列（桌面） */}
-      <footer className="hidden lg:block px-8 pb-6 pt-4 shrink-0 bg-gradient-to-t from-black via-black/95 to-transparent">
+      <footer className="hidden lg:block px-8 pb-6 pt-4 shrink-0 material-thick border-t border-border">
         <PlayerControls duration={episode.cues[episode.cues.length - 1]?.end ?? 0} />
         <div className="flex items-center justify-center gap-4 mt-3">
           <button
             onClick={() => setIsTranscriptOpen(true)}
-            className="flex items-center gap-1.5 text-xs text-white/60 hover:text-white transition-colors"
+            className="flex items-center gap-1.5 text-xs text-text-secondary hover:text-text-primary transition-colors"
           >
             <FileText size={14} />
             逐字稿
           </button>
           <button
             onClick={() => setIsVocabDrawerOpen(true)}
-            className="flex items-center gap-1.5 text-xs text-white/60 hover:text-white transition-colors"
+            className="flex items-center gap-1.5 text-xs text-text-secondary hover:text-text-primary transition-colors"
           >
             <BookMarked size={14} />
             我的單字本

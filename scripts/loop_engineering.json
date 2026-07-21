@@ -1,5 +1,6 @@
 {
   "topic": "Loop Engineering: How AI Coding Agents Learn From Their Own Mistakes",
+  "topic_zh": "循環工程：AI 寫程式助手如何從自己的錯誤中學習",
   "extracted_facts": [
     {
       "claim": "Loop engineering is a new practice in software development (introduced publicly in early 2026) that designs the feedback loops AI coding agents use to plan, change code, observe results, and revise until a task is complete.",

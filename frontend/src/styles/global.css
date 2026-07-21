@@ -1,37 +1,66 @@
 @import 'tailwindcss';
 
 @theme {
-  /* Colors */
-  --color-bg-primary: #ffffff;
-  --color-bg-secondary: #fafafa;
+  /* Colors — light (default) */
+  --color-bg-canvas: #f5f5f7;
+  --color-bg-primary: #fcfcfd;
   --color-bg-elevated: #ffffff;
+  --color-bg-secondary: #f0f0f2;
   --color-border: #e5e5e7;
+  --color-border-strong: #d1d1d6;
   --color-text-primary: #1a1a1a;
   --color-text-secondary: #6b6b6f;
-  --color-text-tertiary: #9b9ba1;
-  --color-accent: #0066ff;
-  --color-accent-hover: #0052cc;
+  --color-text-tertiary: #86868b;
+  --color-accent: #c2410c;
+  --color-accent-hover: #9a3412;
   --color-success: #34c759;
   --color-warning: #ff9500;
   --color-danger: #ff3b30;
-  --color-cefr-a2: #1e8a3e;
-  --color-cefr-a2-bg: #d1f5dc;
-  --color-cefr-b1: #0052cc;
-  --color-cefr-b1-bg: #d6e4ff;
-  --color-cefr-b2: #7b30ae;
-  --color-cefr-b2-bg: #edd9f7;
+  --color-scrim: rgba(0, 0, 0, 0.32);
+  --color-scrim-light: rgba(0, 0, 0, 0.16);
+  /* Player 歌詞頁封面藝術遮罩：淺色模式用白色調亮避免黑 scrim 疊彩色暈染出髒灰色 */
+  --color-lyrics-scrim: rgba(255, 255, 255, 0.6);
+  --color-cefr-a2: #15803d;
+  --color-cefr-a2-bg: #dcfce7;
+  --color-cefr-b1: #0f766e;
+  --color-cefr-b1-bg: #ccfbf1;
+  --color-cefr-b2: #7e22ce;
+  --color-cefr-b2-bg: #f3e8ff;
 
   /* Border radius */
   --radius-sm: 6px;
   --radius-md: 10px;
   --radius-lg: 16px;
   --radius-xl: 20px;
+  --radius-pill: 9999px;
 
   /* Font families */
   --font-sans: Inter, -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
   --font-mono: 'JetBrains Mono', monospace;
 
-  /* Transition easing */
+  /* Type scale — size / tracking / leading paired per level */
+  --text-display: 2rem;
+  --text-title: 1.375rem;
+  --text-headline: 1rem;
+  --text-body: 0.875rem;
+  --text-caption: 0.75rem;
+  --text-label: 0.75rem;
+
+  --tracking-display: -0.02em;
+  --tracking-title: -0.01em;
+  --tracking-headline: 0em;
+  --tracking-body: 0em;
+  --tracking-caption: 0.01em;
+  --tracking-label: 0.06em;
+
+  --leading-display: 1.1;
+  --leading-title: 1.2;
+  --leading-headline: 1.35;
+  --leading-body: 1.5;
+  --leading-caption: 1.4;
+  --leading-label: 1.2;
+
+  /* Transition easing (simple, non-gesture CSS transitions only — hover color swaps etc.) */
   --ease-apple: cubic-bezier(0.2, 0.8, 0.2, 1);
 
   /* Transition durations */
@@ -44,8 +73,145 @@
   --shadow-md: 0 4px 12px rgba(0, 0, 0, 0.08);
   --shadow-lg: 0 12px 32px rgba(0, 0, 0, 0.12);
 
+  /* Elevation glow（深色模式專用，見下方兩處 dark override） */
+
+  /* Materials — opacity/blur split into vars so reduced-transparency can zero them out */
+  --material-thin-opacity: 72%;
+  --material-regular-opacity: 82%;
+  --material-thick-opacity: 94%;
+  --material-blur-thin: 12px;
+  --material-blur-regular: 20px;
+  --material-blur-thick: 28px;
+
   /* Layout */
   --bottom-nav-height: 56px; /* 對應 BottomNav h-14 */
+}
+
+/* ─── Dark mode ───────────────────────────────────────────────────────────── */
+/* 系統偏好深色，且使用者沒有手動強制淺色 */
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme='light']) {
+    --color-bg-canvas: #000000;
+    --color-bg-primary: #1c1c1e;
+    --color-bg-elevated: #323234;
+    --color-bg-secondary: #2c2c2e;
+    --color-border: rgba(255, 255, 255, 0.12);
+    --color-border-strong: rgba(255, 255, 255, 0.2);
+    --color-text-primary: rgba(255, 255, 255, 0.92);
+    --color-text-secondary: rgba(255, 255, 255, 0.6);
+    --color-text-tertiary: rgba(255, 255, 255, 0.38);
+    --color-accent: #d9663f;
+    --color-accent-hover: #f0916b;
+    --color-success: #30d158;
+    --color-warning: #ff9f0a;
+    --color-danger: #ff453a;
+    --color-scrim: rgba(0, 0, 0, 0.55);
+    --color-scrim-light: rgba(0, 0, 0, 0.32);
+    --color-lyrics-scrim: rgba(0, 0, 0, 0.45);
+    --color-cefr-a2: #4ade80;
+    --color-cefr-a2-bg: rgba(34, 197, 94, 0.16);
+    --color-cefr-b1: #2dd4bf;
+    --color-cefr-b1-bg: rgba(20, 184, 166, 0.16);
+    --color-cefr-b2: #c084fc;
+    --color-cefr-b2-bg: rgba(168, 85, 247, 0.16);
+
+    /* 深色模式陰影：純黑陰影在近黑背景上等於不可見，改用頂緣高光 + 細邊光暈 + 弱化環境陰影 */
+    --shadow-sm:
+      inset 0 1px 0 0 rgba(255, 255, 255, 0.05), 0 0 0 1px rgba(255, 255, 255, 0.04),
+      0 2px 8px rgba(0, 0, 0, 0.5);
+    --shadow-md:
+      inset 0 1px 0 0 rgba(255, 255, 255, 0.07), 0 0 0 1px rgba(255, 255, 255, 0.05),
+      0 8px 24px rgba(0, 0, 0, 0.55);
+    --shadow-lg:
+      inset 0 1px 0 0 rgba(255, 255, 255, 0.09), 0 0 0 1px rgba(255, 255, 255, 0.06),
+      0 16px 48px rgba(0, 0, 0, 0.6);
+  }
+}
+
+/* 使用者手動強制深色，不論系統偏好 */
+:root[data-theme='dark'] {
+  --color-bg-canvas: #000000;
+  --color-bg-primary: #1c1c1e;
+  --color-bg-elevated: #323234;
+  --color-bg-secondary: #2c2c2e;
+  --color-border: rgba(255, 255, 255, 0.12);
+  --color-border-strong: rgba(255, 255, 255, 0.2);
+  --color-text-primary: rgba(255, 255, 255, 0.92);
+  --color-text-secondary: rgba(255, 255, 255, 0.6);
+  --color-text-tertiary: rgba(255, 255, 255, 0.38);
+  --color-accent: #d9663f;
+  --color-accent-hover: #f0916b;
+  --color-success: #30d158;
+  --color-warning: #ff9f0a;
+  --color-danger: #ff453a;
+  --color-scrim: rgba(0, 0, 0, 0.55);
+  --color-scrim-light: rgba(0, 0, 0, 0.32);
+  --color-cefr-a2: #4ade80;
+  --color-cefr-a2-bg: rgba(34, 197, 94, 0.16);
+  --color-cefr-b1: #2dd4bf;
+  --color-cefr-b1-bg: rgba(20, 184, 166, 0.16);
+  --color-cefr-b2: #c084fc;
+  --color-cefr-b2-bg: rgba(168, 85, 247, 0.16);
+
+  --shadow-sm:
+    inset 0 1px 0 0 rgba(255, 255, 255, 0.05), 0 0 0 1px rgba(255, 255, 255, 0.04),
+    0 2px 8px rgba(0, 0, 0, 0.5);
+  --shadow-md:
+    inset 0 1px 0 0 rgba(255, 255, 255, 0.07), 0 0 0 1px rgba(255, 255, 255, 0.05),
+    0 8px 24px rgba(0, 0, 0, 0.55);
+  --shadow-lg:
+    inset 0 1px 0 0 rgba(255, 255, 255, 0.09), 0 0 0 1px rgba(255, 255, 255, 0.06),
+    0 16px 48px rgba(0, 0, 0, 0.6);
+}
+
+/* ─── Reduced transparency / contrast ────────────────────────────────────── */
+@media (prefers-reduced-transparency: reduce) {
+  :root {
+    --material-thin-opacity: 100%;
+    --material-regular-opacity: 100%;
+    --material-thick-opacity: 100%;
+    --material-blur-thin: 0px;
+    --material-blur-regular: 0px;
+    --material-blur-thick: 0px;
+  }
+}
+
+@media (prefers-contrast: more) {
+  :root {
+    --color-border: #b0b0b6;
+    --color-border-strong: #8e8e93;
+  }
+  :root[data-theme='dark'] {
+    --color-border: rgba(255, 255, 255, 0.32);
+    --color-border-strong: rgba(255, 255, 255, 0.46);
+  }
+}
+
+/* ─── Materials ───────────────────────────────────────────────────────────── */
+/* 半透明材質分級：thin（導覽列）/ regular（sheet 面板）/ thick（忙碌內容如播放器） */
+@utility material-thin {
+  background-color: color-mix(in oklab, var(--color-bg-primary) var(--material-thin-opacity), transparent);
+  backdrop-filter: blur(var(--material-blur-thin)) saturate(160%);
+  -webkit-backdrop-filter: blur(var(--material-blur-thin)) saturate(160%);
+}
+@utility material-regular {
+  background-color: color-mix(in oklab, var(--color-bg-primary) var(--material-regular-opacity), transparent);
+  backdrop-filter: blur(var(--material-blur-regular)) saturate(180%);
+  -webkit-backdrop-filter: blur(var(--material-blur-regular)) saturate(180%);
+}
+@utility material-thick {
+  background-color: color-mix(in oklab, var(--color-bg-primary) var(--material-thick-opacity), transparent);
+  backdrop-filter: blur(var(--material-blur-thick)) saturate(180%);
+  -webkit-backdrop-filter: blur(var(--material-blur-thick)) saturate(180%);
+}
+@utility scrim {
+  background-color: var(--color-scrim);
+}
+@utility scrim-light {
+  background-color: var(--color-scrim-light);
+}
+@utility lyrics-scrim {
+  background-color: var(--color-lyrics-scrim);
 }
 
 /* 行動版 bottom sheet 偏移：貼齊 BottomNav 上方，桌機版回歸底部 */
@@ -68,7 +234,7 @@
 
   body {
     margin: 0;
-    background-color: var(--color-bg-primary);
+    background-color: var(--color-bg-canvas);
     color: var(--color-text-primary);
   }
 }

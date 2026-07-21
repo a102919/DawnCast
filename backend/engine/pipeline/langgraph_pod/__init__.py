@@ -145,6 +145,8 @@ async def run_pod(
         "user_ids": list(body.get("user_ids") or []),
         "cluster_id": body.get("cluster_id"),
         "length_tier": body.get("length_tier") or "medium",
+        "cefr": body.get("cefr") or cfg.cefr_level,
+        "avoid_facts": list(body.get("avoid_facts") or []),
         "rewrite_iterations": 0,
         "judge_feedback": [],
         "errors": [],

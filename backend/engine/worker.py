@@ -93,14 +93,16 @@ async def _orchestrate(request_date: str) -> None:
     logger.info("orchestrate：投影 %d 筆 topic_requests（date=%s）", n, request_date)
     requests = await repo.list_requests_for_date(request_date)
     for r in requests:
-        # Phase 4：把投影帶下來的 topic_type / length_tier 傳進 resolve_for_user，
-        # 否則下游 Pod 永遠吃 evergreen/medium 預設，入口選擇形同虛設。
+        # Phase 4：把投影帶下來的 topic_type / length_tier / cefr 傳進 resolve_for_user，
+        # 否則下游 Pod 永遠吃 evergreen/medium/B1 預設，入口選擇形同虛設。
+        # angle 不帶——讓 resolve_for_user 依該 user 的交付史輪替角度。
         await resolve_for_user(
             user_id=r["user_id"],
             big_topic=r["big_topic"],
             deliver_date=request_date,
             topic_type=r.get("topic_type"),
             length_tier=r.get("length_tier") or "medium",
+            cefr=r.get("cefr") or "B1",
         )
 
 
@@ -116,16 +118,48 @@ async def _handle_generate(body: dict[str, Any], timeout_sec: int) -> None:
 # ── 單筆訊息的成功 / 失敗收斂 ──────────────────────────────────────
 
 
+async def _compensate_generate_failure(body: dict[str, Any]) -> None:
+    """generate job 失敗 compensation：用 body 算 idempotency_key 砍半完成 row。
+
+    只對 generate 佇列有意義（其他佇列 body 沒有 idempotency 欄位）。
+    delete_episode_by_idem 內部已加 audio_r2_key IS NULL 條件，不會誤殺健康 row。
+    """
+    cluster_id = body.get("cluster_id")
+    deliver_date = body.get("deliver_date") or ""
+    big_topic = body.get("big_topic") or ""
+    angle = body.get("angle") or ""
+    length_tier = body.get("length_tier") or "medium"
+    topic_type = body.get("topic_type") or "evergreen"
+    idem = f"{cluster_id or f'{deliver_date}:{big_topic}:{angle}'}:{length_tier}:{topic_type}"
+    try:
+        n = await repo.delete_episode_by_idem(idem)
+        if n > 0:
+            logger.warning(
+                "generate 失敗 compensation：刪除 %d 筆半完成 row（idem=%s）",
+                n,
+                idem,
+            )
+    except Exception:
+        # compensation 失敗不影響主流程的 archive/重投決策，記下來就好。
+        logger.exception("compensation delete 失敗 idem=%s", idem)
+
+
 async def _process(
     queue_name: str,
     msg: Msg,
     handler: Any,
     dead_letter_after: int,
 ) -> None:
-    """跑 handler；成功 delete，失敗依 read_ct 決定 archive 或留給 vt 重投。"""
+    """跑 handler；成功 delete，失敗依 read_ct 決定 archive 或留給 vt 重投。
+
+    generate 失敗時先做 idempotency-based DELETE compensation，避免 render 階段
+    掛掉後留下 audio_r2_key IS NULL 的殭屍 row。
+    """
     try:
         await handler(msg.body)
     except Exception:
+        if queue_name == GENERATE_QUEUE:
+            await _compensate_generate_failure(msg.body)
         # read_ct 是「已被讀取次數」（含這次），達上限即毒訊息 → archive。
         if msg.read_ct >= dead_letter_after:
             logger.exception(

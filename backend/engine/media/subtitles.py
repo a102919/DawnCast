@@ -86,4 +86,6 @@ def write_vtt(cues: Sequence[Cue]) -> str:
 
 def cues_to_json(cues: Sequence[Cue]) -> list[dict[str, object]]:
     """Cue list → camelCase dict list（前端播放頁直接吃）。"""
-    return [cue.model_dump(by_alias=True) for cue in cues]  # ponytail: 砍掉 burn_video 之後 mp4 不再生，前端只吃 Cue list 自己 render；raw srt/vtt 字串留著備用
+    # ponytail: 砍掉 burn_video 之後 mp4 不再生，前端只吃 Cue list 自己 render；
+    # raw srt/vtt 字串留著備用
+    return [cue.model_dump(by_alias=True) for cue in cues]

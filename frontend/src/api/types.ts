@@ -43,6 +43,8 @@ export type Settings = {
   readonly preferredTopics: readonly string[]
   /** 出餐時間 'HH:MM'，限定 6 個 chips 之一；下單時預設帶入 */
   readonly defaultDeliveryTime: string
+  /** 英文難度（CEFR），影響生成詞彙/句型與 TTS 語速；存後端 users.cefr_target */
+  readonly cefrLevel: 'A2' | 'B1' | 'B2'
 }
 
 export type DailyOrderStatus = 'pending' | 'queued' | 'played'

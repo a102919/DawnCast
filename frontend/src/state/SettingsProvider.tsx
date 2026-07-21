@@ -10,6 +10,7 @@ const DEFAULT_SETTINGS: Settings = {
   theme: 'auto',
   preferredTopics: [],
   defaultDeliveryTime: '07:00',
+  cefrLevel: 'B1',
 } as const
 
 export function SettingsProvider({ children }: { readonly children: ReactNode }) {
@@ -20,6 +21,16 @@ export function SettingsProvider({ children }: { readonly children: ReactNode })
       console.warn('[settings] initial load failed', err)
     })
   }, [])
+
+  useEffect(() => {
+    if (settings.theme === 'auto') {
+      document.documentElement.removeAttribute('data-theme')
+      localStorage.removeItem('dawncast:theme')
+    } else {
+      document.documentElement.setAttribute('data-theme', settings.theme)
+      localStorage.setItem('dawncast:theme', settings.theme)
+    }
+  }, [settings.theme])
 
   const updateSettings = useCallback(async (patch: Partial<Settings>) => {
     const updated = await api.updateSettings(patch)

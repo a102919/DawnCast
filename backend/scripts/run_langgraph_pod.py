@@ -243,7 +243,6 @@ async def run_demo(args: argparse.Namespace) -> int:
         )
         print(line)
         print(f"  audio_key    : {ep.audio_key!r}")
-        print(f"  mp4_key      : {ep.mp4_key!r}")
         print(f"  script lines : {len(ep.script_json['script'])}")
     print(f"  deliveries   : {len(repo.deliveries)}")
     print()

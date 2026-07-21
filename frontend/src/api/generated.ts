@@ -1108,6 +1108,12 @@ export interface components {
              * @default 07:00
              */
             defaultDeliveryTime: string;
+            /**
+             * Cefrlevel
+             * @default B1
+             * @enum {string}
+             */
+            cefrLevel: "A2" | "B1" | "B2";
         };
         /**
          * UpdateSettingsBody
@@ -1128,6 +1134,8 @@ export interface components {
             preferredTopics?: string[] | null;
             /** Defaultdeliverytime */
             defaultDeliveryTime?: string | null;
+            /** Cefrlevel */
+            cefrLevel?: ("A2" | "B1" | "B2") | null;
         };
         /**
          * UpdateVocabBody

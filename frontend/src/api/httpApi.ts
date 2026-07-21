@@ -160,6 +160,7 @@ const SettingsSchema = z.object({
   theme: z.enum(['light', 'dark', 'auto']),
   preferredTopics: z.array(z.string()),
   defaultDeliveryTime: z.string(),
+  cefrLevel: z.enum(['A2', 'B1', 'B2']),
 }) satisfies z.ZodType<Settings> & z.ZodType<components['schemas']['Settings']>
 
 const DailyOrderStatusSchema = z.enum(['pending', 'queued', 'played']) satisfies z.ZodType<DailyOrderStatus>

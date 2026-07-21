@@ -1,7 +1,8 @@
 import { useState } from 'react'
 import { Link } from 'react-router-dom'
-import { AlertCircle, ArrowLeft, Loader2 } from 'lucide-react'
+import { ArrowLeft, Loader2 } from 'lucide-react'
 import { Button } from '../components/primitives/Button'
+import { ErrorBanner } from '../components/primitives/ErrorBanner'
 import { useAuth } from '../state'
 
 type Status = 'idle' | 'redirecting' | 'error'
@@ -66,10 +67,7 @@ export function LoginRoute() {
       </div>
 
       {status === 'error' && errorMsg && (
-        <div className="flex items-center gap-2 px-3 py-2 rounded-lg bg-danger/10 border border-danger/20 text-danger text-xs">
-          <AlertCircle size={14} className="shrink-0" />
-          <span>{errorMsg}</span>
-        </div>
+        <ErrorBanner variant="inline" message={errorMsg} className="text-xs" />
       )}
 
       <Button

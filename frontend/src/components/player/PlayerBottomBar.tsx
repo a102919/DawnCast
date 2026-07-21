@@ -41,7 +41,7 @@ export function PlayerBottomBar({
   return (
     <nav
       aria-label="播放工具列"
-      className="lg:hidden fixed bottom-0 inset-x-0 bg-bg-primary/95 backdrop-blur-md border-t border-border z-40"
+      className="lg:hidden fixed bottom-0 inset-x-0 material-thick border-t border-border z-40"
     >
       {/* Row 1：進度條 */}
       <div className="flex items-center gap-3 px-4 h-10">
@@ -79,7 +79,7 @@ export function PlayerBottomBar({
           <button
             aria-label={isPlaying ? '暫停' : '播放'}
             onClick={isPlaying ? pause : play}
-            className="w-11 h-11 rounded-full bg-accent hover:bg-[#0052cc] active:scale-95 flex items-center justify-center shrink-0 transition-all duration-fast ease-apple focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-2"
+            className="w-11 h-11 rounded-full bg-accent hover:bg-accent-hover active:scale-95 flex items-center justify-center shrink-0 transition-all duration-fast ease-apple focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-2"
           >
             {isPlaying
               ? <Pause size={20} fill="white" color="white" />

@@ -158,6 +158,22 @@ class MockRepo:
         self.deliveries.append(_DeliveryRow(user_id, episode_id, deliver_date))
         return True
 
+    async def delete_episode_by_idem(self, idempotency_key: str) -> int:
+        """補償用：刪除 audio_key 還 NULL 的 row（鏡像 real repo 的 WHERE 條件）。
+
+        真實 repo 用 `where idempotency_key = %s and audio_r2_key is null`，
+        mock 端用 `audio_key is None` 表達同一語意。
+        """
+        eid = self.by_idem.get(idempotency_key)
+        if eid is None or self.episodes.get(eid) is None:
+            return 0
+        row = self.episodes[eid]
+        if row.audio_key is not None:
+            return 0  # 已渲染完成的 row 不砍
+        del self.episodes[eid]
+        del self.by_idem[idempotency_key]
+        return 1
+
     def get_episode(self, episode_id: str) -> _EpisodeRow | None:
         return self.episodes.get(episode_id)
 
@@ -225,9 +241,7 @@ class MockRenderer:
 
     workdir: Path
 
-    def render(
-        self, script_payload: dict[str, Any]
-    ) -> tuple[Path, str, list[dict[str, Any]]]:
+    def render(self, script_payload: dict[str, Any]) -> tuple[Path, str, list[dict[str, Any]]]:
         self.workdir.mkdir(parents=True, exist_ok=True)
         mp3 = self.workdir / "episode.mp3"
         mp3.write_bytes(b"\x00" * 64)  # mock：64 bytes

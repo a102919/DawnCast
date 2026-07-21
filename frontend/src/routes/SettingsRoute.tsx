@@ -4,13 +4,20 @@ import { Link, useNavigate } from 'react-router-dom'
 import { useSettings, useVocab, useAuth } from '../state'
 import { api, AppError } from '../api'
 import { supabase } from '../lib/supabaseClient'
-import { Toggle, Chip } from '../components/primitives'
+import { Toggle, Chip, SectionLabel } from '../components/primitives'
 import { AlertTriangle } from 'lucide-react'
 import { TOPIC_LABELS } from './episodeData'
 import type { TopicKey } from './episodeData'
 import { DELIVERY_TIME_OPTIONS } from '../lib/dailyOrderDate'
 
 const TOPIC_CHOICES: readonly Exclude<TopicKey, 'all'>[] = ['tech', 'business', 'culture', 'science'] as const
+
+// CEFR 英文難度選項（與後端 Settings.cefr_level Literal 對齊）
+const CEFR_OPTIONS = [
+  { value: 'A2' as const, label: '初級', hint: '慢速・基礎詞彙' },
+  { value: 'B1' as const, label: '中級', hint: '日常詞彙' },
+  { value: 'B2' as const, label: '中高級', hint: '母語慣用語' },
+] as const
 
 function isTopicChoice(s: string): s is Exclude<TopicKey, 'all'> {
   return (TOPIC_CHOICES as readonly string[]).includes(s)
@@ -33,6 +40,12 @@ export function SettingsRoute() {
   ]
 
   const RATES = [0.75, 1, 1.25, 1.5] as const
+
+  const THEME_OPTIONS = [
+    { value: 'light' as const, label: '淺色' },
+    { value: 'dark' as const, label: '深色' },
+    { value: 'auto' as const, label: '自動' },
+  ]
 
   const preferredTopics = settings.preferredTopics.filter(isTopicChoice)
 
@@ -88,6 +101,26 @@ export function SettingsRoute() {
       <h1 className="text-2xl font-semibold text-text-primary mb-8">設定</h1>
 
       <div className="space-y-6">
+        {/* 外觀 */}
+        <SettingSection title="外觀">
+          <SettingRow
+            label="主題"
+            description="淺色、深色，或跟隨系統設定"
+          >
+            <div className="flex gap-1.5">
+              {THEME_OPTIONS.map(({ value, label }) => (
+                <Chip
+                  key={value}
+                  active={settings.theme === value}
+                  onClick={() => updateSettings({ theme: value })}
+                >
+                  {label}
+                </Chip>
+              ))}
+            </div>
+          </SettingRow>
+        </SettingSection>
+
         {/* 詞卡設定 */}
         <SettingSection title="詞卡">
           <SettingRow
@@ -173,6 +206,25 @@ export function SettingsRoute() {
 
         {/* 學習偏好 */}
         <SettingSection title="學習偏好">
+          <div className="px-4 py-4">
+            <div className="text-sm font-medium text-text-primary">英文難度</div>
+            <p className="text-xs text-text-secondary mt-0.5 mb-3">
+              影響每日 podcast 的詞彙難度、句型與語速，隔天生成的集數開始生效
+            </p>
+            <div className="flex gap-1.5 flex-wrap">
+              {CEFR_OPTIONS.map(({ value, label, hint }) => (
+                <Chip
+                  key={value}
+                  active={settings.cefrLevel === value}
+                  onClick={() => updateSettings({ cefrLevel: value })}
+                >
+                  {label}
+                  <span className="text-[10px] text-text-tertiary ml-1">· {hint}</span>
+                </Chip>
+              ))}
+            </div>
+          </div>
+
           <div className="px-4 py-4">
             <div className="text-sm font-medium text-text-primary">主題偏好</div>
             <p className="text-xs text-text-secondary mt-0.5 mb-3">
@@ -335,7 +387,7 @@ export function SettingsRoute() {
 function SettingSection({ title, children }: { readonly title: string; readonly children: ReactNode }) {
   return (
     <div>
-      <h2 className="text-xs font-semibold text-text-tertiary uppercase tracking-wider mb-3">{title}</h2>
+      <SectionLabel className="mb-3">{title}</SectionLabel>
       <div className="border border-border rounded-lg divide-y divide-border bg-bg-primary">
         {children}
       </div>
