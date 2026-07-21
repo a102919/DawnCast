@@ -55,6 +55,11 @@ COPY --from=builder --chown=appuser:appuser /app/shared ./shared
 # healthcheck 由 deploy/ 帶進來（context 是 backend/，故路徑含 deploy/）
 COPY --chown=appuser:appuser deploy/healthcheck.py ./healthcheck.py
 
+# ── Zeabur Self-host 部署專用 ──
+COPY --chown=appuser:appuser scripts ./scripts
+COPY --chown=appuser:appuser deploy/entrypoint-worker.sh /app/entrypoint-worker.sh
+RUN chmod +x /app/entrypoint-worker.sh
+
 USER appuser
 
 # 容器層健康檢查：DB 可連 + ffmpeg 可執行 +（可選）生成引擎 health。

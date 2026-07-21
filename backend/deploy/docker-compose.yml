@@ -1,0 +1,184 @@
+# DawnCast 本機開發用 docker-compose
+# 跟 zeabur-template.yaml 一對一對應；差別只在：
+#   - 用 .env 載入 secrets（production 用 Zeabur Vault）
+#   - 用 build context 建 api/worker（Zeabur 一樣；db/gotrue/kong/backup 用官方 image）
+#   - 不開自動 backup sidecar（本機不需要每天備份；要用就 docker compose --profile backup up -d）
+#
+# 啟動：cp .env.example .env，編輯 secret，docker compose --env-file .env up -d
+# 首次啟動：先 docker compose run --rm migrate 跑一次 migrations
+# 停：docker compose down（volume 留在；持久資料）
+
+services:
+  db:
+    # 本機用 supabase/postgres 內含三個 extension（pgmq/pg_cron/pgvector）；
+    # Zeabur production 那邊沒裝，要靠 migrations / 額外 init 補。
+    image: supabase/postgres:17.6.1.136
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: supabase_admin
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD not set}
+      POSTGRES_DB: postgres
+      TZ: Asia/Taipei
+    ports:
+      # 對外開 54322 避免跟本機 Postgres 撞；內網仍走 5432
+      - "127.0.0.1:54322:5432"
+    volumes:
+      - db-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U supabase_admin -h localhost"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  gotrue:
+    image: supabase/gotrue:v2.189.0
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      GOTRUE_DB_DRIVER: postgres
+      GOTRUE_DB_DATABASE_URL: postgres://supabase_auth_admin:${POSTGRES_PASSWORD}@db:5432/postgres
+      GOTRUE_SITE_URL: ${SITE_URL:-http://localhost:5173}
+      GOTRUE_URI_ALLOW_LIST: ${URI_ALLOW_LIST:-http://localhost:5173,http://localhost:8000/auth/v1/callback}
+      GOTRUE_EXTERNAL_GOOGLE_ENABLED: "true"
+      GOTRUE_EXTERNAL_GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID:-}
+      GOTRUE_EXTERNAL_GOOGLE_SECRET: ${GOOGLE_CLIENT_SECRET:-}
+      GOTRUE_EXTERNAL_GOOGLE_REDIRECT_URI: ${GOTRUE_REDIRECT_URI:-http://kong:8000/auth/v1/callback}
+      GOTRUE_JWT_KEY: ${GOTRUE_JWT_KEY:?GOTRUE_JWT_KEY not set; use deploy/scripts/sign-jwt-key.sh}
+      GOTRUE_JWT_AUD: authenticated
+      GOTRUE_JWT_EXP: "3600"
+      GOTRUE_DISABLE_EMAIL_SIGNUP: "true"
+      GOTRUE_DISABLE_EMAIL_LINK_SIGNUP: "true"
+      GOTRUE_DISABLE_EMAIL_MAGICLINK: "true"
+      GOTRUE_DISABLE_EMAIL_OTP: "true"
+      GOTRUE_MAILER_AUTOCONFIRM: "true"
+      GOTRUE_SMTP_HOST: ""
+      PORT: "9999"
+
+  kong:
+    image: kong/kong:3.9.1
+    restart: unless-stopped
+    depends_on:
+      gotrue:
+        condition: service_started
+    environment:
+      KONG_DATABASE: "off"
+      KONG_DECLARATIVE_CONFIG: /etc/kong/kong.yml
+      KONG_DNS_ORDER: LAST
+      KONG_LISTEN: "0.0.0.0:8000"
+    volumes:
+      - ./volumes/api/kong.yml:/etc/kong/kong.yml:ro
+    ports:
+      # 對外 8000（前端透過 8000/auth/v1/... 跟 gotrue 打交道）
+      - "127.0.0.1:8000:8000"
+
+  api:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile.api
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+      gotrue:
+        condition: service_started
+    environment:
+      ENVIRONMENT: ${ENVIRONMENT:-dev}
+      PORT: "8080"
+      DATABASE_URL: postgres://postgres:${POSTGRES_PASSWORD}@db:5432/postgres
+      SUPABASE_JWKS_URL: ${SUPABASE_JWKS_URL:-http://kong:8000/auth/v1/.well-known/jwks.json}
+      SUPABASE_JWT_AUDIENCE: authenticated
+      CORS_ALLOWED_ORIGINS: ${CORS_ALLOWED_ORIGINS:-["http://localhost:5173"]}
+      ADMIN_TOKEN: ${ADMIN_TOKEN:-dev-admin-token}
+      DEV_AUTH_BYPASS: ${DEV_AUTH_BYPASS:-true}
+      DEV_USER_ID: ${DEV_USER_ID:-00000000-0000-0000-0000-000000000001}
+      API_KEY: ${MINIMAX_API_KEY:-}
+      API_BASE_URL: ${API_BASE_URL:-https://api.minimax.io/anthropic}
+      API_MODEL: ${API_MODEL:-MiniMax-M2.5}
+      R2_ACCOUNT_ID: ${R2_ACCOUNT_ID:-}
+      R2_ACCESS_KEY_ID: ${R2_ACCESS_KEY_ID:-}
+      R2_SECRET_ACCESS_KEY: ${R2_SECRET_ACCESS_KEY:-}
+      R2_BUCKET: ${R2_BUCKET:-dawncast}
+      R2_ENDPOINT: ${R2_ENDPOINT:-}
+      TAVILY_API_KEY: ${TAVILY_API_KEY:-}
+      # 同時把 supabase admin creds 傳進去，這樣 entrypoint 也能跑 migrations
+      POSTGRES_USER: supabase_admin
+      POSTGRES_HOST: db
+      POSTGRES_PORT: "5432"
+      POSTGRES_DB: postgres
+      APPLY_MIGRATIONS_ON_BOOT: "1"
+    ports:
+      - "127.0.0.1:8080:8080"
+
+  worker:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile.worker
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+      api:
+        condition: service_started
+    environment:
+      ENVIRONMENT: ${ENVIRONMENT:-prod}
+      APP_TIMEZONE: Asia/Taipei
+      DATABASE_URL: postgres://postgres:${POSTGRES_PASSWORD}@db:5432/postgres
+      GENERATION_ENGINE: api_key
+      FAILOVER_MODE: degrade
+      API_KEY: ${MINIMAX_API_KEY:-}
+      API_BASE_URL: ${API_BASE_URL:-https://api.minimax.io/anthropic}
+      API_MODEL: ${API_MODEL:-MiniMax-M2.5}
+      R2_ACCOUNT_ID: ${R2_ACCOUNT_ID:-}
+      R2_ACCESS_KEY_ID: ${R2_ACCESS_KEY_ID:-}
+      R2_SECRET_ACCESS_KEY: ${R2_SECRET_ACCESS_KEY:-}
+      R2_BUCKET: ${R2_BUCKET:-dawncast}
+      R2_ENDPOINT: ${R2_ENDPOINT:-}
+      POSTGRES_USER: supabase_admin
+      POSTGRES_HOST: db
+      POSTGRES_PORT: "5432"
+      POSTGRES_DB: postgres
+      APPLY_MIGRATIONS_ON_BOOT: "1"
+
+  # 一次性 migration runner（給不想靠 container 啟動跑的人：
+  #   docker compose run --rm migrate）
+  migrate:
+    profiles: ["tools"]    # 平常不會自動起
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile.api
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      POSTGRES_HOST: db
+      POSTGRES_PORT: "5432"
+      POSTGRES_DB: postgres
+      POSTGRES_USER: supabase_admin
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD not set}
+    entrypoint: ["python", "-m", "scripts.apply_migrations"]
+
+  # 每日 04:00 Taipei pg_dump → R2（profile gated，避免不備 R2 key 就起不來）
+  backup:
+    profiles: ["backup"]
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile.backup
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      POSTGRES_HOST: db
+      POSTGRES_PORT: "5432"
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD not set}
+      POSTGRES_DB: postgres
+      R2_ACCOUNT_ID: ${R2_ACCOUNT_ID:-}
+      R2_ACCESS_KEY_ID: ${R2_ACCESS_KEY_ID:-}
+      R2_SECRET_ACCESS_KEY: ${R2_SECRET_ACCESS_KEY:-}
+      R2_BACKUP_BUCKET: ${R2_BACKUP_BUCKET:-dawncast-backups}
+      TZ: Asia/Taipei
+
+volumes:
+  db-data:

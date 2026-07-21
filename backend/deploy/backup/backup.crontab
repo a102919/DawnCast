@@ -1,0 +1,5 @@
+# m   h   dom mon dow   command
+# 04:00 Asia/Taipei（Asia/Taipei 等於 -08:00 from UTC，跟 CRON TZ 一致；container TZ env 已設）
+#   → UTC time = 20:00（dst switch 台灣無）→ cron 直接寫 20 UTC 看起來不直覺，
+#     改在 container 啟動時 export TZ=Asia/Taipei，dcron 用 local time 跑。
+    0  4   *   *   *   /usr/local/bin/backup.sh >> /var/log/backup.log 2>&1

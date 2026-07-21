@@ -45,7 +45,11 @@ class Settings(BaseSettings):
         default="",
     )
 
-    # ── 資料庫（Supabase 託管 Postgres）──────────────────────
+    # ── 資料庫 ─────────────────────────────────────────────
+    # Cloud 跟 Self-host 共用同一條連線字串格式：postgres://<user>:<pwd>@<host>:<port>/<db>
+    # - Cloud Supabase：service-role → user 用 `postgres.{project_ref}` 走連線池。
+    # - Zeabur Self-host：user 用 `postgres`；內網 host = `db`（Docker service name）。
+    # 兩種 case 都靠 DATABASE_URL 環境變數覆蓋；default 只給本機 docker-compose 用。
     database_url: str = Field(
         default="postgresql://postgres:postgres@localhost:5432/postgres",
         description="psycopg3 連線字串（service-role 連線，FastAPI 持有）",
@@ -54,11 +58,13 @@ class Settings(BaseSettings):
     db_pool_max: int = 10
 
     # ── Auth（Supabase Auth 發的 JWT）────────────────────────
-    # 2025 起 Supabase 預設改用 ES256（ECC P-256）簽 JWT，不再提供 shared secret。
-    # 後端抓 JWKS 拿公開 key 驗 token，支援自動輪換（Supabase JWKS endpoint 公開）。
+    # ES256（ECC P-256）簽 JWT。
+    # - Cloud Supabase：JWKS 從 Supabase project URL 直接拿。
+    # - Zeabur Self-host：透過 Kong 的 /auth/v1/.well-known/jwks.json 對外，
+    #   完整 URL 為 https://<API_EXTERNAL_URL>/auth/v1/.well-known/jwks.json。
     supabase_jwks_url: str = Field(
         default="https://agrprhsbfnxzwyugctrp.supabase.co/auth/v1/.well-known/jwks.json",
-        description="Supabase JWKS endpoint 網址；驗 ES256 token 用",
+        description="JWKS endpoint 網址；驗 ES256 token 用",
     )
     supabase_jwt_audience: str = "authenticated"
     # 保留欄位向後相容舊測試 / 工具腳本；prod 不再用。

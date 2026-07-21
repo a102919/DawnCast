@@ -52,9 +52,17 @@ COPY --from=builder --chown=appuser:appuser /app/engine ./engine
 COPY --from=builder --chown=appuser:appuser /app/shared ./shared
 COPY --from=builder --chown=appuser:appuser /app/voices ./voices
 
+# ── Zeabur Self-host 部署專用 ──
+# 把 scripts/apply_migrations.py + entrypoint 帶進 image；
+# 啟動時若設 APPLY_MIGRATIONS_ON_BOOT=1 就用 superuser 連 db 跑 schema。
+# 預設關——production 應該用獨立 init container 跑一次，才不會讓 api 啟動時間不穩。
+COPY --chown=appuser:appuser scripts ./scripts
+COPY --chown=appuser:appuser deploy/entrypoint-api.sh /app/entrypoint-api.sh
+RUN chmod +x /app/entrypoint-api.sh
+
 USER appuser
 EXPOSE 8080
 
-# 綁 0.0.0.0:$PORT（Fly 內部 health check 與外部流量都打這）。
-# 用 shell 形式才能展開 $PORT；Fly 會注入 PORT，本機 fallback 8080。
+# 綁 0.0.0.0:$PORT（Zeabur 內部 health check 與外部流量都打這）。
+# 用 shell 形式才能展開 $PORT；Zeabur 會注入 PORT，本機 fallback 8080。
 CMD ["sh", "-c", "uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-8080}"]

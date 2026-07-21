@@ -1,0 +1,242 @@
+# Zeabur Server Marketplace 部署模板（DawnCast）
+# 單一 host 跑六個容器：api / worker / db / gotrue / kong / backup
+# 建議機器規格：4 vCPU / 4 GB RAM / 40 GB SSD（HK/Tokyo/SG $3-8/mo）
+# 觸發：zbpack 會讀此檔決定容器清單與啟動順序；RESTful 路徑 `zeabur deploy --template`
+
+apiVersion: zeabur.com/v1
+kind: Template
+metadata:
+  name: dawncast
+
+spec:
+  # 全域環境變數（每個 service 都能引用，除非 service 內覆寫）
+  variables: []
+  # ↓ secrets 不寫在這裡，請在 Zeabur Dashboard → Service → Variables 設定
+  #   命名規範用裸大寫：
+  #     DATABASE_URL, SUPABASE_JWKS_URL, POSTGRES_PASSWORD,
+  #     GOTRUE_JWT_KEY, GOTRUE_EXTERNAL_GOOGLE_CLIENT_ID, GOTRUE_EXTERNAL_GOOGLE_SECRET,
+  #     R2_*, API_KEY, MINIMAX_*, ADMIN_TOKEN, TAVILY_API_KEY
+
+  services:
+    # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    # 1) Postgres + DawnCast migrations 入口
+    # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    - name: db
+      template: POSTGRES   # 用 Zeabur 官方 Postgres image（自維護 + 自動備份按鈕）
+      # 想換 supabase/postgres:17.6.1.136 也行，但就沒有官方 auto-backup UI，
+      # 要自己跑 wal-g 或 pg_dump（用我們的 backup sidecar 即可）
+      spec:
+        envs:
+          # 啟用三個 DawnCast 必須的 extension（pgmq / pg_cron / vector）
+          # Zeabur 官方 Postgres image 預設沒啟，要套用 migrations 後跑：
+          #   create extension if not exists pgmq;
+          #   create extension if not exists pg_cron;
+          #   create extension if not exists vector;
+          POSTGRES_DB: postgres
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+          # 時區（pg_cron schedule() 採 DB 時區）
+          TZ: Asia/Taipei
+        # 若想換 supabase/postgres（預裝三個 extension）：
+        #   image: supabase/postgres:17.6.1.136
+        #   envs:
+        #     POSTGRES_HOSTNAME_DB: postgres
+        volumes:
+          - name: db-data
+            subPath: /var/lib/postgresql/data
+      # healthcheck（db ready 後 api/worker 才能啟動）
+
+    # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    # 2) GoTrue（Supabase Auth 開源版）
+    # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    - name: gotrue
+      spec:
+        image: supabase/gotrue:v2.189.0
+        envs:
+          GOTRUE_DB_DRIVER: postgres
+          # GoTrue 需要 supabase_auth_admin 連進 db 建 auth.users / refresh_tokens
+          # 該 role 在 supabase/postgres image init 階段自動建好
+          GOTRUE_DB_DATABASE_URL: postgres://supabase_auth_admin:${POSTGRES_PASSWORD}@db:5432/postgres
+          GOTRUE_SITE_URL: ${SITE_URL}
+          # callback URL 走 Kong 對外
+          GOTRUE_URI_ALLOW_LIST: ${URI_ALLOW_LIST}
+          # ES256 簽章（Supabase Cloud 預設也是 ES256，DawnCast 用 JWKS 驗）
+          GOTRUE_JWT_KEY: ${GOTRUE_JWT_KEY}
+          GOTRUE_JWT_AUD: authenticated
+          GOTRUE_JWT_EXP: "3600"
+          # ━━━ Google OAuth 唯一登入方式 ━━━
+          GOTRUE_EXTERNAL_GOOGLE_ENABLED: "true"
+          GOTRUE_EXTERNAL_GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID}
+          GOTRUE_EXTERNAL_GOOGLE_SECRET: ${GOOGLE_CLIENT_SECRET}
+          GOTRUE_EXTERNAL_GOOGLE_REDIRECT_URI: ${API_EXTERNAL_URL}/auth/v1/callback
+          # ━━━ 關掉所有 email 路徑（DawnCast 不用）━━━
+          GOTRUE_DISABLE_EMAIL_SIGNUP: "true"
+          GOTRUE_DISABLE_EMAIL_LINK_SIGNUP: "true"
+          GOTRUE_DISABLE_EMAIL_MAGICLINK: "true"
+          GOTRUE_DISABLE_EMAIL_OTP: "true"
+          GOTRUE_MAILER_AUTOCONFIRM: "true"
+          GOTRUE_SMTP_HOST: ""
+          PORT: "9999"
+        dependsOn:
+          - service: db
+            condition: service_healthy
+
+    # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    # 3) Kong（API Gateway；只暴露 Auth 路由）
+    # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    - name: kong
+      spec:
+        image: kong/kong:3.9.1
+        envs:
+          KONG_DATABASE: "off"
+          KONG_DECLARATIVE_CONFIG: /etc/kong/kong.yml
+          KONG_DNS_ORDER: LAST
+          # local listen 給 host 上的 reverse-proxy / 對外 port
+          KONG_LISTEN: "0.0.0.0:8000"
+        volumes:
+          - name: kong-config
+            subPath: /etc/kong/kong.yml
+            source: ./volumes/api/kong.yml   # 與 docker-compose 共用同一份宣告式設定
+        ports:
+          # 對外走 TLS（HTTPS 由 Zeabur 自動簽）
+          - id: https
+            port: 443
+            targetPort: 8000
+          # 健康檢查用明文（內網 only）
+          - id: admin
+            port: 8001
+            targetPort: 8001
+        dependsOn:
+          - service: gotrue
+            condition: service_started
+
+    # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    # 4) FastAPI（api）
+    # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    - name: api
+      spec:
+        # build context = backend/；Dockerfile 路徑相對於 zeabur-template.yaml
+        # Zeabur 會自動 docker build -f deploy/Dockerfile.api backend/
+        dockerfile:
+          dockerfilePath: deploy/Dockerfile.api
+          context: ..
+        envs:
+          ENVIRONMENT: prod
+          PORT: "8080"
+          # 內網連 db（db container 跟 api 共享 host 網路）
+          DATABASE_URL: postgres://postgres:${POSTGRES_PASSWORD}@db:5432/postgres
+          # JWKS 端點透過 Kong 對外；前端拿這條
+          SUPABASE_JWKS_URL: ${API_EXTERNAL_URL}/auth/v1/.well-known/jwks.json
+          SUPABASE_JWT_AUDIENCE: authenticated
+          CORS_ALLOWED_ORIGINS: ${CORS_ALLOWED_ORIGINS}
+          ADMIN_TOKEN: ${ADMIN_TOKEN}
+          # 引擎（LLM）
+          GENERATION_ENGINE: api_key
+          API_KEY: ${MINIMAX_API_KEY}
+          API_BASE_URL: https://api.minimax.io/anthropic
+          API_MODEL: MiniMax-M2.5
+          # R2
+          R2_ACCOUNT_ID: ${R2_ACCOUNT_ID}
+          R2_ACCESS_KEY_ID: ${R2_ACCESS_KEY_ID}
+          R2_SECRET_ACCESS_KEY: ${R2_SECRET_ACCESS_KEY}
+          R2_BUCKET: dawncast
+          R2_ENDPOINT: ${R2_ENDPOINT}
+          # Grounding 來源
+          TAVILY_API_KEY: ${TAVILY_API_KEY}
+        ports:
+          - id: http
+            port: 8080
+            targetPort: 8080
+        dependsOn:
+          - service: db
+            condition: service_healthy
+          - service: gotrue
+            condition: service_started
+
+    # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    # 5) Worker（常駐，自動重啟）
+    # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    - name: worker
+      spec:
+        dockerfile:
+          dockerfilePath: deploy/Dockerfile.worker
+          context: ..
+        envs:
+          ENVIRONMENT: prod
+          APP_TIMEZONE: Asia/Taipei
+          # 跟 api 用同一條 DATABASE_URL（Postgres 帳號讀寫都夠）
+          DATABASE_URL: postgres://postgres:${POSTGRES_PASSWORD}@db:5432/postgres
+          # 引擎
+          GENERATION_ENGINE: api_key
+          FAILOVER_MODE: degrade
+          API_KEY: ${MINIMAX_API_KEY}
+          API_BASE_URL: https://api.minimax.io/anthropic
+          API_MODEL: MiniMax-M2.5
+          # R2
+          R2_ACCOUNT_ID: ${R2_ACCOUNT_ID}
+          R2_ACCESS_KEY_ID: ${R2_ACCESS_KEY_ID}
+          R2_SECRET_ACCESS_KEY: ${R2_SECRET_ACCESS_KEY}
+          R2_BUCKET: dawncast
+          R2_ENDPOINT: ${R2_ENDPOINT}
+          # 健康回饋給 api 的 entrypoint 用（可選）
+          ADMIN_TOKEN: ${ADMIN_TOKEN}
+          API_PUBLIC_BASE_URL: ${API_PUBLIC_BASE_URL}
+          # Grounding
+          TAVILY_API_KEY: ${TAVILY_API_KEY}
+        # 不曝露 port；無 healthcheck endpoint 由 Zeabur 控；supervisor / in-app retry 接管
+        dependsOn:
+          - service: db
+            condition: service_healthy
+          - service: api
+            condition: service_started
+
+    # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    # 6) Backup sidecar（每日 04:00 Taipei pg_dump → R2）
+    # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    - name: backup
+      spec:
+        # 用 Dockerfile.backup（自建 alpine + dcron + postgres-client + aws-cli2）
+        dockerfile:
+          dockerfilePath: deploy/Dockerfile.backup
+          context: ..
+        envs:
+          POSTGRES_HOST: db
+          POSTGRES_PORT: "5432"
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+          POSTGRES_DB: postgres
+          R2_ACCOUNT_ID: ${R2_ACCOUNT_ID}
+          R2_ACCESS_KEY_ID: ${R2_ACCESS_KEY_ID}
+          R2_SECRET_ACCESS_KEY: ${R2_SECRET_ACCESS_KEY}
+          R2_BACKUP_BUCKET: ${R2_BACKUP_BUCKET}
+          TZ: Asia/Taipei
+        # 無 port
+
+  volumes:
+    - name: db-data
+      # 預設 Zeabur managed volume，type: persistent
+    - name: kong-config
+      # mount 進 kong 的宣告式設定
+
+  # ─────────── 必要 secrets 一覽（請在 Zeabur Dashboard 一一設定）───────────
+  # DATABASE_URL 已由 db 容器自動注入；以下這些 Zeabur 不會有預設值、deploy 前必須設：
+  #
+  # 必要（缺一就啟動失敗）：
+  #   POSTGRES_PASSWORD          ← 強密碼；同時給 db, gotrue, api, worker, backup
+  #   GOTRUE_JWT_KEY             ← ECC P-256 PEM 私鑰；用 deploy/scripts/sign-jwt-key.sh 產
+  #   GOOGLE_CLIENT_ID           ← Google OAuth client id
+  #   GOOGLE_CLIENT_SECRET       ← Google OAuth client secret
+  #   SITE_URL                   ← 前端公開網域（例 https://dawncast.app）
+  #   API_EXTERNAL_URL           ← Kong 對外網域（例 https://api.dawncast.app）
+  #   URI_ALLOW_LIST             ← JSON 陣列字串（含 SITE_URL 跟 callback 用）
+  #   CORS_ALLOWED_ORIGINS       ← JSON 陣列字串（前端 origin）
+  #   ADMIN_TOKEN                ← 強祕密；admin / jobs / notifications router 用
+  #   MINIMAX_API_KEY            ← MiniMax auth token
+  #   R2_ACCOUNT_ID              ← Cloudflare R2 account id
+  #   R2_ACCESS_KEY_ID           ← R2 access key
+  #   R2_SECRET_ACCESS_KEY       ← R2 secret key
+  #   R2_ENDPOINT                ← R2 endpoint URL（https://<account>.r2.cloudflarestorage.com）
+  #   R2_BACKUP_BUCKET           ← 給 backup sidecar 用（可跟 dawncast 共用 bucket 或獨立）
+  #   TAVILY_API_KEY             ← optional，缺則自動降級
+  #
+  # 為簡化，api 與 worker 共用以下變數；日後需要分離時各自加。
