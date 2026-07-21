@@ -29,3 +29,7 @@ output/
 # session workflow scratch（含指向個人絕對路徑的 symlink，不可攜）
 .claude/workflows/scripts/
 
+# deploy secrets（JWT signing keys, R2 credentials, etc. — regenerated locally）
+backend/deploy/scripts/jwt-keys/
+backend/deploy/.env
+

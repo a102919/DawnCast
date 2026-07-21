@@ -1,13 +1,10 @@
-# Zeabur Server Marketplace 部署模板（DawnCast — 單人精簡版）
-# 單一 host 跑四個容器：api / worker / db / gotrue
-# 對外只留 FastAPI :8080；Kong 由 Cloudflare Tunnel 取代；備份改手動腳本。
+# Zeabur Server Marketplace 部署模板（DawnCast — 單人精簡版，四容器）
+# Schema: zeabur.com/v1, services[].template = PREBUILT|GIT
+# 對應 spec.source.{image|{type,repoID,branch}}, ports[].{id,port,type},
+# volumes[].{id,dir}, env 物件（map）。
 #
-# 推薦機器：TenCent Tokyo 4 vCPU / 4 GB / 60 GB SSD / $4/mo
-# 給 MiniMax API 用亞太樞紐，連線延遲最直接。
-# build context = backend/；Zeabur 從此檔位置向上找 zeabur-template.yaml。
-#
-# 觸發：`zeabur deploy --template` ；或 Zeabur Dashboard 上傳此檔。
-# 此檔不直接處理 secrets；secret 在 Dashboard → Services → Variables 設。
+# 跑 deploy：
+#   zeabur template deploy --file deploy/zeabur-template.yaml --project-id <id> --interactive=false
 
 apiVersion: zeabur.com/v1
 kind: Template
@@ -15,163 +12,213 @@ metadata:
   name: dawncast-personal
 
 spec:
-  variables: []
-  # ━━━ 必要 secrets（請在 Dashboard 設，命名裸大寫） ━━━
-  # POSTGRES_PASSWORD          db, gotrue, api, worker（4 處同值）
-  # GOTRUE_JWT_KEY             gotrue（deploy/scripts/sign-jwt-key.sh 產的 PEM，**整段含 BEGIN/END**）
-  # GOTRUE_JWT_KEY_PASSPHRASE  gotrue（留空；非必要）
-  # GOOGLE_CLIENT_ID           gotrue
-  # GOOGLE_CLIENT_SECRET       gotrue
-  # SITE_URL                   gotrue（前端網域）
-  # API_EXTERNAL_URL           gotrue, api（Cloudflare Tunnel 對外網域；例 https://api.your-domain.app）
-  # URI_ALLOW_LIST             gotrue（JSON 陣列字串，含 Google callback）
-  # CORS_ALLOWED_ORIGINS       api（JSON 陣列字串，前端 origin）
-  # ADMIN_TOKEN                api, worker（強祕密）
-  # MINIMAX_API_KEY            api, worker（MiniMax 的 bearer token / api key）
-  # API_BASE_URL               api, worker（https://api.minimax.io/anthropic 之類，依帳號 provider）
-  # API_MODEL                  api, worker（MiniMax-M2.5 等）
-  # R2_ACCOUNT_ID / R2_ACCESS_KEY_ID / R2_SECRET_ACCESS_KEY / R2_BUCKET / R2_ENDPOINT
-  # TAVILY_API_KEY             api（可選）
+  variables:
+    - key: POSTGRES_PASSWORD
+      type: STRING
+      name: PostgreSQL Password
+      description: 主 PostgreSQL 密碼（後端、GoTrue、migration runner 共用）
+
+  resourceRequirement:
+    recommendedConfig:
+      cpu: 2
+      ram: 4
 
   services:
-    # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-    # 1) Postgres（DawnCast 用的三個 ext 全預裝，省 init）
-    # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    # 1. Postgres（supabase 官方 image，預裝三個 ext）
+    # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
     - name: db
+      template: PREBUILT
       spec:
-        # 用 supabase 官方 image（內含 pgmq / pg_cron / pgvector 跟 auth schema）。
-        # 若用 Zeabur 官方 Postgres 就還得手動跑 `create extension`，多此一舉。
-        image: supabase/postgres:17.6.1.136
-        envs:
-          # supabase/postgres 預設 supabase_admin 為 superuser；
-          # POSTGRES_PASSWORD 同步設給該 role（image entrypoint 會用）。
-          POSTGRES_USER: supabase_admin
-          POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
-          POSTGRES_DB: postgres
-          TZ: Asia/Taipei
-          # 時區關鍵：pg_cron schedule() 跑在 DB 時區（不用 container OS TZ）
-          PGTZ: Asia/Taipei
+        source:
+          image: supabase/postgres:17.6.1.136
+        env:
+          POSTGRES_USER:
+            default: supabase_admin
+          POSTGRES_PASSWORD:
+            default: ${POSTGRES_PASSWORD}
+          POSTGRES_DB:
+            default: postgres
+          TZ:
+            default: Asia/Taipei
+          PGTZ:
+            default: Asia/Taipei
         volumes:
-          - name: db-data
-            subPath: /var/lib/postgresql/data
-        healthcheck:
-          test: ["CMD-SHELL", "pg_isready -U supabase_admin -h localhost"]
-          interval: 5s
-          timeout: 5s
-          retries: 10
-
-    # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-    # 2) GoTrue（自架 Supabase Auth；DawnCast 唯一登入 = Google OAuth）
-    # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-    - name: gotrue
-      spec:
-        image: supabase/gotrue:v2.189.0
-        envs:
-          GOTRUE_DB_DRIVER: postgres
-          # supabase_auth_admin 在 supabase/postgres image init 階段自動建好
-          GOTRUE_DB_DATABASE_URL: postgres://supabase_auth_admin:${POSTGRES_PASSWORD}@db:5432/postgres
-          GOTRUE_SITE_URL: ${SITE_URL}
-          GOTRUE_URI_ALLOW_LIST: ${URI_ALLOW_LIST}
-          # ES256 簽章（DawnCast 用 JWKS 驗，Supabase Cloud 也是 ES256）
-          GOTRUE_JWT_KEY: ${GOTRUE_JWT_KEY}
-          GOTRUE_JWT_AUD: authenticated
-          GOTRUE_JWT_EXP: "3600"
-          # ━━━ 唯一登入方式 = Google OAuth ━━━
-          GOTRUE_EXTERNAL_GOOGLE_ENABLED: "true"
-          GOTRUE_EXTERNAL_GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID}
-          GOTRUE_EXTERNAL_GOOGLE_SECRET: ${GOOGLE_CLIENT_SECRET}
-          GOTRUE_EXTERNAL_GOOGLE_REDIRECT_URI: ${API_EXTERNAL_URL}/auth/v1/callback
-          # ━━━ 全部 email 路徑關閉（SMTP 不必裝、single-user 不需 magic link）━━━
-          GOTRUE_DISABLE_EMAIL_SIGNUP: "true"
-          GOTRUE_DISABLE_EMAIL_LINK_SIGNUP: "true"
-          GOTRUE_DISABLE_EMAIL_MAGICLINK: "true"
-          GOTRUE_DISABLE_EMAIL_OTP: "true"
-          GOTRUE_MAILER_AUTOCONFIRM: "true"
-          GOTRUE_SMTP_HOST: ""
-          PORT: "9999"
+          - id: pgdata
+            dir: /var/lib/postgresql/data
         ports:
-          # 反向代理到 Cloudflare Tunnel；要對外走 HTTPS（自行申請 cert 或用 zeabur 自動）
+          - id: postgres
+            port: 5432
+            type: TCP
+
+    # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    # 2. GoTrue（自架 Supabase Auth）
+    # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    - name: gotrue
+      template: PREBUILT
+      dependencies:
+        - db
+      spec:
+        source:
+          image: supabase/gotrue:v2.189.0
+        env:
+          GOTRUE_DB_DRIVER:
+            default: postgres
+          GOTRUE_DB_DATABASE_URL:
+            default: postgres://supabase_auth_admin:${POSTGRES_PASSWORD}@db:5432/postgres
+          GOTRUE_SITE_URL:
+            default: https://dawncast.app
+          GOTRUE_URI_ALLOW_LIST:
+            default: https://dawncast.app,http://localhost:5173,http://localhost:8080/auth/v1/callback
+          GOTRUE_EXTERNAL_GOOGLE_ENABLED:
+            default: "true"
+          GOTRUE_EXTERNAL_GOOGLE_CLIENT_ID:
+            default: ""
+          GOTRUE_EXTERNAL_GOOGLE_SECRET:
+            default: ""
+          GOTRUE_EXTERNAL_GOOGLE_REDIRECT_URI:
+            default: https://api.dawncast.app/auth/v1/callback
+          GOTRUE_JWT_KEY:
+            default: ""
+          GOTRUE_JWT_AUD:
+            default: authenticated
+          GOTRUE_JWT_EXP:
+            default: "3600"
+          GOTRUE_DISABLE_EMAIL_SIGNUP:
+            default: "true"
+          GOTRUE_DISABLE_EMAIL_LINK_SIGNUP:
+            default: "true"
+          GOTRUE_DISABLE_EMAIL_MAGICLINK:
+            default: "true"
+          GOTRUE_DISABLE_EMAIL_OTP:
+            default: "true"
+          GOTRUE_MAILER_AUTOCONFIRM:
+            default: "true"
+          GOTRUE_SMTP_HOST:
+            default: ""
+          PORT:
+            default: "9999"
+        ports:
           - id: http
             port: 9999
-            targetPort: 9999
-        dependsOn:
-          - service: db
-            condition: service_healthy
+            type: TCP
 
-    # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-    # 3) FastAPI（api）— 對外唯一服務，Cloudflare Tunnel 接這台
-    # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    # 3. API（FastAPI / Dockerfile.api）
+    # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
     - name: api
+      template: GIT
+      dependencies:
+        - db
+        - gotrue
       spec:
-        dockerfile:
-          dockerfilePath: deploy/Dockerfile.api
-          context: ..
-        envs:
-          ENVIRONMENT: prod
-          PORT: "8080"
-          # 內網連 db（docker compose / zeabur 同一 host 共享網路；service name = db）
-          DATABASE_URL: postgres://postgres:${POSTGRES_PASSWORD}@db:5432/postgres
-          # JWKS endpoint 透過 FastAPI 自身 reverse proxy 出來（見下）+ Cloudflare Tunnel
-          # 對 Cloudflare Tunnel 打 /auth/v1/* 會打到 FastAPI 8080，
-          # FastAPI /auth/* 路徑內部 proxy 到 gotrue:9999（見 app/main.py 規畫）。
-          # 這條 URL 是給前端讀 JWKS 用。
-          SUPABASE_JWKS_URL: ${API_EXTERNAL_URL}/auth/v1/.well-known/jwks.json
-          SUPABASE_JWT_AUDIENCE: authenticated
-          CORS_ALLOWED_ORIGINS: ${CORS_ALLOWED_ORIGINS}
-          ADMIN_TOKEN: ${ADMIN_TOKEN}
-          # 引擎
-          GENERATION_ENGINE: api_key
-          FAILOVER_MODE: degrade
-          API_KEY: ${MINIMAX_API_KEY}
-          API_BASE_URL: ${API_BASE_URL}
-          API_MODEL: ${API_MODEL}
-          # R2（音檔/字幕儲存）
-          R2_ACCOUNT_ID: ${R2_ACCOUNT_ID}
-          R2_ACCESS_KEY_ID: ${R2_ACCESS_KEY_ID}
-          R2_SECRET_ACCESS_KEY: ${R2_SECRET_ACCESS_KEY}
-          R2_BUCKET: ${R2_BUCKET:-dawncast}
-          R2_ENDPOINT: ${R2_ENDPOINT}
-          # Grounding 來源
-          TAVILY_API_KEY: ${TAVILY_API_KEY}
+        # 用 Zeabur zbpack 自動 build（Python + Dockerfile 自動偵測）
+        # 如果 zbpack 不認，會直接 git clone 後跑 Dockerfile.api
+        source:
+          # Zeabur 認 format 不同，try 1: 直接 repo URL
+          type: GITHUB
+          repoURL: https://github.com/Alan047/DawnCast
+          branch: main
+        env:
+          ENVIRONMENT:
+            default: prod
+          PORT:
+            default: "8080"
+          DATABASE_URL:
+            default: postgres://postgres:${POSTGRES_PASSWORD}@db:5432/postgres
+          SUPABASE_JWKS_URL:
+            default: https://api.dawncast.app/auth/v1/.well-known/jwks.json
+          SUPABASE_JWT_AUDIENCE:
+            default: authenticated
+          CORS_ALLOWED_ORIGINS:
+            default: https://dawncast.app
+          ADMIN_TOKEN:
+            default: ""
+          GENERATION_ENGINE:
+            default: api_key
+          FAILOVER_MODE:
+            default: degrade
+          API_KEY:
+            default: ""
+          API_BASE_URL:
+            default: https://api.minimax.io/anthropic
+          API_MODEL:
+            default: MiniMax-M2.5
+          R2_ACCOUNT_ID:
+            default: ""
+          R2_ACCESS_KEY_ID:
+            default: ""
+          R2_SECRET_ACCESS_KEY:
+            default: ""
+          R2_BUCKET:
+            default: dawncast
+          R2_ENDPOINT:
+            default: ""
+          TAVILY_API_KEY:
+            default: ""
+          APPLY_MIGRATIONS_ON_BOOT:
+            default: "1"
+          POSTGRES_USER:
+            default: supabase_admin
+          POSTGRES_HOST:
+            default: db
+          POSTGRES_PORT:
+            default: "5432"
+          POSTGRES_DB:
+            default: postgres
         ports:
           - id: http
             port: 8080
-            targetPort: 8080
-        dependsOn:
-          - service: db
-            condition: service_healthy
-          - service: gotrue
-            condition: service_started
+            type: HTTP
 
-    # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-    # 4) Worker（常駐；in-app retry；Zeabur 自動重啟）
-    # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    # 4. Worker（常駐；Dockerfile.worker）
+    # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
     - name: worker
+      template: GIT
+      dependencies:
+        - db
+        - api
       spec:
-        dockerfile:
-          dockerfilePath: deploy/Dockerfile.worker
-          context: ..
-        envs:
-          ENVIRONMENT: prod
-          APP_TIMEZONE: Asia/Taipei
-          DATABASE_URL: postgres://postgres:${POSTGRES_PASSWORD}@db:5432/postgres
-          GENERATION_ENGINE: api_key
-          FAILOVER_MODE: degrade
-          API_KEY: ${MINIMAX_API_KEY}
-          API_BASE_URL: ${API_BASE_URL}
-          API_MODEL: ${API_MODEL}
-          R2_ACCOUNT_ID: ${R2_ACCOUNT_ID}
-          R2_ACCESS_KEY_ID: ${R2_ACCESS_KEY_ID}
-          R2_SECRET_ACCESS_KEY: ${R2_SECRET_ACCESS_KEY}
-          R2_BUCKET: ${R2_BUCKET:-dawncast}
-          R2_ENDPOINT: ${R2_ENDPOINT}
-          ADMIN_TOKEN: ${ADMIN_TOKEN}
-        # 無 port；Docker HEALTHCHECK 控（Dockerfile.worker 內部 python healthcheck.py）
-        dependsOn:
-          - service: db
-            condition: service_healthy
-          - service: api
-            condition: service_started
-
-  volumes:
-    - name: db-data
+        source:
+          type: GITHUB
+          repoID: "REPLACE_WITH_REPO_ID"
+          branch: main
+        env:
+          ENVIRONMENT:
+            default: prod
+          APP_TIMEZONE:
+            default: Asia/Taipei
+          DATABASE_URL:
+            default: postgres://postgres:${POSTGRES_PASSWORD}@db:5432/postgres
+          GENERATION_ENGINE:
+            default: api_key
+          FAILOVER_MODE:
+            default: degrade
+          API_KEY:
+            default: ""
+          API_BASE_URL:
+            default: https://api.minimax.io/anthropic
+          API_MODEL:
+            default: MiniMax-M2.5
+          R2_ACCOUNT_ID:
+            default: ""
+          R2_ACCESS_KEY_ID:
+            default: ""
+          R2_SECRET_ACCESS_KEY:
+            default: ""
+          R2_BUCKET:
+            default: dawncast
+          R2_ENDPOINT:
+            default: ""
+          APPLY_MIGRATIONS_ON_BOOT:
+            default: "1"
+          POSTGRES_USER:
+            default: supabase_admin
+          POSTGRES_HOST:
+            default: db
+          POSTGRES_PORT:
+            default: "5432"
+          POSTGRES_DB:
+            default: postgres
+        # 無對外 port；常駐 process 由 Dockerfile.worker 的 CMD 啟動
