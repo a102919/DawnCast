@@ -20,6 +20,11 @@
     # 本機跑（docker-compose）
     POSTGRES_HOST=localhost POSTGRES_USER=supabase_admin \\
     POSTGRES_PASSWORD=postgres uv run python -m scripts.apply_migrations
+
+GoTrue auth 角色前置：
+  supabase/postgres image 不會自動建立 `supabase_auth_admin` role；
+  GoTrue migration runner 用這個 role 連 db 跑 `auth` schema DDL，
+  所以本 runner 進 db 前先用 superuser 建好（密碼 = POSTGRES_PASSWORD）。
 """
 
 from __future__ import annotations
@@ -30,8 +35,52 @@ import sys
 from pathlib import Path
 
 import psycopg
+from psycopg import sql as pg_sql
 
 MIGRATIONS_DIR = Path(__file__).resolve().parent.parent / "db" / "migrations"
+
+
+def _ensure_auth_admin(conn: psycopg.Connection, password: str) -> None:
+    """建立 supabase_auth_admin role（GoTrue auth schema migration 所需）。
+
+    ponytail: supabase/postgres image 17.6.1.136 build 時不創此 role，由 gotrue
+    runtime 假設自帶。Self-host 時這個假設破了 → migration fail / password auth fail。
+    升級路徑：若換 supabase/postgres 升級版自動建 role，刪掉這個 pre-step。
+    """
+    print("→ 確保 supabase_auth_admin role 存在（GoTrue auth migration 所需）", flush=True)
+    with conn.cursor() as cur:
+        cur.execute("SELECT 1 FROM pg_roles WHERE rolname='supabase_auth_admin'")
+        exists = cur.fetchone() is not None
+
+        if exists:
+            # ponytail: ALTER ... PASSWORD %s — psycopg3 對 role password 用
+            # identifier quoting by default；用 sql.SQL 拼字串再傳 password 為參數。
+            cur.execute(
+                pg_sql.SQL("ALTER ROLE supabase_auth_admin WITH LOGIN PASSWORD {}").format(
+                    pg_sql.Literal(password)
+                )
+            )
+        else:
+            cur.execute(
+                pg_sql.SQL(
+                    "CREATE ROLE supabase_auth_admin LOGIN CREATEDB CREATEROLE "
+                    "REPLICATION BYPASSRLS PASSWORD {}"
+                ).format(pg_sql.Literal(password))
+            )
+        conn.commit()
+
+        cur.execute("GRANT supabase_admin TO supabase_auth_admin")
+        conn.commit()
+
+        cur.execute("CREATE SCHEMA IF NOT EXISTS auth AUTHORIZATION supabase_auth_admin")
+        conn.commit()
+
+        cur.execute("GRANT CREATE ON DATABASE postgres TO supabase_auth_admin")
+        conn.commit()
+
+        cur.execute("ALTER ROLE supabase_auth_admin SET search_path = 'auth'")
+        conn.commit()
+    print("  ✓ supabase_auth_admin role + auth schema 備妥", flush=True)
 
 
 def _discover() -> list[Path]:
@@ -89,6 +138,14 @@ def main() -> int:
     print(f"\n連線到 {user}@...（讀 env 略）", flush=True)
 
     with psycopg.connect(dsn, autocommit=False) as conn:
+        # 先建 supabase_auth_admin role（GoTrue migration 前置）
+        try:
+            _ensure_auth_admin(conn, password)
+        except Exception as exc:
+            print(f"\n✗ supabase_auth_admin 角色確保失敗：{exc}", file=sys.stderr)
+            conn.rollback()
+            return 1
+
         for path in files:
             try:
                 _apply(conn, path)

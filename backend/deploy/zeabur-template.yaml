@@ -66,10 +66,16 @@ spec:
             default: postgres
           GOTRUE_DB_DATABASE_URL:
             default: postgres://supabase_auth_admin:${POSTGRES_PASSWORD}@db:5432/postgres
+          API_EXTERNAL_URL:
+            default: https://auth.dawncast.app
+          GOTRUE_API_EXTERNAL_URL:
+            default: https://auth.dawncast.app
           GOTRUE_SITE_URL:
             default: https://dawncast.app
           GOTRUE_URI_ALLOW_LIST:
             default: https://dawncast.app,http://localhost:5173,http://localhost:8080/auth/v1/callback
+          GOTRUE_DISABLE_SIGNUP:
+            default: "true"
           GOTRUE_EXTERNAL_GOOGLE_ENABLED:
             default: "true"
           GOTRUE_EXTERNAL_GOOGLE_CLIENT_ID:
@@ -77,7 +83,7 @@ spec:
           GOTRUE_EXTERNAL_GOOGLE_SECRET:
             default: ""
           GOTRUE_EXTERNAL_GOOGLE_REDIRECT_URI:
-            default: https://api.dawncast.app/auth/v1/callback
+            default: https://auth.dawncast.app/auth/v1/callback
           GOTRUE_JWT_KEY:
             default: ""
           GOTRUE_JWT_AUD:
