@@ -1,7 +1,7 @@
 """把既有內容灌進 episodes 表，方便前端與測試。
 
 來源（皆為唯讀，不改前端檔）：
-  - frontend/src/routes/episodeData.ts 的 EPISODES 陣列 → 元資訊（slug/title/topic/...）。
+  - 舊 frontend episodeData.ts（已移除）的 EPISODES 陣列 → 元資訊（slug/title/topic/...）。
   - frontend/public/data/episode.json → 對應 slug 的 cues 內容（若存在）。
 
 用 upsert by slug（ON CONFLICT (slug) DO UPDATE），重跑冪等。

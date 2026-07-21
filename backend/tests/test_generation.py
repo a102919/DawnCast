@@ -11,13 +11,16 @@ from pathlib import Path
 
 import pytest
 
-from engine.generation.base import EngineResult
-from engine.generation.prompt import _split_long_lines, parse_engine_result
+from engine.pipeline.langgraph_pod.prompt import (
+    EngineResult,
+    _split_long_lines,
+    parse_engine_result,
+)
 from shared.errors import GenerationError
 from shared.models import ScriptLine
 
 # loop_engineering.json 當作 LLM 的標準輸出 ground truth
-_FIXTURE = Path(__file__).resolve().parents[2] / "scripts" / "loop_engineering.json"
+_FIXTURE = Path(__file__).resolve().parent / "fixtures" / "loop_engineering.json"
 
 
 def _fixture_text() -> str:
@@ -98,6 +101,30 @@ def test_split_long_lines_splits_long_english_line() -> None:
     # 內容沒有遺失（切開再接回去等於原文，忽略空白差異）
     assert "".join(c.text for c in out).replace(" ", "") == text.replace(" ", "")
     assert "".join(c.zh for c in out) == zh
+
+
+def test_split_long_lines_zh_boundary_aligns_with_en() -> None:
+    """回歸：真實生成案例。zh 句數（5）比 en（6）少一句時，舊的句數比例映射會把
+    「但裡面？」推到下一組（對應 en 的 "But inside?" 卻留在前一組）→ 字幕中英錯位。
+    新演算法按累積長度比例對齊，切點應落在 en 邊界同一語意處。"""
+    text = (
+        "Okay, picture your brain as a computer. "
+        "During the day, you're running programs — work, traffic, texts you forgot to reply to. "
+        "At night, the screen looks off. But inside? "
+        "It's doing maintenance. Defragging the hard drive."
+    )
+    zh = (
+        "好，想像你的大腦是一台電腦。白天你在跑程式——工作、開車、忘記回覆的訊息。"
+        "晚上螢幕看起來關機了。但裡面？它在進行維護，把硬碟重組。"
+    )
+    line = ScriptLine(speaker="Alex", text=text, zh=zh)
+    out = _split_long_lines([line], max_words=30)
+
+    assert len(out) == 2
+    assert out[0].text.endswith("But inside?")
+    assert out[0].zh.endswith("但裡面？")  # 舊版這句會漏掉、跑到 out[1]
+    assert out[1].zh == "它在進行維護，把硬碟重組。"
+    assert "".join(c.zh for c in out) == zh  # 內容無遺失
 
 
 def test_split_long_lines_leaves_single_unpunctuated_sentence() -> None:

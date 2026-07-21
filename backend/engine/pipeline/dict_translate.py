@@ -105,24 +105,30 @@ async def _handle_batch(msgs: list[Msg]) -> None:
     )
 
 
+async def poll_once() -> bool:
+    """讀一批、處理一批；有讀到訊息回 True。
+
+    production 由 engine.worker 主迴圈當第三優先佇列輪詢；失敗的訊息不 delete，
+    交給 pgmq vt 到期重投（與 control / generate 同一套收斂）。
+    """
+    msgs = await read_batch(DICT_TRANSLATE_QUEUE, vt=_VT_SEC, qty=_BATCH_SIZE)
+    if not msgs:
+        return False
+    await _handle_batch(msgs)
+    return True
+
+
 async def run() -> None:
-    """worker 主迴圈：無任務時 sleep；read_batch 一次拿 BATCH_SIZE 筆一起翻譯。"""
+    """獨立進程入口（手動 backfill 用）：無任務時 sleep，錯誤記 log 後重試。"""
     try:
         while True:
             try:
-                msgs = await read_batch(DICT_TRANSLATE_QUEUE, vt=_VT_SEC, qty=_BATCH_SIZE)
+                if not await poll_once():
+                    await asyncio.sleep(get_settings().pause_sec)
             except Exception as exc:  # noqa: BLE001
                 pause = get_settings().pause_sec
-                logger.warning("dict_translate read 例外，%ds 後重試: %s", pause, exc)
+                logger.warning("dict_translate 迴圈例外，%ds 後重試: %s", pause, exc)
                 await asyncio.sleep(pause)
-                continue
-            if not msgs:
-                await asyncio.sleep(get_settings().pause_sec)
-                continue
-            try:
-                await _handle_batch(msgs)
-            except Exception as exc:  # noqa: BLE001
-                logger.warning("dict_translate handler 例外 n=%d: %s", len(msgs), exc)
     finally:
         await close_pool()
 

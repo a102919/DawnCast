@@ -1,7 +1,7 @@
 """薄 CLI：手動跑單集，方便驗證。
 
 用法：
-    python -m engine.media.cli ../scripts/loop_engineering.json [out_dir]
+    python -m engine.media.cli tests/fixtures/loop_engineering.json [out_dir]
 
 把成品（episode.mp3、subtitles.srt/vtt/json）寫到 out_dir，
 out_dir 預設為 /tmp/dc_media_<slug>。直接渲染到指定目錄，不經 TemporaryDirectory。

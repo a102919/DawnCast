@@ -19,28 +19,10 @@ from typing import Any
 import pytest
 
 from engine.pipeline import generate_job, reuse
-from engine.pipeline.cluster import connected_components, cosine_similarity
 from engine.pipeline.langgraph_pod.chat import FakeChatModel
 from engine.pipeline.langgraph_pod.mock import MockRenderer, make_mock_workdir
 from shared.errors import RateLimitError
 from shared.models import Cue, ScriptJSON
-
-# ── cluster 純函式（V2 骨架，仍要可測）─────────────────────────────
-
-
-def test_cosine_similarity_basics() -> None:
-    assert cosine_similarity([1.0, 0.0], [1.0, 0.0]) == pytest.approx(1.0)
-    assert cosine_similarity([1.0, 0.0], [0.0, 1.0]) == pytest.approx(0.0)
-    assert cosine_similarity([0.0, 0.0], [1.0, 1.0]) == 0.0  # 零向量不爆
-
-
-def test_connected_components_groups_by_threshold() -> None:
-    vecs = [[1.0, 0.0], [0.99, 0.01], [0.0, 1.0]]
-    comps = connected_components(vecs, threshold=0.9)
-    # 前兩個相近成一組，第三個自成一組
-    sizes = sorted(len(c) for c in comps)
-    assert sizes == [1, 2]
-
 
 # ── 共用：fake repo / queue ────────────────────────────────────────
 
@@ -230,11 +212,9 @@ async def test_reuse_angle_cycles_beyond_window(monkeypatch: pytest.MonkeyPatch)
 
 
 def _sample_script() -> ScriptJSON:
-    """讀 scripts/loop_engineering.json 當合法 ScriptJSON 範本。"""
-    root = Path(__file__).resolve().parents[2]
-    return ScriptJSON.model_validate_json(
-        (root / "scripts" / "loop_engineering.json").read_text(encoding="utf-8")
-    )
+    """讀 tests/fixtures/loop_engineering.json 當合法 ScriptJSON 範本。"""
+    fixture = Path(__file__).resolve().parent / "fixtures" / "loop_engineering.json"
+    return ScriptJSON.model_validate_json(fixture.read_text(encoding="utf-8"))
 
 
 def _sample_artifacts(tmp: Path) -> Any:
@@ -644,3 +624,54 @@ async def test_worker_loop_routes_control_then_generate(
     assert handled == ["control:evergreen", "generate:ai"]
     assert ("control", 1) in q.deleted
     assert ("generate", 2) in q.deleted
+
+
+async def test_worker_loop_polls_dict_translate(monkeypatch: pytest.MonkeyPatch) -> None:
+    """主迴圈第三優先：control / generate 皆空時輪詢 dict_translate（部署缺口回歸）。"""
+    from engine import worker
+
+    q = FakeWorkerQueue()
+    _patch_worker(monkeypatch, q)
+
+    polled: list[bool] = []
+
+    async def fake_poll_once() -> bool:
+        polled.append(True)
+        return False  # 佇列空 → 主迴圈落到 sleep
+
+    monkeypatch.setattr(worker.dict_translate, "poll_once", fake_poll_once)
+
+    shutdown = worker._Shutdown()
+
+    async def stop_sleep(_: float) -> None:
+        shutdown.requested = True
+
+    monkeypatch.setattr(worker.asyncio, "sleep", stop_sleep)
+
+    await worker.run_worker(shutdown)
+
+    assert polled == [True]
+
+
+async def test_worker_loop_dict_translate_error_does_not_crash(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """dict_translate 輪詢例外只記 log，不弄死主迴圈（訊息留給 vt 重投）。"""
+    from engine import worker
+
+    q = FakeWorkerQueue()
+    _patch_worker(monkeypatch, q)
+
+    async def boom_poll_once() -> bool:
+        raise RuntimeError("LLM down")
+
+    monkeypatch.setattr(worker.dict_translate, "poll_once", boom_poll_once)
+
+    shutdown = worker._Shutdown()
+
+    async def stop_sleep(_: float) -> None:
+        shutdown.requested = True
+
+    monkeypatch.setattr(worker.asyncio, "sleep", stop_sleep)
+
+    await worker.run_worker(shutdown)  # 不拋例外即通過

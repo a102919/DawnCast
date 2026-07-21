@@ -1,4 +1,4 @@
-"""常駐 worker：消費 pgmq 控制 / 生成佇列，跑夜間 pipeline 的所有外部 I/O。
+"""常駐 worker：消費 pgmq 控制 / 生成 / dict_translate 佇列，跑夜間 pipeline 的所有外部 I/O。
 
 pg_cron 只發控制訊息（0003），LLM/嵌入/ffmpeg 全在這裡跑——DB 內不打外部 HTTP。
 
@@ -22,6 +22,7 @@ from datetime import datetime
 from typing import Any
 from zoneinfo import ZoneInfo
 
+from engine.pipeline import dict_translate
 from engine.pipeline.evergreen import run_evergreen
 from engine.pipeline.generate_job import run_generate_job
 from engine.pipeline.reuse import resolve_for_user
@@ -87,7 +88,7 @@ async def _handle_control(body: dict[str, Any]) -> None:
 async def _orchestrate(request_date: str) -> None:
     """A~E：投影 daily_orders → topic_requests，再對每個 (user, big_topic) 跑重用。
 
-    MVP 分桶＝big_topic 字面（大方向分桶），不跑向量聚類（cluster.py 留 V2）。
+    MVP 分桶＝big_topic 字面（大方向分桶），不跑向量聚類（V2 再議，git 歷史有 cluster.py 骨架）。
     """
     n = await repo.project_orders_to_requests(request_date)
     logger.info("orchestrate：投影 %d 筆 topic_requests（date=%s）", n, request_date)
@@ -184,11 +185,11 @@ async def _process(
 
 
 async def run_worker(shutdown: _Shutdown | None = None) -> None:
-    """常駐主迴圈：control 優先於 generate；兩者皆空就小睡。"""
+    """常駐主迴圈：control 優先於 generate，再輪 dict_translate；全空就小睡。"""
     settings = get_settings()
     shutdown = shutdown or _Shutdown()
     await open_pool()
-    logger.info("worker 啟動，輪詢 control / generate 佇列")
+    logger.info("worker 啟動，輪詢 control / generate / dict_translate 佇列")
 
     async def gen_handler(body: dict[str, Any]) -> None:
         await _handle_generate(body, settings.job_timeout_sec)
@@ -204,6 +205,14 @@ async def run_worker(shutdown: _Shutdown | None = None) -> None:
             if gen is not None:
                 await _process(GENERATE_QUEUE, gen, gen_handler, settings.dead_letter_after)
                 continue
+
+            # 第三優先：dict_translate 補缺字（batch 內自帶 delete/archive 收斂，
+            # 例外只記 log——訊息沒 delete 就會由 vt 到期重投，不需額外補償）。
+            try:
+                if await dict_translate.poll_once():
+                    continue
+            except Exception:
+                logger.exception("dict_translate 輪詢失敗，留待 vt 重投")
 
             await asyncio.sleep(IDLE_SLEEP_SEC)
     finally:

@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
 import { Heart } from 'lucide-react'
-import type { MockEpisode } from './episodeData'
+import type { MockEpisode } from '../lib'
 import { api } from '../api'
 import { useFavorites } from '../state'
 import { EmptyState } from '../components/primitives/EmptyState'

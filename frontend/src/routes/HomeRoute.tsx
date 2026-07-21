@@ -8,12 +8,11 @@ import { Chip } from '../components/primitives/Chip'
 import { SectionLabel } from '../components/primitives/SectionLabel'
 import { StatCard } from '../components/primitives/StatCard'
 import { ErrorBanner } from '../components/primitives/ErrorBanner'
-import { useListened, useVocab } from '../state'
-import { EpisodeCard } from '../components/EpisodeCard'
+import { useActivity, useVocab } from '../state'
 import { EpisodeRow } from '../components/shared/EpisodeRow'
 import { api } from '../api'
-import { TOPIC_LABELS, CEFR_COLOR } from './episodeData'
-import type { TopicKey, MockEpisode } from './episodeData'
+import { TOPIC_LABELS, CEFR_COLOR } from '../lib'
+import type { TopicKey, MockEpisode } from '../lib'
 import { storageGet } from '../lib/storage'
 
 const FEATURES = [
@@ -41,14 +40,14 @@ export function HomeRoute() {
   const [fetchError, setFetchError] = useState<string | null>(null)
   const [retryKey, setRetryKey] = useState(0)
   const [topicFilter, setTopicFilter] = useState<TopicKey>('all')
-  const { listenedIds } = useListened()
+  const { listenedEpisodeIds } = useActivity()
   const { items: vocabItems } = useVocab()
   const today = new Date().toISOString().slice(0, 10)
   const dueCount = vocabItems.filter(v => !v.nextReview || v.nextReview <= today).length
 
   const WEEKLY_COUNT = 2
   const weeklyEps = episodes.slice(0, WEEKLY_COUNT)
-  const weeklyProgress = weeklyEps.filter(ep => listenedIds.has(ep.id)).length
+  const weeklyProgress = weeklyEps.filter(ep => listenedEpisodeIds.has(ep.id)).length
 
   useEffect(() => {
     const load = async () => {
@@ -165,7 +164,7 @@ export function HomeRoute() {
 
       {/* ── 學習統計 ── */}
       <section className="grid grid-cols-3 gap-3">
-        <StatCard icon={Headphones} label="已聽集數" value={listenedIds.size} unit="集" />
+        <StatCard icon={Headphones} label="已聽集數" value={listenedEpisodeIds.size} unit="集" />
         <StatCard icon={BookOpen} label="單字庫" value={vocabItems.length} unit="個" />
         <StatCard icon={Brain} label="今日待複習" value={dueCount} unit="張" />
       </section>
@@ -207,7 +206,7 @@ export function HomeRoute() {
                     animate={{ opacity: 1, scale: 1, transition: { duration: 0.22, ease: [0.2, 0.8, 0.2, 1] } }}
                     exit={{ opacity: 0, scale: 0.96, transition: { duration: 0.18, ease: [0.2, 0.8, 0.2, 1] } }}
                   >
-                    <EpisodeCard ep={ep} />
+                    <EpisodeRow ep={ep} variant="card" />
                   </motion.div>
                 ))}
               </AnimatePresence>

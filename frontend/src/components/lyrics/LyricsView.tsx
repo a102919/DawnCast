@@ -3,7 +3,7 @@ import { useReducedMotion } from 'framer-motion'
 import type { Cue } from '../../types/episode'
 import { useVocab } from '../../state'
 import { findActiveCueIndex, splitTextToWords, getCoverArt, coverArtBackground } from '../../lib'
-import { renderTokenized } from '../transcript/renderTokenized'
+import { renderTokenized } from '../shared/renderTokenized'
 
 const RESUME_AUTOSCROLL_MS = 3000
 

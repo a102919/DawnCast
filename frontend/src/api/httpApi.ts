@@ -11,7 +11,7 @@ import type {
 } from './types'
 import type { components } from './generated'
 import type { Cue, Episode } from '../types/episode'
-import type { MockEpisode } from '../routes/episodeData'
+import type { MockEpisode } from '../lib/episode'
 import { getAccessToken } from '../lib/supabaseClient'
 
 // components['schemas'][X] 是後端 backend/shared/models.py 的唯一事實來源

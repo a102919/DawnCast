@@ -2,7 +2,7 @@ import { useMemo } from 'react'
 import type { Cue } from '../../types/episode'
 import { splitTextToWords, formatTime } from '../../lib'
 import { useVocab } from '../../state'
-import { renderTokenized } from './renderTokenized'
+import { renderTokenized } from '../shared/renderTokenized'
 
 interface CueLineProps {
   readonly cue: Cue

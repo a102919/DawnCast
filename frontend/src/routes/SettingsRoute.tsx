@@ -6,8 +6,8 @@ import { api, AppError } from '../api'
 import { supabase } from '../lib/supabaseClient'
 import { Toggle, Chip, SectionLabel } from '../components/primitives'
 import { AlertTriangle } from 'lucide-react'
-import { TOPIC_LABELS } from './episodeData'
-import type { TopicKey } from './episodeData'
+import { TOPIC_LABELS } from '../lib'
+import type { TopicKey } from '../lib'
 import { DELIVERY_TIME_OPTIONS } from '../lib/dailyOrderDate'
 
 const TOPIC_CHOICES: readonly Exclude<TopicKey, 'all'>[] = ['tech', 'business', 'culture', 'science'] as const

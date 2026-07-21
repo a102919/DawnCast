@@ -1,8 +1,8 @@
 import { Link } from 'react-router-dom'
 import { Mic, Star, CheckCircle2, Heart, Play } from 'lucide-react'
-import { CEFR_COLOR, TOPIC_LABELS, formatDateZhTW } from '../../routes/episodeData'
-import type { MockEpisode } from '../../routes/episodeData'
-import { useListened, useFavorites } from '../../state'
+import { CEFR_COLOR, TOPIC_LABELS, formatDateZhTW } from '../../lib'
+import type { MockEpisode } from '../../lib'
+import { useActivity, useFavorites } from '../../state'
 import { EpisodeCover } from './EpisodeCover'
 
 interface EpisodeRowProps {
@@ -19,8 +19,8 @@ export function EpisodeRow({ ep, variant, title }: EpisodeRowProps) {
 }
 
 function CardRow({ ep }: { readonly ep: MockEpisode }) {
-  const { listenedIds } = useListened()
-  const isListened = listenedIds.has(ep.id)
+  const { listenedEpisodeIds } = useActivity()
+  const isListened = listenedEpisodeIds.has(ep.id)
   const { favorites, toggle } = useFavorites()
   const isFav = favorites.has(ep.id)
 

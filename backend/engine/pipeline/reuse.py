@@ -9,7 +9,7 @@ CEFR 不符不選」全收斂進一條 WHERE，這層只負責「命中 → inse
   * avoid_facts：把舊集 extracted_facts 的 claim 餵給寫稿 prompt 避重。
 同一次查詢（list_prior_episode_meta）餵兩個用途，不加第二趟 DB。
 
-MVP：分桶單位＝big_topic 字面（大方向分桶）。向量聚類延後 V2（見 cluster.py），
+MVP：分桶單位＝big_topic 字面（大方向分桶）。向量聚類延後 V2（git 歷史有 cluster.py 骨架），
 所以這裡傳 cluster_id=None 即可，generate job 仍能跑。
 """
 

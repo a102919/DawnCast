@@ -2,7 +2,7 @@ import { useMemo } from 'react'
 import type { Cue } from '../../types/episode'
 import { splitTextToWords } from '../../lib'
 import { useVocab, useSettings } from '../../state'
-import { renderTokenized } from '../transcript/renderTokenized'
+import { renderTokenized } from '../shared/renderTokenized'
 
 const SPEAKER_COLORS = ['text-accent', 'text-success'] as const
 

@@ -3,7 +3,7 @@ import { api } from '../api'
 import { storageGet, storageSet } from '../lib/storage'
 import { ActivityContext, type ActivityContextValue } from './activityContextValue'
 
-// 沿用既有 localStorage key（ListenedProvider / PlayerRoute 舊版直接寫這幾個 key）。
+// 沿用既有 localStorage key（舊版 ListenedProvider / PlayerRoute 直接寫這幾個 key，前者已移除）。
 // 集中到這個 Provider 後，它們降級為「mount 時的初始值 + API 失敗時的 fallback cache」，
 // 不再是 source of truth——GET /activity 成功後會覆蓋。
 const DATES_KEY = 'dawncast:activity:dates'

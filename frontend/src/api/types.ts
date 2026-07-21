@@ -1,5 +1,5 @@
 import type { Episode } from '../types/episode'
-import type { MockEpisode } from '../routes/episodeData'
+import type { MockEpisode } from '../lib/episode'
 
 export type DictEntry = {
   readonly word: string

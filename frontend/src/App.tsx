@@ -2,7 +2,7 @@ import { BrowserRouter, Routes, Route, Navigate, useLocation } from 'react-route
 import { AnimatePresence, motion } from 'framer-motion'
 import { Toaster } from 'sonner'
 import { useEffect } from 'react'
-import { AuthProvider, ActivityProvider, PlayerProvider, VocabProvider, SettingsProvider, ListenedProvider, FavoritesProvider, DailyOrderProvider, useAuth } from './state'
+import { AuthProvider, ActivityProvider, PlayerProvider, VocabProvider, SettingsProvider, FavoritesProvider, DailyOrderProvider, useAuth } from './state'
 import { TopBar, BottomNav } from './components/layout'
 import { HomeRoute, PlayerRoute, VocabRoute, FavoritesRoute, SettingsRoute, ProgressRoute, FlashcardRoute, DailyRoute, LoginRoute } from './routes'
 import { useSprings } from './lib/motion'
@@ -59,23 +59,21 @@ function AuthenticatedShell() {
   return (
     <SettingsProvider>
       <ActivityProvider>
-        <ListenedProvider>
-          <PlayerProvider>
-            <VocabProvider>
-              <FavoritesProvider>
-                <DailyOrderProvider>
-                  <div className="min-h-screen bg-bg-primary text-text-primary font-sans">
-                    <TopBar />
-                    <main className="pb-14 lg:pb-0">
-                      <AnimatedRoutes />
-                    </main>
-                    <BottomNav />
-                  </div>
-                </DailyOrderProvider>
-              </FavoritesProvider>
-            </VocabProvider>
-          </PlayerProvider>
-        </ListenedProvider>
+        <PlayerProvider>
+          <VocabProvider>
+            <FavoritesProvider>
+              <DailyOrderProvider>
+                <div className="min-h-screen bg-bg-primary text-text-primary font-sans">
+                  <TopBar />
+                  <main className="pb-14 lg:pb-0">
+                    <AnimatedRoutes />
+                  </main>
+                  <BottomNav />
+                </div>
+              </DailyOrderProvider>
+            </FavoritesProvider>
+          </VocabProvider>
+        </PlayerProvider>
       </ActivityProvider>
     </SettingsProvider>
   )

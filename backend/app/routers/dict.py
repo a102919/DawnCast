@@ -18,6 +18,9 @@ from psycopg.rows import dict_row
 
 from app.deps import get_current_user
 from app.response import ApiResponse, ok
+
+# 刻意的 app→engine 邊界破例：查詞要同步回應（走佇列會壞 UX），
+# 故在 HTTP 路徑內直呼 engine 的 LLM 翻譯與 TTS。全 backend 僅此一處。
 from engine.llm.translate import translate_word
 from engine.media.dict_audio import synthesize_word_audio
 from shared.db.pool import connection

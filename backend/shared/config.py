@@ -90,16 +90,6 @@ class Settings(BaseSettings):
     minimax_tts_url: str = "https://api.minimax.io/v1/t2a_v2"
     minimax_tts_model: str = "speech-02-turbo"
 
-    # 嵌入（V2 才接主流程，MVP 留設定）
-    embedding_base_url: str = "https://api.openai.com/v1"
-    embedding_api_key: str = ""
-    embedding_model: str = "text-embedding-3-small"
-    embedding_dim: int = 512
-
-    # 聚類門檻（V2 啟用，上線前真實校準；絕不拍 0.85）
-    cluster_threshold_same_lang: float = 0.50
-    cluster_threshold_cross_lang: float = 0.45
-
     # ── 外部 HTTP 邊界（安全規範）────────────────────────────
     http_connect_timeout: float = 5.0
     http_read_timeout: float = 30.0

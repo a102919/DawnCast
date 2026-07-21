@@ -29,9 +29,9 @@ from shared.config import Settings
 from shared.errors import TTSError
 from shared.models import Cue, ScriptJSON
 
-_ROOT = Path(__file__).resolve().parents[2]
-_FIXTURE = _ROOT / "scripts" / "loop_engineering.json"
-_BASELINE_SRT = _ROOT / "output" / "loop_engineering" / "subtitles.srt"
+_FIXTURE = Path(__file__).resolve().parent / "fixtures" / "loop_engineering.json"
+# 本機生成的 ground truth（不入版控，缺檔時對照測試自動 skip）
+_BASELINE_SRT = Path(__file__).resolve().parent / "fixtures" / "loop_engineering_baseline.srt"
 
 # 容差：每個 cue 的 start/end 與 ground truth 差異超過此值才算問題。
 _TOLERANCE = 0.3

@@ -2,7 +2,20 @@ import { z } from 'zod'
 import type { AccountInfo, Activity, ActivityPatch, Api, DailyOrder, DictEntry, Settings, VocabItem } from './types'
 import type { Episode } from '../types/episode'
 import { CueSchema } from './httpApi'
-import { SEED_EPISODES_FOR_TEST } from '../routes/episodeData'
+import type { MockEpisode } from '../lib/episode'
+
+// mock 模式的集數列表 seed（runtime 僅此處使用；畫面真資料一律走 httpApi）。
+const SEED_EPISODES: readonly MockEpisode[] = [
+  {
+    id: 'episode_test_seed_1',
+    title: 'Test Seed Episode',
+    titleZh: '測試用 seed 集數',
+    topic: 'tech',
+    cefrLevel: 'B1',
+    episode: 1,
+    publishedAt: '2026-07-01',
+  },
+] as const
 
 // mock fixture（public/data/episode.json）是手寫的單一示範檔，只需要滿足前端 domain
 // Episode 型別（id/title/audioUrl/cues）；後端真實 wire schema（httpApi.ts 的
@@ -346,7 +359,7 @@ export const mockApi: Api = {
   },
 
   async listEpisodes() {
-    return SEED_EPISODES_FOR_TEST
+    return SEED_EPISODES
   },
 
   // mock 模式只有單一示範節目檔，無論 slug 一律回 /data/episode.json，

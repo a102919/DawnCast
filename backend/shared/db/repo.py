@@ -1,6 +1,7 @@
-"""引擎 / 批次層的參數化 SQL repo（全用 shared.db.pool.connection）。
+"""參數化 SQL repo（全用 shared.db.pool.connection），engine 與 app 共用。
 
-app 層有自己的查詢（授權收斂），這裡只放夜間 pipeline 需要的寫入與重用查詢。
+主要服務夜間 pipeline 的寫入與重用查詢；app 層多數查詢自帶授權收斂寫在 router 內，
+只有跨層共用的訂單狀態轉移 / 交付查詢放這裡（jobs、daily_orders 也會呼叫）。
 SQL 全參數化，禁字串拼接。重用查詢核心是單一 anti-join（見 reuse.py），
 不在這層做特例分支——讓「過期」與「已交付」都收斂成同一條 WHERE。
 """

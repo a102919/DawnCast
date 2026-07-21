@@ -4,7 +4,6 @@ import { motion, AnimatePresence } from 'framer-motion'
 import { Sparkles, ArrowLeft, Check, X as XIcon, BookOpen, CalendarCheck } from 'lucide-react'
 import { useVocab } from '../state'
 import type { VocabItem } from '../api/types'
-import { episodeTitleById } from './episodeData'
 import { EmptyState } from '../components/primitives/EmptyState'
 import { StatCard } from '../components/primitives/StatCard'
 import { useSprings } from '../lib/motion'
@@ -168,7 +167,7 @@ export function FlashcardRoute() {
                     <div className="mt-2 border-t border-border pt-3 space-y-1">
                       <p className="text-xs text-text-tertiary leading-relaxed italic">{current.sourceSentence}</p>
                       <p className="text-[10px] text-text-tertiary">
-                        來自《{episodeTitleById(current.sourceEpisodeId)}》
+                        來自《{current.sourceEpisodeId}》
                       </p>
                     </div>
                   )}

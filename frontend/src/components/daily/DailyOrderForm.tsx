@@ -15,9 +15,10 @@ import {
   Timer,
   Hourglass,
 } from 'lucide-react'
-import { Button, Chip, StatusBadge } from '../primitives'
-import { TOPIC_LABELS, formatDateZhTW } from '../../routes/episodeData'
-import type { TopicKey } from '../../routes/episodeData'
+import { Button, Chip } from '../primitives'
+import { StatusBadge } from './StatusBadge'
+import { TOPIC_LABELS, formatDateZhTW } from '../../lib'
+import type { TopicKey } from '../../lib'
 import type { DailyOrder, EntryMode, LengthTier } from '../../api'
 import {
   DELIVERY_TIME_OPTIONS,

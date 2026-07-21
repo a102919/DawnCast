@@ -1,6 +1,6 @@
 // @vitest-environment happy-dom
 // FavoritesRoute 測試（回歸鎖：收藏頁要用 api.listEpisodes() 的真資料去 filter，
-// 不是拿 episodeData.ts 寫死的假 EPISODES 陣列——假資料的 id 跟真實 favorites id
+// 不是拿舊 episodeData.ts（已移除）寫死的假 EPISODES 陣列——假資料的 id 跟真實 favorites id
 // 對不上，filter 完永遠是空陣列）。
 
 ;(globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
@@ -10,7 +10,7 @@ import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { MemoryRouter } from 'react-router-dom'
 import { FavoritesRoute } from './FavoritesRoute'
-import type { MockEpisode } from './episodeData'
+import type { MockEpisode } from '../lib'
 
 // 3 筆真實資料，其中 2 筆的 id 出現在收藏清單裡、1 筆沒有。
 const REAL_EPISODES: readonly MockEpisode[] = [
@@ -28,7 +28,7 @@ vi.mock('../api', () => ({
 }))
 
 // useFavorites 直接換成靜態假值：favorites 裡放 2 個「真實」id（real-1、real-3），
-// 對照修之前用假 EPISODES（episodeData.ts 的 loop_engineering 之類的 id）filter，
+// 對照修之前用假 EPISODES（舊 episodeData.ts 的 loop_engineering 之類的 id）filter，
 // 這 2 個 id 一定 filter 不出東西、清單永遠空。
 vi.mock('../state', () => ({
   useFavorites: () => ({

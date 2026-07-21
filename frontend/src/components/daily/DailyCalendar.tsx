@@ -1,7 +1,7 @@
 import { Lock, CheckCircle2, Plus } from 'lucide-react'
 import { isOrderLocked, getWeekdayLabel } from '../../lib/dailyOrderDate'
 import type { DailyOrder } from '../../api'
-import { StatusBadge } from '../primitives'
+import { StatusBadge } from './StatusBadge'
 
 function getDayNumber(iso: string): string {
   const parts = iso.split('-')

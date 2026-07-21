@@ -1,3 +1,11 @@
+export function formatDateZhTW(isoDate: string): string {
+  // ponytail: 後端尚未回傳真實 publishedAt，給空字串；new Date('') 是 Invalid Date，
+  // 直接 format 會 RangeError 把整個 HomeRoute 炸白。fallback 回原文（空字串也 OK）。
+  const d = new Date(isoDate)
+  if (Number.isNaN(d.getTime())) return isoDate
+  return new Intl.DateTimeFormat('zh-TW', { month: 'long', day: 'numeric' }).format(d)
+}
+
 export function formatTimestamp(seconds: number): string {
   const m = Math.floor(seconds / 60)
   const s = Math.floor(seconds % 60)

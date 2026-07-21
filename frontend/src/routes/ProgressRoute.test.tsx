@@ -9,7 +9,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { ProgressRoute } from './ProgressRoute'
-import type { MockEpisode } from './episodeData'
+import type { MockEpisode } from '../lib'
 
 // listEpisodes() 回傳的集數 id 跟下面 listenedIds 刻意完全不重疊：
 // 如果程式碼退回用「episodes.filter(ep => listenedIds.has(ep.id)).length」計算，
@@ -38,10 +38,6 @@ vi.mock('../state', () => ({
     clearVocab: vi.fn(),
     isInVocab: () => false,
     updateCardReview: vi.fn(),
-  }),
-  useListened: () => ({
-    listenedIds: new Set(NOT_IN_LIST_IDS),
-    markAsListened: vi.fn(),
   }),
   useActivity: () => ({
     streakDates: [],

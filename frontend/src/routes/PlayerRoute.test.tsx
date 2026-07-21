@@ -18,7 +18,7 @@ import { createRoot, type Root } from 'react-dom/client'
 import { MemoryRouter, Routes, Route } from 'react-router-dom'
 import { PlayerRoute } from './PlayerRoute'
 import type { Episode } from '../types/episode'
-import type { MockEpisode } from './episodeData'
+import type { MockEpisode } from '../lib'
 
 const MOCK_LIST: readonly MockEpisode[] = [
   { id: 'ep-1', title: 'Ep One', titleZh: '第一集', topic: 'tech', cefrLevel: 'B1', episode: 1, publishedAt: '2026-07-01' },
@@ -69,7 +69,6 @@ vi.mock('../state', () => ({
     updateSettings: vi.fn(),
     resetPopupPreferences: vi.fn(),
   }),
-  useListened: () => ({ listenedIds: new Set<string>(), markAsListened: vi.fn() }),
   useDailyOrder: () => ({
     todayDate: '2026-07-17',
     orders: new Map(),

@@ -29,14 +29,14 @@ from langchain_core.runnables import RunnableConfig
 from langgraph.graph import END
 from psycopg.errors import ForeignKeyViolation
 
-from engine.generation.prompt import (
-    _strip_code_fence,
-    parse_engine_result,
-)
 from engine.media import (
     EpisodeArtifacts,
     make_job_workdir,
     render_episode,
+)
+from engine.pipeline.langgraph_pod.prompt import (
+    _strip_code_fence,
+    parse_engine_result,
 )
 from shared.config import Settings
 from shared.errors import RateLimitError, SourceFetchError
@@ -196,6 +196,8 @@ _DIALOGUE_CHEMISTRY = """
 - 至少一處 callback：呼應本集稍早提過的詞/哏，或呼應 AVOID REPETITION 區塊列出的舊集素材。
 - 每人每次發言至少一個日常類比（食物、交通、家庭、天氣）。
 - 預設 Alex 提問、Sarah 反駁；debate tone 時角色可換。
+- 發言量要平衡：兩人輪流主導不同段落的講解，任一人總字數不得超過全片六成；\
+不要一人講課、另一人只出短句捧哏（"Really?", "Weirder how?"）。
 """
 
 _MONOLOGUE_VOICE = """
@@ -573,10 +575,12 @@ build toward each chapter/section's mini-payoff, (c) 0.0 if monotone/uniform rhy
 rhythm clearly varies with content.
 
 4. chemistry — ONLY meaningful for dialogue format (two hosts). Do hosts react to each other \
-(questions, mild disagreement, at least one callback to something said earlier)?
+(questions, mild disagreement, at least one callback to something said earlier), and do BOTH \
+hosts carry explanation duty (not one lecturing while the other only interjects)?
    evaluation_steps: (a) if format is monologue, skip this axis and output 1.0, (b) otherwise \
-find at least one disagreement/pushback moment and one callback, (c) 0.0 if hosts just \
-alternate reading facts with no interaction.
+find at least one disagreement/pushback moment and one callback, (c) estimate each host's share \
+of total words — if one host exceeds ~65%, cap this axis at 0.5 and say so in feedback, \
+(d) 0.0 if hosts just alternate reading facts with no interaction.
 
 5. groundedness — ONLY meaningful when SOURCES are provided below. For each entry in \
 extracted_facts, check whether its source_ids point to a SOURCES entry whose text actually \

@@ -13,7 +13,7 @@ import { VocabDrawer } from '../components/vocab/VocabDrawer'
 import type { Episode, Cue } from '../types/episode'
 import type { DictEntry } from '../api/types'
 import { api } from '../api'
-import { usePlayer, useListened, useDailyOrder, useSettings, useActivity } from '../state'
+import { usePlayer, useDailyOrder, useSettings, useActivity } from '../state'
 import { findActiveCueIndex } from '../lib'
 
 export function PlayerRoute() {
@@ -29,9 +29,8 @@ export function PlayerRoute() {
   const [lookupError, setLookupError] = useState<string | null>(null)
   const { currentTime, duration, seekTo, play, videoRef, loadProgress, setPlaybackRate } = usePlayer()
   const { settings } = useSettings()
-  const { markAsListened } = useListened()
   const { markPlayed } = useDailyOrder()
-  const { addListenMinutes, addLookupCount } = useActivity()
+  const { addListenMinutes, addLookupCount, markListened } = useActivity()
   const episodeIdRef = useRef<string | null>(null)
   const hasMarkedListened = useRef(false)
   const hasMarkedDailyPlayed = useRef(false)
@@ -103,11 +102,11 @@ export function PlayerRoute() {
     if (!episode || duration <= 0 || hasMarkedListened.current) return
     if (currentTime / duration > 0.8) {
       hasMarkedListened.current = true
-      markAsListened(episode.id)
+      markListened(episode.id)
       const ymMin = new Date().toLocaleDateString('en-CA').slice(0, 7)
       addListenMinutes(ymMin, Math.floor(currentTime / 60))
     }
-  }, [currentTime, duration, episode, markAsListened, addListenMinutes])
+  }, [currentTime, duration, episode, markListened, addListenMinutes])
 
   useEffect(() => {
     if (!episode || duration <= 0 || hasMarkedDailyPlayed.current) return

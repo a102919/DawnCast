@@ -1,6 +1,6 @@
 """把 dict_cache 裡缺 translation 的字丟進 dict_translate 佇列。
 
-worker（engine.workers.dict_translate，launchd 常駐）會用 MiniMax 翻譯後 upsert。
+worker（engine.pipeline.dict_translate，主 worker 迴圈輪詢）會用 MiniMax 翻譯後 upsert。
 
 排除 kaikki_stage 已覆蓋的字（kaikki 翻譯 workflow 已經接手這批字的 example_zh）。
 如果不在這裡排除，enqueue 跟 kaikki workflow 會對同一批字重複加工。

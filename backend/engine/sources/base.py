@@ -1,6 +1,6 @@
 """真實資料來源 provider 的共用契約。
 
-鏡像 engine.generation.base 的 Protocol 模式：呼叫端只認 SourceProvider，
+鏡像 langgraph_pod 的 Protocol 模式：呼叫端只認 SourceProvider，
 換供應商（news API、搜尋引擎、Wikipedia）零改動。
 """
 

@@ -344,7 +344,7 @@ def test_make_langchain_chat_unsupported_engine_raises() -> None:
 
 
 def test_fake_chat_response_parses_to_script_json() -> None:
-    from engine.generation.prompt import parse_engine_result
+    from engine.pipeline.langgraph_pod.prompt import parse_engine_result
 
     chat = _make_passing_chat()
     import asyncio

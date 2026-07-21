@@ -1,8 +1,9 @@
 import { useState } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
 import { ChevronDown, Play } from 'lucide-react'
-import { Button, StatusBadge, SectionLabel } from '../primitives'
-import { TOPIC_LABELS, formatDateZhTW } from '../../routes/episodeData'
+import { Button, SectionLabel } from '../primitives'
+import { StatusBadge } from './StatusBadge'
+import { TOPIC_LABELS, formatDateZhTW } from '../../lib'
 import type { DailyOrder } from '../../api'
 import { isOrderLocked, isToday, getWeekdayLabel } from '../../lib/dailyOrderDate'
 
