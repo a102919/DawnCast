@@ -112,13 +112,69 @@ spec:
         - db
         - gotrue
       spec:
-        # 用 Zeabur zbpack 自動 build（Python + Dockerfile 自動偵測）
-        # 如果 zbpack 不認，會直接 git clone 後跑 Dockerfile.api
         source:
-          # Zeabur 認 format 不同，try 1: 直接 repo URL
-          type: GITHUB
-          repoURL: https://github.com/Alan047/DawnCast
+          source: GITHUB
+          repo: 1307825216
           branch: main
+          rootDirectory: backend
+          # Zeabur 對 git source 的 dockerfile 欄位是 inline content（不是路徑）；
+          # 留空字串會走 zbpack，於是直接把 backend/deploy/Dockerfile.api 內聯進來。
+          dockerfile: |
+            # ── DawnCast API（FastAPI / uvicorn）───────────────────────────────────
+            # 對外服務層。不碰媒體處理，所以「不裝 ffmpeg、不裝中文字型」——
+            # 那些只有 worker 燒字幕時才需要，API 裝了只是讓 image 變肥、攻擊面變大。
+            #
+            # build context 為 backend/：所有 COPY 路徑相對 backend/。
+
+            # ---- builder：用 uv 把依賴裝進 image 內的 .venv ----
+            FROM python:3.12-slim AS builder
+
+            # uv 官方靜態 binary，免在 image 裡裝 pip/curl
+            COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/
+
+            ENV UV_COMPILE_BYTECODE=1 \
+                UV_LINK_MODE=copy \
+                UV_PYTHON_DOWNLOADS=0
+
+            WORKDIR /app
+
+            # 先只 COPY 依賴定義 → 鎖檔，命中 layer cache。
+            COPY pyproject.toml uv.lock ./
+            RUN uv sync --frozen --no-dev --no-install-project
+
+            COPY app ./app
+            COPY engine ./engine
+            COPY shared ./shared
+            RUN uv sync --frozen --no-dev
+
+            RUN uv run python -m piper.download_voices --download-dir /app/voices en_US-amy-medium
+
+            # ---- runtime：乾淨小 image，只搬 .venv 與原始碼 ----
+            FROM python:3.12-slim AS runtime
+
+            RUN useradd --create-home --uid 10001 appuser
+            WORKDIR /app
+
+            ENV PATH="/app/.venv/bin:$PATH" \
+                PYTHONUNBUFFERED=1 \
+                PYTHONDONTWRITEBYTECODE=1 \
+                PORT=8080 \
+                PIPER_VOICE_MODEL=/app/voices/en_US-amy-medium.onnx
+
+            COPY --from=builder --chown=appuser:appuser /app/.venv ./.venv
+            COPY --from=builder --chown=appuser:appuser /app/app ./app
+            COPY --from=builder --chown=appuser:appuser /app/engine ./engine
+            COPY --from=builder --chown=appuser:appuser /app/shared ./shared
+            COPY --from=builder --chown=appuser:appuser /app/voices ./voices
+
+            COPY --chown=appuser:appuser scripts ./scripts
+            COPY --chown=appuser:appuser deploy/entrypoint-api.sh /app/entrypoint-api.sh
+            RUN chmod +x /app/entrypoint-api.sh
+
+            USER appuser
+            EXPOSE 8080
+
+            CMD ["sh", "-c", "uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-8080}"]
         env:
           ENVIRONMENT:
             default: prod
@@ -181,9 +237,68 @@ spec:
         - api
       spec:
         source:
-          type: GITHUB
-          repoID: "REPLACE_WITH_REPO_ID"
+          source: GITHUB
+          repo: 1307825216
           branch: main
+          rootDirectory: backend
+          dockerfile: |
+            # ── DawnCast Worker（常駐生成引擎）─────────────────────────────────────
+            # 跑寫稿 + TTS + ffmpeg 合成/燒字幕。與 API 的關鍵差異：
+            #   1. 裝 ffmpeg：audio.py / subtitles.py 直接 subprocess 呼叫。
+            #   2. 裝中文字型 fonts-noto-cjk：少了它燒中文字幕會變一排方框（tofu）。
+            # 無對外 port，CMD 常駐 poll 工作佇列。
+
+            FROM python:3.12-slim AS builder
+
+            COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/
+
+            ENV UV_COMPILE_BYTECODE=1 \
+                UV_LINK_MODE=copy \
+                UV_PYTHON_DOWNLOADS=0
+
+            WORKDIR /app
+
+            COPY pyproject.toml uv.lock ./
+            RUN uv sync --frozen --no-dev --no-install-project
+
+            COPY app ./app
+            COPY engine ./engine
+            COPY shared ./shared
+            RUN uv sync --frozen --no-dev
+
+            FROM python:3.12-slim AS runtime
+
+            RUN apt-get update \
+                && apt-get install -y --no-install-recommends \
+                    ffmpeg \
+                    fonts-noto-cjk \
+                    fonts-noto-color-emoji \
+                && fc-cache -f \
+                && rm -rf /var/lib/apt/lists/*
+
+            RUN useradd --create-home --uid 10001 appuser
+            WORKDIR /app
+
+            ENV PATH="/app/.venv/bin:$PATH" \
+                PYTHONUNBUFFERED=1 \
+                PYTHONDONTWRITEBYTECODE=1
+
+            COPY --from=builder --chown=appuser:appuser /app/.venv ./.venv
+            COPY --from=builder --chown=appuser:appuser /app/app ./app
+            COPY --from=builder --chown=appuser:appuser /app/engine ./engine
+            COPY --from=builder --chown=appuser:appuser /app/shared ./shared
+            COPY --chown=appuser:appuser deploy/healthcheck.py ./healthcheck.py
+
+            COPY --chown=appuser:appuser scripts ./scripts
+            COPY --chown=appuser:appuser deploy/entrypoint-worker.sh /app/entrypoint-worker.sh
+            RUN chmod +x /app/entrypoint-worker.sh
+
+            USER appuser
+
+            HEALTHCHECK --interval=60s --timeout=30s --start-period=30s --retries=3 \
+                CMD python healthcheck.py || exit 1
+
+            CMD ["python", "-m", "engine.worker"]
         env:
           ENVIRONMENT:
             default: prod
