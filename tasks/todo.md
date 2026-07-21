@@ -42,11 +42,13 @@
 
 完成定義：每項都給「檔案 / DoD / 驗證」，可單獨開對話執行。
 
+> 2026-07-21 核對：T1/T2/T5/T7/T9 皆已實作並有對應 router + 測試（jobs/activity/admin router、RateLimitMiddleware、test_*_router 等），補勾。
+
 ---
 
 ## P0 — 影響產品能不能跑
 
-### [ ] T1. 每日生成排程接上（最關鍵）
+### [x] T1. 每日生成排程接上（最關鍵）
 
 - **目的**：使用者送訂單後，自動 fire pipeline 產生當日 episode；不再卡在 `pending`/`queued`
 - **現況**：`backend/engine/worker.py` 有 `_orchestrate`、`run_generate_job`，但沒有 cron / 排程觸發；`scripts/` 是手動跑的
@@ -64,7 +66,7 @@
   - 過幾分鐘查 `/daily-orders/2026-07-16/episode` → 回 200 而非 null
   - `pytest backend/tests/test_jobs.py`（新寫）
 
-### [ ] T2. 學習進度 / Activity 上雲
+### [x] T2. 學習進度 / Activity 上雲
 
 - **目的**：ProgressRoute 的 streak、聆聽分鐘、查詞次數、已聽集數、播放進度跨裝置同步
 - **現況**：`dawncast:activity:*` 全在 localStorage；無後端 endpoint
@@ -104,7 +106,7 @@
 - **DoD**：刪帳號後該 user_id 所有資料 cascade 清除；再次註冊同 email 視為新帳號
 - **驗證**：註冊 → 收 vocab / 收藏 → 刪帳號 → DB 該 user_id 列全空
 
-### [ ] T5. Rate limiting middleware
+### [x] T5. Rate limiting middleware
 
 - **目的**：`/dict/lookup` 走 LLM fallback 會花錢，要擋
 - **影響檔案**：
@@ -125,7 +127,7 @@
 - **驗證**：`grep -rn "CSV\|Anki\|離線下載\|AB repeat\|AB 重複" tasks/ docs/` → 唯一未標 `[已取消]` 命中只剩 todo.md T6 自己驗證那一行（合理）；ux-research 全有 `[已取消]` 標註。
 - **現況**：全 19 個參考點都標好；task 改為 `[x]` 收尾。
 
-### [ ] T7. Admin / Ops endpoint
+### [x] T7. Admin / Ops endpoint
 
 - **目的**：internal debug、token 用量查詢、生成狀態監控
 - **影響檔案**：
@@ -142,7 +144,7 @@ SMTP/SendGrid/Resend/SES 欄位），也沒有排程觸發機制可掛實際 dis
 端點（`build_pending_notifications` 純函式可查「現在該通知誰」），不會再接
 上實際寄送。
 
-### [ ] T9. 後端 router-level 測試補齊
+### [x] T9. 後端 router-level 測試補齊
 
 - **目的**：settings、favorites、daily_orders 三個 router 完全沒獨立 test（只有 test_api 部分涵蓋）
 - **影響檔案**：
@@ -177,3 +179,37 @@ SMTP/SendGrid/Resend/SES 欄位），也沒有排程觸發機制可掛實際 dis
 - [x] 刪除退役碼：api_key/claude_code/minimax 三引擎 + factory、build_messages、normalize.py、
       state 死欄位（generation_request/mp4_key）、healthcheck 舊引擎檢查、generation_max_attempts
 - [x] 真實端對端驗證：8 行雙人對話經 MiniMax 合成成功（scratchpad/dialogue_sample_a2.mp3）
+
+---
+
+## Zeabur Self-host 部署（2026-07-21 接手開發）
+
+> **決策**：Fly.io → 取消。改用 **Zeabur Server Marketplace 單機多容器 + Self-host Supabase（精簡版：Postgres + GoTrue + Kong，關 PostgREST/Realtime/Storage/Studio）**。
+> 維運集中在 $6-8/mo 的一台主機；月費 <$10（不含 LLM 用量）。
+>
+> 詳見 [backend/deploy/README.md](../../backend/deploy/README.md)；本節為可勾選 checklist。
+
+### 已完成
+- [x] 1. Zeabur Template YAML（`backend/deploy/zeabur-template.yaml`）—— 單機六容器定義
+- [x] 2. Migration runner（`backend/scripts/apply_migrations.py`）—— `supabase_admin` 跑 9 支 SQL
+- [x] 3. JWT signing key script（`backend/deploy/scripts/sign-jwt-key.sh`）—— 產 ECC P-256 key pair
+- [x] 4. Backup sidecar（`backend/deploy/backup/{backup.sh,backup.crontab}` + `Dockerfile.backup`）
+- [x] 5. Dockerfile.api / Dockerfile.worker 加入 entrypoint + scripts/ 帶入
+- [x] 6. 本機 docker-compose（`backend/deploy/docker-compose.yml`）—— 跟 zeabur-template 一對一對應
+- [x] 7. README v2（`backend/deploy/README.md`）—— 部署步驟、JWT rotate SOP、月度升級 SOP
+- [x] 8. frontend/.env.production — 改指 Kong/JWKS
+- [x] 9. backend/shared/config.py — Database/JWKS 預設註解對齊自架
+
+### 還沒做（要 Alan 拍板才動）
+- [ ] 10. 採購 Zeabur Server（HKG1 / Tokyo / SG, 4GB RAM）
+- [ ] 11. 採購 R2 × 2 bucket（dawncast / dawncast-backups）、API token
+- [ ] 12. Google OAuth 建 client、redirect URI
+- [ ] 13. Cloudflare Pages 接 GitHub、env 設定
+- [ ] 14. 跑 `deploy/scripts/sign-jwt-key.sh` 產 GOTRUE_JWT_KEY
+- [ ] 15. `zeabur deploy --template`、Dashboard 設 secrets
+- [ ] 16. 首次 deploy 加 `APPLY_MIGRATIONS_ON_BOOT=1`、跑 9 支 migrations
+- [ ] 17. Smoke test：health endpoint、JWKS、psql 看表、Google 登入端到端
+
+### 標 obsolete 對象
+- [x] `fly.api.toml` / `fly.worker.toml`（在 backup/ 保留備查）
+- [x] `.claude/plans/buzzing-splashing-willow.md`（歸位 plan）→ 改存成「已併入 Zeabur 部署任務」註腳
