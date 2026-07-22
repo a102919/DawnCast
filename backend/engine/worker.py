@@ -220,9 +220,34 @@ async def run_worker(shutdown: _Shutdown | None = None) -> None:
         logger.info("worker 已關閉")
 
 
+def _run_migrations_on_startup() -> None:
+    """啟動時跑 apply_migrations（idempotent）。
+
+    ponytail: 同 app/main.py 的 _run_migrations_on_startup — 從 entrypoint shell
+    搬進 main process，因為 Zeabur runtime log driver 不抓 PID 1 stdout。
+    worker process 是 main process，logger 一定進 Zeabur log。
+    """
+    import os
+
+    if os.environ.get("APPLY_MIGRATIONS_ON_BOOT", "1") != "1":
+        logger.info("APPLY_MIGRATIONS_ON_BOOT != 1, 略過 migrations")
+        return
+    try:
+        from scripts.apply_migrations import main as _apply_migrations
+
+        rc = _apply_migrations()
+        if rc != 0:
+            logger.warning("apply_migrations 結束 return code=%d", rc)
+        else:
+            logger.info("apply_migrations 完成")
+    except Exception:
+        logger.exception("啟動時跑 apply_migrations 失敗")
+
+
 def main() -> None:
-    """entrypoint：裝訊號處理 + 跑主迴圈。"""
+    """entrypoint：先跑 migrations（idempotent），再裝訊號處理 + 跑主迴圈。"""
     logging.basicConfig(level=logging.INFO)
+    _run_migrations_on_startup()
     shutdown = _Shutdown()
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)

@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import logging
+import os
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from typing import Any
@@ -43,10 +44,35 @@ from shared.errors import AppError
 logger = logging.getLogger(__name__)
 
 
+def _run_migrations_on_startup() -> None:
+    """啟動時跑 apply_migrations（idempotent）+ 建 supabase_auth_admin role。
+
+    ponytail: 之前在 entrypoint shell 跑（Dockerfile ENTRYPOINT / CMD = script），
+    但 Zeabur runtime log driver 不抓 PID 1 的 stdout — startup 是否跑了完全看不到。
+    改成 lifespan event：uvicorn 是 main process，print 進 uvicorn stdout → Zeabur
+    runtime log 100% 捕得到。失敗不擋 uvicorn 起來（debug 友好）但 logger.exception
+    一定留 stack trace。
+    """
+    if os.environ.get("APPLY_MIGRATIONS_ON_BOOT", "1") != "1":
+        logger.info("APPLY_MIGRATIONS_ON_BOOT != 1, 略過 migrations")
+        return
+    try:
+        from scripts.apply_migrations import main as _apply_migrations
+
+        rc = _apply_migrations()
+        if rc != 0:
+            logger.warning("apply_migrations 結束 return code=%d", rc)
+        else:
+            logger.info("apply_migrations 完成")
+    except Exception:
+        logger.exception("啟動時跑 apply_migrations 失敗")
+
+
 @asynccontextmanager
 async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     # 上線防呆：prod 設定不安全（預設 JWT secret / CORS '*'）直接拒絕啟動。
     get_settings().assert_secure()
+    _run_migrations_on_startup()
     await open_pool()
     try:
         yield

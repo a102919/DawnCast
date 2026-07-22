@@ -174,15 +174,14 @@ spec:
             COPY --from=builder --chown=appuser:appuser /app/voices ./voices
 
             COPY --chown=appuser:appuser scripts ./scripts
-            COPY --chown=appuser:appuser deploy/entrypoint-api.sh /app/entrypoint-api.sh
-            RUN chmod +x /app/entrypoint-api.sh
 
             USER appuser
             EXPOSE 8080
 
-            # ponytail: 用 CMD 直接跑 entrypoint script（不是 ENTRYPOINT + exec "$@"），
-            # script 是 PID 1，所有 stdout 一定進 Zeabur runtime log。script 內部 exec uvicorn。
-            CMD ["/app/entrypoint-api.sh"]
+            # ponytail: 啟動時由 app/main.py lifespan event 跑 migrations（idempotent），
+            # 不靠 entrypoint shell — Zeabur runtime log driver 不抓 PID 1 stdout，
+            # uvicorn 是 main process，logger / print 一定進 Zeabur log。
+            CMD ["sh", "-c", "uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-8080}"]
         env:
           ENVIRONMENT:
             default: prod
@@ -298,17 +297,16 @@ spec:
             COPY --chown=appuser:appuser deploy/healthcheck.py ./healthcheck.py
 
             COPY --chown=appuser:appuser scripts ./scripts
-            COPY --chown=appuser:appuser deploy/entrypoint-worker.sh /app/entrypoint-worker.sh
-            RUN chmod +x /app/entrypoint-worker.sh
 
             USER appuser
 
             HEALTHCHECK --interval=60s --timeout=30s --start-period=30s --retries=3 \
                 CMD python healthcheck.py || exit 1
 
-            # ponytail: 用 CMD 直接跑 entrypoint script（不是 ENTRYPOINT + exec "$@"），
-            # script 是 PID 1，所有 stdout 一定進 Zeabur runtime log。script 內部 exec worker。
-            CMD ["/app/entrypoint-worker.sh"]
+            # ponytail: 啟動時由 engine/worker.py main() 跑 migrations（idempotent），
+            # 不靠 entrypoint shell — Zeabur runtime log driver 不抓 PID 1 stdout，
+            # worker 是 main process，logger 一定進 Zeabur log。
+            CMD ["python", "-m", "engine.worker"]
         env:
           ENVIRONMENT:
             default: prod

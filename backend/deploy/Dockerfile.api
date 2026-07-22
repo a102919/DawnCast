@@ -53,19 +53,13 @@ COPY --from=builder --chown=appuser:appuser /app/shared ./shared
 COPY --from=builder --chown=appuser:appuser /app/voices ./voices
 
 # ── Zeabur Self-host 部署專用 ──
-# 把 scripts/apply_migrations.py + entrypoint 帶進 image；
-# 啟動時若設 APPLY_MIGRATIONS_ON_BOOT=1 就用 superuser 連 db 跑 schema。
-# 預設關——production 應該用獨立 init container 跑一次，才不會讓 api 啟動時間不穩。
+# 把 scripts/ 帶進 image；啟動時由 app/main.py lifespan event 跑 migrations
+# （idempotent），不用 entrypoint shell — Zeabur runtime log driver 不抓 PID 1 stdout，
+# 改在 main process（uvicorn / worker）裡 logger 印一定進 Zeabur log。
 COPY --chown=appuser:appuser scripts ./scripts
-COPY --chown=appuser:appuser deploy/entrypoint-api.sh /app/entrypoint-api.sh
-RUN chmod +x /app/entrypoint-api.sh
 
 USER appuser
 EXPOSE 8080
 
-# 啟動入口 = entrypoint-api.sh（見 deploy/entrypoint-api.sh）。
-# ponytail: 用 CMD 而不是 ENTRYPOINT — script 直接是 PID 1，所有 echo/print
-# 直寫 stdout；用 ENTRYPOINT + exec "$@" 時 Zeabur runtime log driver 抓不到
-# entrypoint 的 stderr，debug 不到 migration 是否跑了。
-# CMD 內部會 exec uvicorn（環境變數 $PORT 由 Zeabur 注入，script 內展開）。
-CMD ["/app/entrypoint-api.sh"]
+# 啟動入口 = uvicorn（lifespan event 內 _run_migrations_on_startup 跑 migrations）。
+CMD ["sh", "-c", "uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-8080}"]
