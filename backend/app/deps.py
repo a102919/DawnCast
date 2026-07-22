@@ -80,8 +80,31 @@ def _decode(token: str) -> str:
 
 
 def _decode_payload(token: str) -> dict[str, Any]:
-    """驗 ES256 JWT，回傳完整 payload。給 _jwt_email 等需要額外 claim 的場景用。"""
+    """驗 JWT，回傳完整 payload。給 _jwt_email 等需要額外 claim 的場景用。
+
+    兩個 mode：
+    - ES256（default，cloud Supabase）：從 JWKS 拿公鑰 verify。
+    - HS256（self-host opt-in）：用 SUPABASE_JWT_SECRET 直接 verify。
+      路徑在 SUPABASE_JWT_ALG=HS256 時啟用；prod 仍要求 secret 非預設（見
+      Settings.assert_secure）。
+    """
     settings = get_settings()
+
+    if settings.supabase_jwt_alg == "HS256":
+        try:
+            payload = jwt.decode(
+                token,
+                settings.supabase_jwt_secret,
+                algorithms=["HS256"],
+                audience=settings.supabase_jwt_audience,
+            )
+        except JWTError as exc:
+            logger.info("JWT 驗證失敗（HS256）: %s", exc)
+            raise AuthError("認證失敗") from exc
+        if not isinstance(payload, dict):
+            raise AuthError("認證失敗")
+        return payload
+
     try:
         header = jwt.get_unverified_header(token)
     except JWTError as exc:

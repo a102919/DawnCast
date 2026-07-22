@@ -89,6 +89,12 @@ class Settings(BaseSettings):
         description="（legacy）HS256 對稱 secret；ES256 時代已不驗 token 用，僅測試相容",
     )
 
+    # JWT 簽章模式選擇 — 給 self-host 用的 opt-in HS256 path。
+    # default "ES256"：跟 cloud Supabase 一致，後端從 JWKS 拿公鑰。
+    # "HS256"：自架 gotrue（無 ES256 公開 JWKS）時設，後端用 supabase_jwt_secret 直接 verify。
+    # 切到 HS256 path 後從 assert_secure() 拿掉 prod 必設 JWKS URL 的條款 — 見 deps.py。
+    supabase_jwt_alg: Literal["ES256", "HS256"] = "ES256"
+
     # Ops/admin endpoint（T7）驗證用固定 token，走 X-Admin-Token header 比對。
     # 不可硬寫在程式碼；空字串 = 未設定，prod 會被 assert_secure() 擋下。
     admin_token: str = ""
@@ -201,8 +207,12 @@ class Settings(BaseSettings):
         """
         if self.environment != "prod":
             return
-        if not self.supabase_jwks_url:
+        if not self.supabase_jwks_url and self.supabase_jwt_alg != "HS256":
             raise ConfigError("prod 未設定 SUPABASE_JWKS_URL（不可為空）")
+        if self.supabase_jwt_alg == "HS256" and self.supabase_jwt_secret == _DEFAULT_JWT_SECRET:
+            raise ConfigError(
+                "prod 用 HS256 但 SUPABASE_JWT_SECRET 仍是預設哨兵值（dev-secret-change-me）"
+            )
         if "*" in self.cors_allowed_origins:
             raise ConfigError("prod 的 CORS_ALLOWED_ORIGINS 不可包含 '*'")
         if self.cors_allowed_origin_regex.strip():
