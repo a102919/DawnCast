@@ -17,9 +17,19 @@ create extension if not exists pg_cron;
 -- 但 worker.py 主迴圈用 dict_translate.poll_once() 在 read 階段就 query
 -- pgmq.q_dict_translate，read 比 send 先發生 → table 不存在 → UndefinedTable。
 -- 顯式 create 確保 worker 啟動時三條 queue 都備妥。
-select pgmq.create('control');
-select pgmq.create('generate');
-select pgmq.create('dict_translate');
+--
+-- ponytail: 包進 do block 容忍 duplicate_table — pgmq.create 沒 IF NOT EXISTS
+-- 變體，已建同名 queue 會 raise SQLSTATE 42P07。第二次跑 migration（api /
+-- worker 重啟）會 hit 這個錯誤 → 整個 runner fail → 後續 0004~0009 都不跑。
+do $$ begin
+  perform pgmq.create('control');
+exception when duplicate_table then null; end $$;
+do $$ begin
+  perform pgmq.create('generate');
+exception when duplicate_table then null; end $$;
+do $$ begin
+  perform pgmq.create('dict_translate');
+exception when duplicate_table then null; end $$;
 
 -- 22:00 開收集窗（標記當日預約進入正規化階段）
 select cron.schedule(
