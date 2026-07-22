@@ -1,7 +1,7 @@
 """一次性 / 部署時跑的 migration runner。
 
 用 `supabase_admin`（self-host Zeabur 預設的超級使用者）連進 db，
-按檔名順序跑 `backend/db/migrations/0001_init.sql` → `0009_user_activity.sql`。
+按檔名順序跑 `backend/scripts/migrations/0001_init.sql` → `0009_user_activity.sql`。
 
 設計考量：
 - 用 superuser 跑是為了 `pgmq.create()` / `cron.schedule()` 等需要高權限的函式。
@@ -10,6 +10,9 @@
 - 失敗立即 raise，第一支錯就不跑後面（部署 v1 不用 partial recovery）。
 - 不在 `schema_migrations` 建表（避免與 Supabase 自帶的 init migration 衝突）；
   部署 SOP 用檔名排序作為進展依據。
+- migrations/ 放在 scripts/ 內而非 db/：Zeabur frozen template inline dockerfile
+  已 COPY scripts/，但沒 COPY db/。放 scripts/ 確保 image 內 /app/scripts/migrations/
+  一定有 SQL（frozen template 升級前不要改）。
 
 使用方式：
     # Zeabur 部署時由 backup/init container 跑一次
@@ -37,7 +40,10 @@ from pathlib import Path
 import psycopg
 from psycopg import sql as pg_sql
 
-MIGRATIONS_DIR = Path(__file__).resolve().parent.parent / "db" / "migrations"
+# ponytail: 放在 scripts/ 內（不是 backend/db/migrations/）— Zeabur frozen
+# template inline dockerfile 已 COPY scripts/，沒 COPY db/。放這確保 image 內
+# /app/scripts/migrations/ 一定有 SQL；dev / 本機同樣 layout 也 work。
+MIGRATIONS_DIR = Path(__file__).resolve().parent / "migrations"
 
 
 def _ensure_auth_admin(conn: psycopg.Connection, password: str) -> None:

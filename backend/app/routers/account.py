@@ -3,7 +3,7 @@
 DELETE 觸發 DB FK ON DELETE CASCADE 自動串接清空 8 張 child tables：
 deliveries / daily_orders / user_vocab / user_favorites / user_settings /
 topic_requests / user_heard_topics / user_activity（schema 在
-db/migrations/0001_init.sql + 0009_user_activity.sql）。單條
+scripts/migrations/0001_init.sql + 0009_user_activity.sql）。單條
 DELETE FROM public.users WHERE id = %s 即可，無需逐表刪除。
 
 email 從 Supabase JWT payload 解（預設帶 email claim）；其餘欄位

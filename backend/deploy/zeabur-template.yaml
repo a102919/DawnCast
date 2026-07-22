@@ -174,7 +174,6 @@ spec:
             COPY --from=builder --chown=appuser:appuser /app/voices ./voices
 
             COPY --chown=appuser:appuser scripts ./scripts
-            COPY --chown=appuser:appuser db ./db
 
             USER appuser
             EXPOSE 8080
@@ -298,7 +297,6 @@ spec:
             COPY --chown=appuser:appuser deploy/healthcheck.py ./healthcheck.py
 
             COPY --chown=appuser:appuser scripts ./scripts
-            COPY --chown=appuser:appuser db ./db
 
             USER appuser
 
