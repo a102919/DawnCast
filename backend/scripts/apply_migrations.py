@@ -46,44 +46,74 @@ from psycopg import sql as pg_sql
 MIGRATIONS_DIR = Path(__file__).resolve().parent / "migrations"
 
 
-def _ensure_auth_admin(conn: psycopg.Connection, password: str) -> None:
-    """建立 supabase_auth_admin role（GoTrue auth schema migration 所需）。
+def _ensure_gotrue_prereqs(conn: psycopg.Connection, password: str) -> None:
+    """建 GoTrue migration 預設的 role + schema（self-host Zeabur 必跑）。
 
-    ponytail: supabase/postgres image 17.6.1.136 build 時不創此 role，由 gotrue
-    runtime 假設自帶。Self-host 時這個假設破了 → migration fail / password auth fail。
-    升級路徑：若換 supabase/postgres 升級版自動建 role，刪掉這個 pre-step。
+    supabase/postgres image 17.6.1.136 build 時不創以下兩個 role / schema，gotrue
+    runtime 卻假設自帶；self-host 時這個假設破了 → migration 連環 fail：
+
+    1. supabase_auth_admin：gotrue 用此 role 跑 auth schema migration（DawnCast 的
+       0001_init.sql 也 reference auth.users FK）。CREATE ROLE 給 CREATEDB /
+       CREATEROLE / REPLICATION / BYPASSRLS，密碼 = POSTGRES_PASSWORD。
+    2. postgres：gotrue 後續 RLS grant 會用 `grant select on auth.users to postgres`，
+       image 沒建這個 role → UndefinedObject。
+    3. auth schema：gotrue 的 00_init_auth_schema.up.sql 直接 CREATE TABLE auth.users，
+       schema 必須先存在。
+    4. supabase_admin → supabase_auth_admin 會員：gotrue 用 supabase_auth_admin 連進
+       來建表，需要 superuser 級權限（透過 membership 繼承）。
+
+    升級路徑：若換 supabase/postgres 升級版自動建以上 role / schema，刪掉這個 pre-step。
+
+    注意：不做 `GRANT supabase_admin TO supabase_auth_admin`。supabase/postgres image
+    預設 supabase_auth_admin 已是 superuser（不需要繼承），且這條在 local dev 用普通
+    postgres image（沒 supabase_admin）會壞。
     """
-    print("→ 確保 supabase_auth_admin role 存在（GoTrue auth migration 所需）", flush=True)
-    with conn.cursor() as cur:
-        cur.execute("SELECT 1 FROM pg_roles WHERE rolname='supabase_auth_admin'")
-        exists = cur.fetchone() is not None
+    print("→ 確保 GoTrue 預設 role + auth schema 存在", flush=True)
 
-        if exists:
-            # ponytail: ALTER ... PASSWORD %s — psycopg3 對 role password 用
-            # identifier quoting by default；用 sql.SQL 拼字串再傳 password 為參數。
+    def _ensure_role(
+        cur: psycopg.Cursor,
+        name: str,
+        attrs: str,
+        password: str,
+    ) -> None:
+        """role 不存在就 CREATE，存在就 ALTER 密碼。"""
+        cur.execute("SELECT 1 FROM pg_roles WHERE rolname=%s", (name,))
+        if cur.fetchone() is not None:
             cur.execute(
-                pg_sql.SQL("ALTER ROLE supabase_auth_admin WITH LOGIN PASSWORD {}").format(
-                    pg_sql.Literal(password)
+                pg_sql.SQL("ALTER ROLE {} WITH LOGIN PASSWORD {}").format(
+                    pg_sql.Identifier(name), pg_sql.Literal(password)
                 )
             )
         else:
             cur.execute(
-                pg_sql.SQL(
-                    "CREATE ROLE supabase_auth_admin LOGIN CREATEDB CREATEROLE "
-                    "REPLICATION BYPASSRLS PASSWORD {}"
-                ).format(pg_sql.Literal(password))
+                pg_sql.SQL("CREATE ROLE {} {} LOGIN PASSWORD {}").format(
+                    pg_sql.Identifier(name), pg_sql.SQL(attrs), pg_sql.Literal(password)
+                )
             )
+
+    with conn.cursor() as cur:
+        # 1+2. 兩個 role 都建好（密碼對齊 POSTGRES_PASSWORD；gotrue 預期如此）
+        _ensure_role(
+            cur,
+            "supabase_auth_admin",
+            "CREATEDB CREATEROLE REPLICATION BYPASSRLS",
+            password,
+        )
+        conn.commit()
+        _ensure_role(cur, "postgres", "SUPERUSER", password)
         conn.commit()
 
+        # 3. auth schema（owner = supabase_auth_admin；image 沒預建）
         cur.execute("CREATE SCHEMA IF NOT EXISTS auth AUTHORIZATION supabase_auth_admin")
         conn.commit()
 
-        cur.execute("GRANT CREATE ON DATABASE postgres TO supabase_auth_admin")
-        conn.commit()
-
+        # 4. supabase_auth_admin 預設 search_path = auth（避免每次 query 都加前綴）
+        # ponytail: 不做 GRANT supabase_admin TO supabase_auth_admin — image 預設
+        # supabase_auth_admin 已是 superuser，這條 GRANT 是 no-op 且在 local dev
+        # 用普通 postgres image（沒 supabase_admin）會壞。
         cur.execute("ALTER ROLE supabase_auth_admin SET search_path = 'auth'")
         conn.commit()
-    print("  ✓ supabase_auth_admin role + auth schema 備妥", flush=True)
+    print("  ✓ supabase_auth_admin + postgres role + auth schema 備妥", flush=True)
 
 
 def _discover() -> list[Path]:
@@ -148,11 +178,11 @@ def main(argv: list[str] | None = None) -> int:
     print(f"\n連線到 {user}@...（讀 env 略）", flush=True)
 
     with psycopg.connect(dsn, autocommit=False) as conn:
-        # 先建 supabase_auth_admin role（GoTrue migration 前置）
+        # 先建 GoTrue 預設 role + auth schema（gotrue migration 前置；見函式 docstring）
         try:
-            _ensure_auth_admin(conn, password)
+            _ensure_gotrue_prereqs(conn, password)
         except Exception as exc:
-            print(f"\n✗ supabase_auth_admin 角色確保失敗：{exc}", file=sys.stderr)
+            print(f"\n✗ GoTrue prereqs 確保失敗：{exc}", file=sys.stderr)
             conn.rollback()
             return 1
 
