@@ -1,336 +1,338 @@
-# 部署（DawnCast Self-host on Zeabur — 單人精簡版）
+# 部署（DawnCast Self-host on Zeabur Marketplace — 單人精簡版）
 
-單一 host 跑四個容器：**api + worker + db + gotrue**。
-對外只露 FastAPI `:8080`；HTTPS + JWKS 由 Cloudflare Tunnel 接手；備份改成手動 pg_dump 腳本。
+單一 Zeabur Project 跑 4 個 marketplace service：**db + gotrue + api + worker**；
+前端 SPA 丟 **Cloudflare Pages**。**不買網域、不架 Tunnel、不裝監控**——免費子網域
+（`*.zeabur.app` + `*.pages.dev`）就夠單人用。
 
 ---
 
-## 0. 規格 / 月費估算
-
-| 項 | 規格 |
-|---|---|
-| CPU | 2 vCPU |
-| RAM | 4 GB（4 GB 舒適；2 GB 緊、可能 swap thrash） |
-| SSD | 40-60 GB（DB + 字幕；音檔走 R2 不在 host） |
-| 流量 | 0.5-1.5 TB/月（host 對外僅 JWKS 跟 API 呼叫；單人用 < 5 GB/月） |
-| Region | **TenCent Tokyo $4/mo**（亞太樞紐、對 MiniMax API 最短） |
-| **合計** | **$4/mo**（不含 LLM / R2） |
-
-月費合計範例：
+## 0. 月費估算
 
 | 項 | $ |
 |---|---|
-| Zeabur Server Tokyo 4GB | $4 |
+| Zeabur marketplace 4 services（postgres + gotrue + api + worker） | ~$5 |
 | Cloudflare Pages（前端） | $0 |
-| Cloudflare Tunnel（內網穿透） | $0 |
-| Cloudflare R2（音檔 + 字幕備份） | ~$0.5 |
-| MiniMax API（單人用） | ~$1-3/月（看用量） |
-| **合計** | **~$5-7/mo** |
+| Cloudflare R2（音檔 / 字幕） | ~$0.5 |
+| MiniMax API（生成引擎） | ~$1-3/月 |
+| **合計** | **~$6-9/月** |
 
 ---
 
-## 1. 拓樸
+## 1. 架構總覽
 
 ```
-┌─ Zeabur Server (TenCent Tokyo, 4GB) ───────────────────────────┐
-│                                                                 │
-│  api (Dockerfile.api)         → FastAPI :8080                  │
-│     ├── /api/* 與 /auth/v1/* → FastAPI 處理（內部 reverse      │
-│     │      proxy 到 gotrue:9999 處理 /auth/*）                  │
-│     └── /health (Zeabur healthcheck)                           │
-│                                                                 │
-│  worker (Dockerfile.worker)   → python -m engine.worker        │
-│     輪詢 pgmq 三條 queue：control / generate / dict_translate    │
-│                                                                 │
-│  db (supabase/postgres:17)    → :5432 內網（不開 port）         │
-│     ├── pgmq    (control / generate / dict_translate)            │
-│     ├── pg_cron (evergreen fallback 03:30 Taipei)               │
-│     ├── pgvector (episode embeddings)                           │
-│     └── 內含 auth.users / auth.refresh_tokens / handle_new_user│
-│                                                                 │
-│  gotrue (supabase/gotrue)     → :9999 (內網)                    │
-│     └── Google OAuth 唯一登入 + ES256 簽 JWT + JWKS endpoint   │
-└─────────────────────────────────────────────────────────────────┘
-   ↑ :8080 HTTPS (對外)
-   │
-Cloudflare Tunnel (cloudflared daemon)
-   ↓ 對應 Cloudflare zone 跟 DNS
-   ↓
-┌────────────────────────────────────────────────────────────────┐
-│  Browser ↔ Cloudflare Pages (前端) ↔ Cloudflare Tunnel (HTTPS) │
-│                              ↘ FastAPI :8080                   │
-└────────────────────────────────────────────────────────────────┘
+┌─ Zeabur Project: dawncast-personal (marketplace) ─────────────────┐
+│                                                                   │
+│  api-ovate  (GitHub source, Dockerfile.api)  FastAPI :8080        │
+│     ├── /vocab /settings /favorites /daily-orders /episodes /dict │
+│     ├── /auth/v1/*  →  reverse proxy  →  gotrue-mon:9999/{path}   │
+│     └── /health                                                    │
+│                                                                   │
+│  worker-gir  (GitHub source, Dockerfile.worker)                    │
+│     python -m engine.worker  輪詢 pgmq: control / generate / dict │
+│                                                                   │
+│  gotrue-mon  (marketplace supabase/gotrue:v2.189.0)  :9999        │
+│     Google OAuth 唯一登入 + HS256 sign JWT                        │
+│                                                                   │
+│  db-pran  (marketplace supabase/postgres:17.6.1.136)  :5432 內網  │
+│     pgmq + pgvector + auth.users (gotrue 管) + public schema       │
+└───────────────────────────────────────────────────────────────────┘
+   ↑ Zeabur edge HTTPS（對外 *.zeabur.app）
 
-外部服務：
-  • Cloudflare Pages       → 前端
-  • Cloudflare R2          → 音檔/字幕
-  • Cloudflare Tunnel      → 對內網穿透（無 egress 費）
-  • MiniMax API             → 生成引擎（HTTP 對外）
-  • Google OAuth            → 唯一登入
+┌───────────────────────────────────────────────────────────────────┐
+│  Browser  ↔  Cloudflare Pages（前端 SPA，dawncast.pages.dev）     │
+│         ↘  api-ovate.zeabur.app  (FastAPI + reverse proxy)         │
+└───────────────────────────────────────────────────────────────────┘
+
+外部服務:
+  • Cloudflare R2   → 音檔 / 字幕 (S3 相容 API)
+  • MiniMax API     → LLM 生成引擎
+  • Google OAuth    → 唯一登入入口
 ```
 
 ---
 
-## 2. 首次部署（從零到跑）
+## 2. 服務與 URLs
 
-### 2.1 採購 Zeabur Server
-1. Zeabur Dashboard → Marketplace → Server → 選 **TenCent / Tokyo / 4 vCPU / 4 GB / 60 GB SSD**（$4/mo 那一列）
-2. 拿到後 Dashboard 新增 Project `dawncast-personal`
+| Service | Image / Source | Internal Host | External URL | 用途 |
+|---|---|---|---|---|
+| `db-pran` | `supabase/postgres:17.6.1.136`（marketplace） | `db-pran.zeabur.internal:5432` | — | pgmq / pgvector / auth schema / public schema |
+| `gotrue-mon` | `supabase/gotrue:v2.189.0`（marketplace） | `service-...:9999` | `https://gotrue-mon.zeabur.app` | Google OAuth + HS256 sign JWT |
+| `api-ovate` | `Dockerfile.api`（GitHub source） | `service-...:8080` | `https://api-ovate.zeabur.app` | FastAPI + `/auth/v1/*` reverse proxy |
+| `worker-gir` | `Dockerfile.worker`（GitHub source） | `service-...`（無對外） | — | 寫稿 + TTS + ffmpeg 燒字幕 |
+| Cloudflare Pages | `frontend/`（GitHub source） | — | `https://dawncast.pages.dev` | SPA |
 
-### 2.2 採購雲端依賴
-1. **Cloudflare zone**（要 DNS 託管的網域）
-   - Workers → Tunnel → `dawncast-api-tunnel` → 複製 token
-2. **Cloudflare Pages** → 連 GitHub → 選 repo
-   - Build command：`npm run build`
-   - Build output：`dist`
-   - Root directory：`frontend`
-   - 一個 env 都不先設，等等跟 Tunnel 一起設定（避免被推進 build）
-3. **Cloudflare R2** → 產 API Token（Access Key + Secret + Account ID）
-4. **Google Cloud Console** → API & Services → Credentials
-   - 建 OAuth client → Authorized redirect URI
-     - 本機 dev：`http://localhost:8080/auth/v1/callback`
-     - prod：`https://<API_EXTERNAL_URL>/auth/v1/callback`
-
-### 2.3 產 JWT signing key
-```bash
-cd backend/deploy/scripts
-./sign-jwt-key.sh ./jwt-keys
-# 將 jwt-keys/jwt_es256.pem 整段（含 BEGIN/END）複製下來
-```
-**安全**：私鑰**不 commit**。
-
-### 2.4 部署到 Zeabur
-```bash
-cd backend
-zeabur deploy --template deploy/zeabur-template.yaml
-```
-
-接著進 Dashboard → 每個 service 設 env：
-
-| Env | 設定處 | 必設 | 說明 |
-|---|---|---|---|
-| `POSTGRES_PASSWORD` | db, gotrue, api, worker | ✅ | 同值（強密碼） |
-| `GOTRUE_JWT_KEY` | gotrue | ✅ | 2.3 整段 PEM |
-| `GOOGLE_CLIENT_ID` | gotrue | ✅ | |
-| `GOOGLE_CLIENT_SECRET` | gotrue | ✅ | |
-| `SITE_URL` | gotrue | ✅ | 前端公開網域 |
-| `API_EXTERNAL_URL` | gotrue, api | ✅ | Tunnel 對外網域 |
-| `URI_ALLOW_LIST` | gotrue | ✅ | JSON 陣列字串 |
-| `CORS_ALLOWED_ORIGINS` | api | ✅ | JSON 陣列字串 |
-| `ADMIN_TOKEN` | api, worker | ✅ | 強祕密 |
-| `MINIMAX_API_KEY` | api, worker | ✅ | 你的 LLM token |
-| `API_BASE_URL` | api, worker | ✅ | `https://api.minimax.io/anthropic` 之類 |
-| `API_MODEL` | api, worker | ✅ | `MiniMax-M2.5` 之類 |
-| `R2_*` | api, worker | ✅ | 帳號 / key / secret / bucket / endpoint |
-| `TAVILY_API_KEY` | api | ⚪ | 缺則自動降級 |
-| `APPLY_MIGRATIONS_ON_BOOT` | api, worker | ⚪ | 首次 deploy 設 `1`、之後改 `0`（個人用就 `1` 也行；9 支 SQL 冪等） |
-| `POSTGRES_USER` | api, worker | ⚪ | `supabase_admin` 才能跑 migrations |
-| `POSTGRES_HOST` | api, worker | ⚪ | `db` |
-| `POSTGRES_PORT` | api, worker | ⚪ | `5432` |
-| `POSTGRES_DB` | api, worker | ⚪ | `postgres` |
-| `R2_BUCKET` | api, worker | ⚪ | 預設 `dawncast`，可不設 |
-
-### 2.5 設 Cloudflare Tunnel
-1. Workers → Tunnel → 重新 Create → 選 token 貼上 deploy 指令
-2. 加 Public hostname：
-   - 主機名 `<API_EXTERNAL_URL>` → Service `http://zeabur-api-host:8080`
-     - Zeabur 內部 host 透過 `container-name.zeabur.internal` 訪問（Zeabur 同 Project 內）
-     - 或填 Zeabur Project 的 private domain（Deploy 後 Dashboard → Project → Networking）
-3. 加完之後：
-   - 設 Cloudflare DNS：`<API_EXTERNAL_URL>` CNAME 自動生成（Cloudflare 接管 zone）
-   - DNS-only（灰色雲）→ 不能用，因為 Tunnel 必須 proxied
-4. Cloudflare SSL：Full（Strict）— Zeabur 自簽 / Cloudflare 通用憑證
-
-### 2.6 驗證
-```bash
-# 1. FastAPI health
-curl https://<API_EXTERNAL_URL>/health
-# → {"status":"ok"}
-
-# 2. JWKS
-curl https://<API_EXTERNAL_URL>/auth/v1/.well-known/jwks.json
-# → 公開 JWKS JSON（ES256 key）
-
-# 3. 進 db container（Zeabur Dashboard → db service → Shell）
-psql -U postgres -d postgres
-> \dt
-# 期望見：users, episodes, deliveries, user_vocab, dict_cache 等 9+ 表
-```
-
-### 2.7 備援部署（單人版特殊）
-
-#### 手動 pg_dump（個人用；資料掉了就失去語料庫，重灌 migration 不再）
-```bash
-# 在 Zeabur Dashboard → db container → Shell 跑：
-pg_dump -U postgres -d postgres | gzip > /tmp/backup-$(date +%Y%m%d).sql.gz
-
-# 或在本機（db container port 設為 127.0.0.1:54322）：
-PGPASSWORD=<POSTGRES_PASSWORD> pg_dump -h 127.0.0.1 -p 54322 -U postgres postgres | gzip > backup.sql.gz
-```
-
-#### 一次性 R2 sync（音檔）
-```bash
-# 用 rclone（一次性；不架 sidecar）
-rclone sync r2:dawncast /tmp/r2-dump --transfers=8 --checkers=16
-```
+service ID 是 Zeabur 內部識別碼，不寫死——deploy 時 Dashboard 看；prod runtime 從
+`GOTRUE_MON_HOST` / `DB_PRAN_HOST` / `WORKER_GIR_HOST` / `API_OVATE_HOST` env 拿。
 
 ---
 
-## 3. 後續部署流程
+## 3. 首次部署（從零到跑）
 
-`git push origin` 之後 deploy：
+順序很重要——後面的服務依賴前面。完成所有 env 設好之後需重啟 container 才生效。
 
-```bash
-cd backend
-zeabur deploy --template deploy/zeabur-template.yaml   # api / worker 重 build
-# db / gotrue 不動（image 沒變）
-```
+### 3.1 4 個 Zeabur service（依序）
 
-之後有需要再開 GitHub Actions；目前不啟動。
+1. **`db-pran`**（marketplace Postgres）：Add Service → Marketplace → Postgres。
+   記下 internal hostname。進 db shell 跑 prereqs SQL（修 `search_path` + drop
+   partial migrations，**詳見 memory `zeabur-deploy-resources.md` 的「Zeabur
+   marketplace 模式踩坑集」段**，SQL 在那段，**不要每次重打**——一次性的）。
+2. **`gotrue-mon`**（marketplace GoTrue）：Add Service → Marketplace → GoTrue
+   （Zeabur 自動選 `v2.189.0`）。設 env（§7.2）；首次啟動會自動跑 69 條 gotrue
+   migration 建 `auth.*`。
+3. **`api-ovate`**（GitHub source）：Add Service → GitHub → 選
+   `a102919/DawnCast`。Zeabur build `backend/deploy/Dockerfile.api`。
+   `SUPABASE_JWT_ALG=HS256`、`SUPABASE_JWT_SECRET` 跟 `GOTRUE_JWT_SECRET` 同值。
+   `CORS_ALLOWED_ORIGINS` 暫留空，等 §3.3 Pages 建好再加。
+4. **`worker-gir`**（GitHub source）：類似上一步，build `Dockerfile.worker`
+   （裝 ffmpeg + fonts-noto-cjk，燒字幕用）。
 
----
+### 3.2 Cloudflare Pages
 
-## 4. SOP：JWT Signing Key Rotate
+1. Cloudflare Dashboard → **Workers & Pages** → Create application → **Pages**
+   → Connect to Git → 選 `a102919/DawnCast`
+2. Project name 隨意（URL = `<name>.pages.dev`），範例用 `dawncast`
+3. Build settings：Framework = None、command = `npm run build`、output = `dist`、
+   **Root directory = `frontend`** ← 漏這個會「找不到 package.json」build 失敗
+4. 第一次 deploy 故意不設 env（先確定 build 跑通）
 
-洩漏 / 預期過期 / 年度強制 rotate：
+### 3.3 同步 env + Google OAuth
 
-```bash
-# 1. 產新 key pair
-cd backend/deploy/scripts
-./sign-jwt-key.sh /tmp/rotate-keys
+Pages 拿到 URL 後雙向同步：
 
-# 2. Zeabur Dashboard → gotrue env → GOTRUE_JWT_KEY
-#    格式（**保留舊 key 在下面**；GoTrue 多 key 並存）：
-#       -----BEGIN EC PRIVATE KEY-----
-#       <新私鑰內容>
-#       -----END EC PRIVATE KEY-----
-#       -----BEGIN EC PRIVATE KEY-----
-#       <舊私鑰內容>
-#       -----END EC PRIVATE KEY-----
-
-# 3. 等 24-48 小時（用戶 refresh token 換到新 kid 簽）
-
-# 4. 從 GOTRUE_JWT_KEY 移除舊 key
-
-# 5. 0 down time。**不需要**重啟 FastAPI（JWKS 抓 ES256 公鑰在驗證時才 fetch）
-
-# 6. 清本地
-shred -u /tmp/rotate-keys/jwt_es256.pem
-```
-
----
-
-## 5. SOP：Supabase 月度升級
-
-[supabase/supabase releases](https://github.com/supabase/supabase/releases) 約每月出新版本。
-
-```bash
-# 1. 訂閱 RSS 或 gh release list --repo supabase/supabase --limit 5
-
-# 2. 升 minor（例 2.189 → 2.190）：
-#    zeabur-template.yaml 的 gotrue image tag 改新版
-#    → 走 staging 演練
-#    → release notes 看是否要 ALTER ROLE / schema migration 跑手動
-
-# 3. 升 Postgres major（17 → 18，要等幾年）：
-#    走 supabase 官方 Upgrade 流程
-#    順序：dump → 起新 instance → restore → 切 DNS → 下線舊
-
-# 4. 升級順序：db → gotrue → api → worker
-#    早 deploy 的服務是後面的依賴，不顛倒
-
-# 5. Zeabur Dashboard → Redeploy project → 觀察 healthcheck
-```
-
----
-
-## 6. 本機開發
-
-```bash
-cd backend
-cp .env.example .env
-# 編輯 .env：
-#   POSTGRES_PASSWORD=<本機強密碼>
-#   GOTRUE_JWT_KEY="$(cat deploy/scripts/jwt-keys/jwt_es256.pem)"
-#   GOOGLE_CLIENT_ID=... GOOGLE_CLIENT_SECRET=...
-#   MINIMAX_API_KEY=...
-#   R2_* 用 dev bucket 的 key
-
-docker compose up -d          # 起 4 個容器 + 自動跑 migrations（首啟 1 次）
-docker compose run --rm migrate   # 手動跑（一次性）
-docker compose down          # 停（volume 留著）
-```
-
-- 埠號：`db:54322`（本機 psql 用）、`gotrue:9999`、`api:8080`
-- 前端 dev：`cd frontend && npm run dev` → vite 5173 跑 → 透過 `vite.config.ts` proxy 打 `localhost:8080`
-
----
-
-## 7. 故障排除
-
-| 症狀 | 看哪裡 | 解法 |
-|---|---|---|
-| Google 登入 callback 400 | Zeabur logs → gotrue | `URI_ALLOW_LIST` 含 `<API_EXTERNAL_URL>/auth/v1/callback`？ |
-| 前端拿不到 JWT | 瀏覽器 devtools | `curl https://<API_EXTERNAL_URL>/auth/v1/.well-known/jwks.json` 有回嗎？ |
-| JWKS 404 | Zeabur logs → api | FastAPI `/auth/v1/*` reverse proxy 是否設定（見 app/main.py 規畫） |
-| db 沒表 | Zeabur logs → api | 看 entrypoint-api.sh 有沒有跑 migrations？`APPLY_MIGRATIONS_ON_BOOT=1`？ |
-| worker poll 不到任務 | Zeabur logs → worker | db 健康？`POSTGRES_PASSWORD` 設了嗎？ |
-| pg_cron 沒跑 | psql → `select * from cron.job_run_details order by start_time desc limit 10;` | DB 時區：`alter database postgres set timezone = 'Asia/Taipei';` |
-| ffmpeg 燒字幕變方框 | Zeabur logs → worker | Dockerfile.worker 沒漏裝 fonts-noto-cjk 吧？image 重 build |
-
----
-
-## 8. 已知限制 / 注意事項
-
-| 項目 | 說明 |
+| 對象 | 設什麼 |
 |---|---|
-| **單點故障** | Host 死 = 全部 service 死。Mitigation：手動 pg_dump（§2.7）。 |
-| **無 HA** | 單 master。要 HA 上 multi-host；個人版不做。 |
-| **每件事都沒有監控** | 個人版不要裝 Sentry / Better Stack。出問題翻 Zeabur logs 就夠。 |
-| **不裝 Studio** | 省 500MB RAM。需要 GUI 排查用 `docker exec -it db psql`。 |
-| **共用 Cookie / JWKS** | JWT 升級時舊 key 保留 24-48h；§4 強制縮短回收期。 |
-| **Server 重灌會丟 env / volume** | Zeabur Dashboard 的 secret 跟 volume 在重灌後都沒了；本來就 1 個月一次備份的人影響不大。 |
+| Pages env（Dashboard → Settings → Environment variables） | §7.3 四個 `VITE_*` |
+| api-ovate env | `CORS_ALLOWED_ORIGINS = ["https://dawncast.pages.dev"]` |
+| gotrue-mon env | `GOTRUE_SITE_URL` + `GOTRUE_URI_ALLOW_LIST` 加 Pages URL |
+
+Google Cloud Console → Credentials → Create OAuth client（Web app），Authorized
+redirect URIs 加 `https://gotrue-mon.zeabur.app/callback`（裸 `/callback`——gotrue
+standalone v2 沒 `/auth/v1/` prefix）。拿到 Client ID
++ Secret 灌進 gotrue-mon env（§7.2）。重啟 gotrue-mon 吃新 env。
+
+**Pages env 設完不會自動 rebuild**——要 Cloudflare API PATCH +
+`POST .../deployments` trigger ad_hoc deployment 才會 snapshot 新 env_vars。
+完整 curl 在 `memory/zeabur-deploy-resources.md` 「Pages 部署 API + SPA OAuth
+flow」段。
+
+### 3.4 驗證
+
+```bash
+curl https://api-ovate.zeabur.app/health          # → {"status":"ok"}
+curl https://gotrue-mon.zeabur.app/health         # → {"status":"ok"}
+curl -i --max-redirs 0 "https://api-ovate.zeabur.app/auth/v1/authorize?provider=google"
+# → 302 Location: accounts.google.com/o/oauth2/v2/auth?...
+```
 
 ---
 
-## 9. 環境變數全對照表（參照）
+## 4. JWT 模式：HS256 為何
 
-完整 env 含 default / 敏感性見 `backend/.env.example` 跟 `backend/shared/config.py:Settings`。
+預設 `SUPABASE_JWT_ALG=ES256`（從 Supabase JWKS 拿公鑰驗簽），但 **Zeabur GraphQL
+env var injection bug**（詳 memory `zeabur-deploy-resources.md`）會腐化 gotrue
+的 ES256 keys → 啟動失敗。**結論：prod 走 HS256 shared secret**：
 
-**必要 prod env**：
+```
+# api-ovate
+SUPABASE_JWT_ALG=HS256
+SUPABASE_JWT_SECRET=<強 secret>
+
+# gotrue-mon（同值）
+GOTRUE_JWT_SECRET=<同上>
+```
+
+Backend 解碼：`backend/app/deps.py:93` HS256 branch。`shared/config.py:212`
+`assert_secure()` 會拒 prod 用預設哨兵 secret（避免開後門）。
+
+---
+
+## 5. Auth reverse proxy（`/auth/v1/*`）
+
+### 為什麼需要
+
+- SPA 用 `supabase-js` SDK（`frontend/src/lib/supabaseClient.ts`），內部拼
+  `${SUPABASE_URL}/auth/v1/{path}`
+- Standalone `supabase/gotrue:v2.189.0`（marketplace）**只認** `/authorize`、不認
+  `/auth/v1/authorize`——Supabase gateway 才會加 `/auth/v1/` prefix
+- 直接從 SPA 打 gotrue URL → 404
+
+### 解法
+
+api-ovate 加 reverse proxy：`backend/app/routers/auth_proxy.py`（80 行）：
+
+```
+/auth/v1/{path}  →  http://{GOTRUE_MON_HOST}:9999/{path}
+```
+
+- **不 follow redirect**：gotrue `/authorize` 回 302 → `accounts.google.com`，proxy
+  把 Location 透傳給 SPA browser 跟隨跳轉（follow 會把 Google response 吞掉）
+- 透傳 method / query / headers（過濾 hop-by-hop）/ body
+- 內網走 HTTP（容器內不通 TLS），TLS 終止在 Zeabur edge
+
+註冊在 `backend/app/main.py:152`。測試在 `backend/tests/test_auth_proxy.py`。
+
+### SPA 端 0 改動
+
+只要：
+
+```
+VITE_SUPABASE_URL = https://api-ovate.zeabur.app   # ← 指 api-ovate，不是 gotrue URL
+VITE_SUPABASE_ANON_KEY = <任意非空字串>             # gotrue standalone 不驗 anon key
+```
+
+SDK 自動走 `${VITE_SUPABASE_URL}/auth/v1/{path}` → api-ovate proxy → gotrue。
+全功能（`signInWithOAuth` / `getSession` / token refresh / `signOut` /
+`onAuthStateChange`）繼續用。
+
+---
+
+## 6. 後續部署流程
+
+`git push origin main` 之後：
+
+| Service | 自動 build？ | 觸發 |
+|---|---|---|
+| `api-ovate` | ✅ GitHub push webhook | Zeabur rebuild `Dockerfile.api`，新 image 部署 |
+| `worker-gir` | ✅ GitHub push webhook | Zeabur rebuild `Dockerfile.worker` |
+| `gotrue-mon` | ❌ marketplace image 固定 | 升版才動（見 §10） |
+| `db-pran` | ❌ marketplace image 固定 | 升版才動 |
+| Pages | ✅ GitHub push webhook | Cloudflare rebuild `frontend/`、deploy |
+
+不需跑 CLI、不用 `zeabur deploy --template`——`backend/deploy/zeabur-template.yaml`
+留著只是當架構 reference（內容是 marketplace image spec，不是 deploy 命令）。
+
+---
+
+## 7. 環境變數全對照表
+
+以下欄位皆從 Zeabur MCP `get_service_variables` 跟 Cloudflare API 抓的**現況**值。
+
+### 7.1 api-ovate（prod 必設）
+
 ```
 ENVIRONMENT=prod
-DATABASE_URL=postgres://postgres:<POSTGRES_PASSWORD>@db:5432/postgres
-SUPABASE_JWKS_URL=https://<API_EXTERNAL_URL>/auth/v1/.well-known/jwks.json
-SUPABASE_JWT_AUDIENCE=authenticated
-CORS_ALLOWED_ORIGINS=["https://<frontend-domain>"]
-CORS_ALLOWED_ORIGIN_REGEX=""
-ADMIN_TOKEN=<強祕密>
+CORS_ALLOWED_ORIGINS=["https://dawncast.pages.dev"]
+DATABASE_URL=postgres://supabase_admin:<pwd>@db-pran.zeabur.internal:5432/postgres
 
-# Worker 額外
-APP_TIMEZONE=Asia/Taipei
+# HS256（見 §4）
+SUPABASE_JWT_ALG=HS256
+SUPABASE_JWT_SECRET=<同 gotrue-mon 的 GOTRUE_JWT_SECRET>
+SUPABASE_JWKS_URL=https://gotrue-mon.zeabur.app/.well-known/jwks.json  # HS256 path 不讀，但 assert_secure() 要求填
+SUPABASE_JWT_AUDIENCE=authenticated
+
+ADMIN_TOKEN=<強 secret>
 GENERATION_ENGINE=api_key
 FAILOVER_MODE=degrade
-API_KEY=<MINIMAX_API_KEY>
+API_KEY=<MiniMax token>
 API_BASE_URL=https://api.minimax.io/anthropic
 API_MODEL=MiniMax-M2.5
 
-# R2
-R2_ACCOUNT_ID=<CLOUDFLARE_ACCOUNT_ID>
-R2_ACCESS_KEY_ID=<R2 KEY>
-R2_SECRET_ACCESS_KEY=<R2 SECRET>
+R2_ACCOUNT_ID=<Cloudflare account id>
+R2_ACCESS_KEY_ID=<R2 access key>
+R2_SECRET_ACCESS_KEY=<R2 secret>
 R2_BUCKET=dawncast
 R2_ENDPOINT=https://<account>.r2.cloudflarestorage.com
 
-# 選填（缺則自動降級）
-TAVILY_API_KEY=<TAVILY KEY>
+TAVILY_API_KEY=<選填，缺則降級>
 
-# entrypoint 跑 migrations 用（單人用預設 1）
 APPLY_MIGRATIONS_ON_BOOT=1
 POSTGRES_USER=supabase_admin
-POSTGRES_HOST=db
+POSTGRES_HOST=db-pran.zeabur.internal
 POSTGRES_PORT=5432
 POSTGRES_DB=postgres
 ```
 
-**dev only**：`DEV_AUTH_BYPASS=true` / `DEV_USER_ID=<uuid>`——production 自動 fail。
+Zeabur 自動注入 `API_OVATE_HOST` / `WORKER_GIR_HOST` / `GOTRUE_MON_HOST` /
+`DB_PRAN_HOST` 給同 project 其他 service 用——不用手設。
+
+### 7.2 gotrue-mon（prod 必設）
+
+```
+GOTRUE_JWT_SECRET=<同 api-ovate SUPABASE_JWT_SECRET>
+GOTRUE_DATABASE_URL=postgres://supabase_admin:<pwd>@db-pran.zeabur.internal:5432/postgres
+GOTRUE_SITE_URL=https://dawncast.pages.dev
+GOTRUE_URI_ALLOW_LIST=https://gotrue-mon.zeabur.app,https://dawncast.pages.dev,http://localhost:5173
+GOTRUE_API_EXTERNAL_URL=https://gotrue-mon.zeabur.app
+GOTRUE_DISABLE_EMAIL_SIGNUP=true
+GOTRUE_DISABLE_EMAIL_LINK_SIGNUP=true
+GOTRUE_DISABLE_EMAIL_MAGICLINK=true
+GOTRUE_DISABLE_EMAIL_OTP=true
+GOTRUE_MAILER_AUTOCONFIRM=true
+
+# Google OAuth（見 §3.7）
+GOTRUE_EXTERNAL_GOOGLE_ENABLED=true
+GOTRUE_EXTERNAL_GOOGLE_CLIENT_ID=<Google Cloud Console>
+GOTRUE_EXTERNAL_GOOGLE_SECRET=<Google Cloud Console>
+GOTRUE_EXTERNAL_GOOGLE_REDIRECT_URI=https://gotrue-mon.zeabur.app/callback
+
+GOTRUE_DB_DRIVER=postgres
+GOTRUE_JWT_AUD=authenticated
+GOTRUE_JWT_EXP=3600
+PORT=9999
+```
+
+### 7.3 Cloudflare Pages（production + preview）
+
+```
+VITE_API_BASE_URL=https://api-ovate.zeabur.app
+VITE_SUPABASE_URL=https://api-ovate.zeabur.app
+VITE_SUPABASE_ANON_KEY=placeholder-self-host-anon-key
+VITE_USE_MOCK=false
+```
+
+### 7.4 dev only（`backend/deploy/docker-compose.yml`）
+
+```bash
+ENVIRONMENT=dev
+DEV_AUTH_BYPASS=true                 # dev 本機不繞 Supabase
+DEV_USER_ID=00000000-0000-0000-0000-000000000001
+CORS_ALLOWED_ORIGINS=["http://localhost:5173"]
+```
+
+prod 自動 fail（`shared/config.py:208` `assert_secure()` 拒絕）。
+
+---
+
+## 8. 故障排除
+
+| 症狀 | 看哪裡 | 解法 |
+|---|---|---|
+| Gotrue `</value>` suffix fatal | Zeabur logs → gotrue | §4 — 改走 HS256 path |
+| `relation "identities" does not exist` | gotrue 啟動 log | §3.1 prereqs SQL（search_path + drop partial migrations） |
+| SPA 點 Google 登入 404 | DevTools → Network | 確認 `VITE_SUPABASE_URL` 指 api-ovate + api-ovate `auth_proxy` 已 deploy（`backend/app/routers/auth_proxy.py`） |
+| `redirect_uri_mismatch` | Google OAuth 同意畫面 | Google Cloud Console `Authorized redirect URIs` 跟 gotrue `GOTRUE_EXTERNAL_GOOGLE_REDIRECT_URI` 字串**完全一致**。注意是裸 `/callback`（不是 `/auth/v1/callback`）—— gotrue standalone 不認 prefix。 |
+| Worker BackOff 重啟 | Zeabur logs → worker | DB 健康？`POSTGRES_PASSWORD` 跟 db 一致？`POSTGRES_HOST=db-pran.zeabur.internal`？ |
+| Pages build fail「找不到 package.json」 | Cloudflare Pages build log | Root directory 設 `frontend`（不是 repo root）。API PATCH build_config 也行（見 §3.8 類似手法） |
+| `auth.users` 沒建好 | psql `\dt auth.*` | §3.1 prereqs SQL 沒跑乾淨，drop `auth` schema CASCADE 重來 |
+| ffmpeg 燒字幕變方框 | worker log | Dockerfile.worker 漏裝 fonts-noto-cjk，rebuild worker image |
+
+---
+
+## 9. 已知限制 / 後續事項
+
+- **單點故障**：Zeabur host 死 = 全部 service 死。Mitigation：手動 pg_dump。
+- **無 HA、無監控**：個人版不裝 Sentry / Better Stack。出問題翻 Zeabur logs。
+- **Mock 媒體 6.4MB**：`frontend/public/episodes/loop_engineering.mp4` 仍隨 Pages
+  bundle 出貨。prod 不該帶，待清掉。
+- **`jwt-keys/` 已 commit ES256 私鑰**：`backend/deploy/scripts/jwt-keys/` 內的
+  `jwt_es256.pem` 是過渡期產物，HS256 path 不需要——**待加 `.gitignore` 隔離、從
+  git history 清掉**（不可逆操作要小心，rotate secret 配套）。
+- **`manual_backup.sh` 待補**：`backend/deploy/scripts/` 沒有單人版每日 pg_dump。
+- **Docker compose 僅供 dev**：`backend/deploy/docker-compose.yml` 是本機 4 容器
+  dev 環境；prod 全走 Zeabur marketplace，**不要拿來 deploy**。
+
+---
+
+## 10. 升級 gotrue / postgres
+
+marketplace image 升版流程：
+
+1. Zeabur Dashboard → service → Settings → **Image tag** 改新版號
+2. 看 [supabase/gotrue releases](https://github.com/supabase/gotrue/releases) 是否要
+   `ALTER ROLE` / schema migration（少見）
+3. **Redeploy** → 觀察 startup log
+4. 順序：**db → gotrue → api → worker**（前面是後面的依賴，不顛倒）
+
+Postgres major upgrade（17 → 18）需要 dump → 新 instance → restore → 切 DNS，
+走 Supabase 官方 upgrade 流程。個人版不常遇到。
