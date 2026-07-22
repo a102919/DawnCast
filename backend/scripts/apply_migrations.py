@@ -69,9 +69,6 @@ def _ensure_auth_admin(conn: psycopg.Connection, password: str) -> None:
             )
         conn.commit()
 
-        cur.execute("GRANT supabase_admin TO supabase_auth_admin")
-        conn.commit()
-
         cur.execute("CREATE SCHEMA IF NOT EXISTS auth AUTHORIZATION supabase_auth_admin")
         conn.commit()
 
@@ -99,14 +96,21 @@ def _apply(conn: psycopg.Connection, sql_path: Path) -> None:
     conn.commit()
 
 
-def main() -> int:
+def main(argv: list[str] | None = None) -> int:
+    """跑 schema migrations。
+
+    argv：傳給 argparse 的參數列表。
+      - None（預設）→ 用 sys.argv[1:]（CLI `python -m scripts.apply_migrations` 行為）。
+      - list → 顯式指定；library 呼叫端（lifespan event / worker main）傳 `[]` 走預設，
+        否則會讀到 caller 的 sys.argv（例如 uvicorn 啟動參數）造成 argparse 報錯。
+    """
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--dry-run",
         action="store_true",
         help="只列出將要跑的檔案，不實際執行",
     )
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
 
     files = _discover()
     if not files:

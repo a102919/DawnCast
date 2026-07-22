@@ -59,7 +59,10 @@ def _run_migrations_on_startup() -> None:
     try:
         from scripts.apply_migrations import main as _apply_migrations
 
-        rc = _apply_migrations()
+        # ponytail: 傳空 list 而非 None — lifespan 內 sys.argv = uvicorn 啟動參數，
+        # 讓 argparse parse 會爆「unrecognized arguments」。CLI 入口（python -m ...）
+        # 仍走 None 預設 = sys.argv[1:]，行為不變。
+        rc = _apply_migrations([])
         if rc != 0:
             logger.warning("apply_migrations 結束 return code=%d", rc)
         else:

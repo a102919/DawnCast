@@ -235,7 +235,9 @@ def _run_migrations_on_startup() -> None:
     try:
         from scripts.apply_migrations import main as _apply_migrations
 
-        rc = _apply_migrations()
+        # ponytail: 傳空 list 而非 None — worker main() 內 sys.argv 是 uvicorn 不會
+        # 出現，但保守起見跟 app/main.py 一致，避免日後改 worker 啟動方式時踩雷。
+        rc = _apply_migrations([])
         if rc != 0:
             logger.warning("apply_migrations 結束 return code=%d", rc)
         else:

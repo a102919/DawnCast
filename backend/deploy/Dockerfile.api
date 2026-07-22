@@ -53,10 +53,11 @@ COPY --from=builder --chown=appuser:appuser /app/shared ./shared
 COPY --from=builder --chown=appuser:appuser /app/voices ./voices
 
 # ── Zeabur Self-host 部署專用 ──
-# 把 scripts/ 帶進 image；啟動時由 app/main.py lifespan event 跑 migrations
-# （idempotent），不用 entrypoint shell — Zeabur runtime log driver 不抓 PID 1 stdout，
-# 改在 main process（uvicorn / worker）裡 logger 印一定進 Zeabur log。
+# 把 scripts/ + db/migrations/ 帶進 image；啟動時由 app/main.py lifespan event 跑
+# migrations（idempotent），不用 entrypoint shell — Zeabur runtime log driver 不抓
+# PID 1 stdout，改在 main process（uvicorn / worker）裡 logger 印一定進 Zeabur log。
 COPY --chown=appuser:appuser scripts ./scripts
+COPY --chown=appuser:appuser db ./db
 
 USER appuser
 EXPOSE 8080
