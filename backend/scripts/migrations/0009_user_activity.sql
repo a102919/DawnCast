@@ -17,5 +17,8 @@ create table if not exists public.user_activity (
 
 alter table public.user_activity enable row level security;
 
+-- ponytail: drop policy if exists 在 create 前 — 配合 apply_migrations 重跑
+-- idempotent 需求（沒 schema_migrations 表）。見 0002_rls.sql 開頭註解。
+drop policy if exists "own activity" on public.user_activity;
 create policy "own activity" on public.user_activity
   for all using (user_id = auth.uid()) with check (user_id = auth.uid());
