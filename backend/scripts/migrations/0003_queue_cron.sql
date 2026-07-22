@@ -11,9 +11,15 @@
 create extension if not exists pgmq;
 create extension if not exists pg_cron;
 
--- 兩條佇列：control（orchestrate/evergreen）與 generate（單集）
+-- 三條佇列：control（orchestrate/evergreen）/ generate（單集）/ dict_translate
+-- （缺字翻譯補 queue，engine.pipeline.post_process.DICT_TRANSLATE_QUEUE 對應）。
+-- dict_translate 之前 lazy create（pgmq.send 第一次呼叫時自動建），
+-- 但 worker.py 主迴圈用 dict_translate.poll_once() 在 read 階段就 query
+-- pgmq.q_dict_translate，read 比 send 先發生 → table 不存在 → UndefinedTable。
+-- 顯式 create 確保 worker 啟動時三條 queue 都備妥。
 select pgmq.create('control');
 select pgmq.create('generate');
+select pgmq.create('dict_translate');
 
 -- 22:00 開收集窗（標記當日預約進入正規化階段）
 select cron.schedule(
