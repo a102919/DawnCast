@@ -24,6 +24,7 @@ from app.routers import (
     account,
     activity,
     admin,
+    auth_proxy,
     daily_orders,
     episodes,
     favorites,
@@ -148,6 +149,7 @@ def create_app() -> FastAPI:
     app.include_router(dict_router.router)
     app.include_router(activity.router)
     app.include_router(account.router)  # T4：帳號自我管理（URL 字面 /me）
+    app.include_router(auth_proxy.router)  # /auth/v1/* → gotrue-mon:9999（給 supabase SDK 用）
     app.include_router(admin.router)
     app.include_router(jobs.router)
     app.include_router(notifications.router)
