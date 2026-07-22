@@ -180,8 +180,9 @@ spec:
             USER appuser
             EXPOSE 8080
 
-            ENTRYPOINT ["/app/entrypoint-api.sh"]
-            CMD ["sh", "-c", "uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-8080}"]
+            # ponytail: 用 CMD 直接跑 entrypoint script（不是 ENTRYPOINT + exec "$@"），
+            # script 是 PID 1，所有 stdout 一定進 Zeabur runtime log。script 內部 exec uvicorn。
+            CMD ["/app/entrypoint-api.sh"]
         env:
           ENVIRONMENT:
             default: prod
@@ -305,8 +306,9 @@ spec:
             HEALTHCHECK --interval=60s --timeout=30s --start-period=30s --retries=3 \
                 CMD python healthcheck.py || exit 1
 
-            ENTRYPOINT ["/app/entrypoint-worker.sh"]
-            CMD ["python", "-m", "engine.worker"]
+            # ponytail: 用 CMD 直接跑 entrypoint script（不是 ENTRYPOINT + exec "$@"），
+            # script 是 PID 1，所有 stdout 一定進 Zeabur runtime log。script 內部 exec worker。
+            CMD ["/app/entrypoint-worker.sh"]
         env:
           ENVIRONMENT:
             default: prod
