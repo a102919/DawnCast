@@ -713,6 +713,8 @@ async def upsert_episode_node(state: PodState, config: RunnableConfig) -> dict[s
     length_tier = state.get("length_tier") or "medium"
     topic_type = state.get("topic_type") or "evergreen"
     cefr = state.get("cefr") or "B1"
+    source = state.get("source") or "fallback"
+    is_free = source != "specified"
 
     # 冪等鍵同帶 length_tier 與 topic_type：同日同 big_topic 但不同入口或長度
     # 的請求不能共用同一列（否則後送的會覆蓋先前已渲染的集數）。
@@ -743,6 +745,7 @@ async def upsert_episode_node(state: PodState, config: RunnableConfig) -> dict[s
         grounded=grounded,
         input_tokens=total_in,
         output_tokens=total_out,
+        is_free=is_free,
     )
 
     if usage_log:

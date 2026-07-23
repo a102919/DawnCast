@@ -141,6 +141,7 @@ async def run_pod(
         "canonical_topic": body.get("canonical_topic") or body["big_topic"],
         "angle": body.get("angle") or "定義",
         "topic_type": body.get("topic_type") or "evergreen",
+        "source": body.get("source") or "fallback",
         "deliver_date": body["deliver_date"],
         "user_ids": list(body.get("user_ids") or []),
         "cluster_id": body.get("cluster_id"),

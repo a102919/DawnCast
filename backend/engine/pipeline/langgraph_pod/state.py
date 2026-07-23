@@ -31,6 +31,7 @@ class PodState(TypedDict, total=False):
     canonical_topic: str
     angle: str
     topic_type: str
+    source: str  # topic_requests.source（'specified'/'fallback'），決定 is_free
     deliver_date: str
     user_ids: list[str]
     cluster_id: str | None

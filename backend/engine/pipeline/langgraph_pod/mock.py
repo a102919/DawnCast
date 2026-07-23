@@ -45,6 +45,7 @@ class _EpisodeRow:
     grounded: bool = False
     input_tokens: int = 0
     output_tokens: int = 0
+    is_free: bool = True
     audio_key: str | None = None
     srt_key: str | None = None
     script_json: dict[str, Any] | None = None
@@ -96,6 +97,7 @@ class MockRepo:
         grounded: bool = False,
         input_tokens: int = 0,
         output_tokens: int = 0,
+        is_free: bool = True,
     ) -> tuple[str, bool]:
         if self.fail_upsert:
             raise RuntimeError("mock: upsert_episode forced failure")
@@ -120,6 +122,7 @@ class MockRepo:
             grounded=grounded,
             input_tokens=input_tokens,
             output_tokens=output_tokens,
+            is_free=is_free,
         )
         self.by_idem[idempotency_key] = eid
         return eid, False

@@ -104,6 +104,7 @@ async def _orchestrate(request_date: str) -> None:
             topic_type=r.get("topic_type"),
             length_tier=r.get("length_tier") or "medium",
             cefr=r.get("cefr") or "B1",
+            source=r.get("source") or "fallback",
         )
 
 

@@ -12,13 +12,24 @@ from typing import Any
 
 import httpx
 
-from shared.config import get_settings
+from shared.config import Settings, get_settings
 from shared.errors import GenerationError
 
 logger = logging.getLogger(__name__)
 
 _BATCH_MAX_TOKENS = 8192  # 10 字冷僻字實測 6808 tokens（thinking + output），留 buffer
 _BATCH_READ_TIMEOUT = 180.0  # 10 字冷僻字實測 80s，留 2x buffer；覆寫 settings.http_read_timeout
+
+
+def _resolve_llm_creds(settings: Settings) -> tuple[str, str, str]:
+    """依 generation_engine 選 (base_url, auth_token, model)，跟 chat.make_langchain_chat 對齊。
+
+    之前這裡永遠讀 minimax_auth_token，production 用 GENERATION_ENGINE=api_key
+    時該欄位是空的，導致 dict_translate 100% 401。
+    """
+    if settings.generation_engine == "api_key":
+        return settings.api_base_url, settings.api_key, settings.api_model
+    return settings.minimax_anthropic_base_url, settings.minimax_auth_token, settings.minimax_model
 
 
 async def translate_word(word: str) -> dict[str, Any] | None:
@@ -42,15 +53,16 @@ async def translate_word(word: str) -> dict[str, Any] | None:
         "4. 輸出嚴格 JSON，不要解釋、不要 code fence。\n"
         f"單字：{word}"
     )
+    base_url, token, model = _resolve_llm_creds(settings)
     payload = {
-        "model": settings.minimax_model,
+        "model": model,
         # MiniMax-M2.7 是推理模型，回答前會先吐一段 thinking block（實測 ~1800 tokens）；
         # 1024 太小會讓 thinking 吃光預算、答案永遠生不出來，導致 100% 回 None。
         "max_tokens": 4096,
         "messages": [{"role": "user", "content": prompt}],
     }
     headers = {
-        "x-api-key": settings.minimax_auth_token,
+        "Authorization": f"Bearer {token}",
         "anthropic-version": "2023-06-01",
         "content-type": "application/json",
     }
@@ -60,7 +72,7 @@ async def translate_word(word: str) -> dict[str, Any] | None:
         write=settings.http_read_timeout,
         pool=settings.http_connect_timeout,
     )
-    url = f"{settings.minimax_anthropic_base_url.rstrip('/')}/v1/messages"
+    url = f"{base_url.rstrip('/')}/v1/messages"
     try:
         async with httpx.AsyncClient(timeout=timeout) as client:
             resp = await client.post(url, json=payload, headers=headers)
@@ -151,13 +163,14 @@ async def translate_batch(words: list[str]) -> dict[str, dict[str, Any] | None]:
         "5. 嚴格只輸出 JSON 陣列，不要解釋、不要 code fence。\n"
         f"單字列表（每行一個，順序固定）：\n{word_list}"
     )
+    base_url, token, model = _resolve_llm_creds(settings)
     payload = {
-        "model": settings.minimax_model,
+        "model": model,
         "max_tokens": _BATCH_MAX_TOKENS,
         "messages": [{"role": "user", "content": prompt}],
     }
     headers = {
-        "x-api-key": settings.minimax_auth_token,
+        "Authorization": f"Bearer {token}",
         "anthropic-version": "2023-06-01",
         "content-type": "application/json",
     }
@@ -167,7 +180,7 @@ async def translate_batch(words: list[str]) -> dict[str, dict[str, Any] | None]:
         write=_BATCH_READ_TIMEOUT,
         pool=settings.http_connect_timeout,
     )
-    url = f"{settings.minimax_anthropic_base_url.rstrip('/')}/v1/messages"
+    url = f"{base_url.rstrip('/')}/v1/messages"
     try:
         async with httpx.AsyncClient(timeout=timeout) as client:
             resp = await client.post(url, json=payload, headers=headers)

@@ -56,14 +56,18 @@ async def resolve_for_user(
     topic_type: str | None = None,
     length_tier: str = "medium",
     cefr: str = "B1",
+    source: str = "fallback",
 ) -> str | None:
     """對單一 (user, big_topic) 做重用決策。
 
     命中既有可重用集 → 直接交付，回傳 episode_id。
     未命中 → enqueue 一筆 generate 訊息（帶 big_topic/angle/cefr/avoid_facts/
-            cluster_id/收件人/入口 tier），回傳 None（這集稍後由 worker 生成並補交付）。
+            cluster_id/收件人/入口 tier/source），回傳 None（這集稍後由 worker 生成並補交付）。
 
     angle 不指定（None）時依該 user 同主題交付史自動輪替；顯式指定則照用（測試 / 補生成用）。
+
+    source：topic_requests.source（'specified'/'fallback'），決定新集的 is_free
+            （見 nodes.upsert_episode_node）。
     """
     episode_id = await repo.find_reusable_episode(
         big_topic, user_id, length_tier=length_tier, cefr=cefr
@@ -87,6 +91,7 @@ async def resolve_for_user(
         "length_tier": length_tier,
         "cefr": cefr,
         "avoid_facts": avoid_facts,
+        "source": source,
     }
     if topic_type is not None:
         body["topic_type"] = topic_type

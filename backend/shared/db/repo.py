@@ -108,6 +108,7 @@ async def list_requests_for_date(request_date: str) -> list[dict[str, Any]]:
                    r.raw_topic as big_topic,
                    r.topic_type,
                    r.length_tier,
+                   r.source,
                    u.cefr_target as cefr
             from public.topic_requests r
             join public.users u on u.id = r.user_id
@@ -123,6 +124,7 @@ async def list_requests_for_date(request_date: str) -> list[dict[str, Any]]:
             "big_topic": r["big_topic"],
             "topic_type": r["topic_type"],
             "length_tier": r["length_tier"],
+            "source": r["source"],
             "cefr": r["cefr"] or "B1",
         }
         for r in rows
@@ -146,6 +148,7 @@ async def upsert_episode(
     grounded: bool = False,
     input_tokens: int = 0,
     output_tokens: int = 0,
+    is_free: bool = True,
 ) -> tuple[str, bool]:
     """建一列 episodes（媒體 key / cues 之後用 update_episode_keys 補）。
 
@@ -154,6 +157,9 @@ async def upsert_episode(
       - 衝突（同 key 已存在）→ 復用既有列，避免重投時重複建集與 R2 孤兒物件。
         already_rendered = 既有列是否已渲染完成（audio_r2_key 非空），
         讓上層跳過重渲染、只補交付。
+
+    is_free：預設 True（公開，登入即可看）。呼叫端（upsert_episode_node）依
+    topic_requests.source 是否為 'specified' 算出 False，做成該使用者專屬集。
     """
     async with connection() as conn, conn.cursor(row_factory=dict_row) as cur:
         await cur.execute(
@@ -162,8 +168,8 @@ async def upsert_episode(
                 (slug, title, title_zh, topic, cefr_level,
                  big_topic, angle, freshness_class, source_cluster_id,
                  idempotency_key, length_tier, format, grounded,
-                 input_tokens, output_tokens)
-            values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                 input_tokens, output_tokens, is_free)
+            values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             on conflict (idempotency_key) do nothing
             returning id
             """,
@@ -183,6 +189,7 @@ async def upsert_episode(
                 grounded,
                 input_tokens,
                 output_tokens,
+                is_free,
             ),
         )
         row = await cur.fetchone()
@@ -278,6 +285,8 @@ async def find_reusable_episode(
     但兩者若同時過濾會把「同 big_topic 不同 entry_mode」的兩條邏輯拆成四種組合，
     且 idempotency_key 已含 topic_type，重用不會撞——見 nodes.upsert_episode_node）。
     CEFR 過濾：A2 使用者不能拿到 B2 集，語言難度是內容契約的一部分。
+    is_free 過濾：只重用公開集。專屬集（is_free=false）字面若跟別人主題撞題，
+    不能被跨 user 重用命中，否則會把該使用者的專屬內容洩漏給非指定對象。
     """
     async with connection() as conn, conn.cursor(row_factory=dict_row) as cur:
         await cur.execute(
@@ -287,6 +296,7 @@ async def find_reusable_episode(
             where e.big_topic = %(big_topic)s
               and e.length_tier = %(length_tier)s
               and e.cefr_level = %(cefr)s
+              and e.is_free = true
               and (e.expires_at is null or now() < e.expires_at)
               and not exists (
                   select 1 from public.deliveries d
