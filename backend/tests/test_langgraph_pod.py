@@ -235,10 +235,16 @@ async def test_r2_failure_falls_back_to_local_keys_null() -> None:
 
 
 async def test_r2_failure_with_no_local_fallback_deletes_row() -> None:
-    """媒體雙重失敗不能留殭屍 row：先 DELETE 再 raise。
+    """媒體雙重失敗不能留殭屍 row：先 DELETE 再 graceful END。
 
     觸發條件：local_media_dir 沒設 → safe_local_fallback 不寫檔 →
-    update_episode_keys_node 偵測 storage_failed + 無本機 mp3 → DELETE + raise。
+    update_episode_keys_node 偵測 storage_failed + 無本機 mp3 → DELETE +
+    return errors（不再 raise）。graph conditional edge 已分流，這裡是
+    防呆路徑；測試確保 DELETE + graceful END 兩件事都發生。
+
+    改 raise → graceful END 理由：raise 會觸發 worker pgmq 視為失敗 → vt 重投
+    → render_episode 整個重做（TTS 33s+）。改 graceful END 後 worker 視為
+    完成（read_ct 不累積），episode 被 compensation DELETE 不留殭屍。
     """
     chat = _make_passing_chat()
     repo, r2, queue = get_mocks(reset=True)
@@ -248,17 +254,18 @@ async def test_r2_failure_with_no_local_fallback_deletes_row() -> None:
     # local_media_dir=None → 沒有任何本機 fallback 機會
     settings = get_settings().model_copy(update={"local_media_dir": None})
 
-    with pytest.raises(RuntimeError, match="雙重失敗"):
-        await run_pod(
-            _body(),
-            chat=chat,
-            repo=repo,
-            r2=r2,
-            queue=queue,
-            renderer=renderer,
-            settings=settings,
-        )
+    eid = await run_pod(
+        _body(),
+        chat=chat,
+        repo=repo,
+        r2=r2,
+        queue=queue,
+        renderer=renderer,
+        settings=settings,
+    )
 
+    # run_pod 仍回傳 episode_id（graceful END 不是例外）
+    assert eid
     # row 被補償清掉、沒交付
     assert len(repo.episodes) == 0
     assert len(repo.by_idem) == 0

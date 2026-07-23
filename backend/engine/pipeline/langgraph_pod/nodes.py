@@ -807,6 +807,59 @@ async def render_episode_node(state: PodState, config: RunnableConfig) -> dict[s
 # ── Node 7: upload_artifacts ──────────────────────────────
 
 
+def storage_decision(
+    state: PodState, config: RunnableConfig
+) -> Literal["update_keys", "dead_letter"]:
+    """upload_artifacts 後分流：本地 fallback 也沒救 → dead_letter_node → END。
+
+    條件：storage_failed AND 沒有本機 mp3 fallback → 不能留半完成 row
+    （播放頁會 404），也不能 raise（會觸發 worker pgmq vt 重投 → render
+    整個重做）。改成 graceful END：decision 走 dead_letter_node 做
+    DELETE + 寫 errors，worker 視為完成，read_ct 不累積。
+
+    其他情況（r2 OK / r2 失敗但本地 fallback 成功）→ 走 update_episode_keys
+    + insert_deliveries，前端可從本地路徑或 R2 取音檔。
+    """
+    if not state.get("storage_failed"):
+        return "update_keys"
+    settings = _ctx(config).get("settings")
+    media_dir = getattr(settings, "local_media_dir", None)
+    slug = state.get("slug")
+    if media_dir and slug:
+        local_mp3 = Path(media_dir, f"{slug}.mp3")
+        if local_mp3.is_file():
+            return "update_keys"
+    return "dead_letter"
+
+
+async def dead_letter_node(state: PodState, config: RunnableConfig) -> dict[str, Any]:
+    """storage_failed + 無本地 fallback → DELETE 半完成 row，graceful END。
+
+    取代原本 update_episode_keys_node 在這情況 raise RuntimeError 的行為：
+    raise 會觸發 LangGraph 整個 invoke 失敗 → worker pgmq vt 重投 → 整集
+    render_episode (TTS 33s+) 重做。改 graceful END：DELETE row + 寫
+    errors 標記，worker 視為完成，read_ct 不累積。
+    """
+    repo = _ctx(config).get("repo")
+    idem_key = state.get("idempotency_key")
+    slug = state.get("slug")
+    episode_id = state.get("episode_id")
+    if repo is not None and idem_key:
+        await repo.delete_episode_by_idem(idem_key)
+    logger.warning(
+        "媒體雙重失敗 graceful dead-letter（id=%s slug=%s idem=%s）",
+        episode_id,
+        slug,
+        idem_key,
+    )
+    return {
+        "errors": [
+            *state.get("errors", []),
+            f"upload_artifacts 雙重失敗，row 已清。slug={slug}",
+        ]
+    }
+
+
 async def upload_artifacts_node(state: PodState, config: RunnableConfig) -> dict[str, Any]:
     ctx = _ctx(config)
     r2 = ctx.get("r2")
@@ -887,13 +940,20 @@ async def update_episode_keys_node(state: PodState, config: RunnableConfig) -> d
         episode_id = state["episode_id"]
         idem_key = state["idempotency_key"]
         logger.warning(
-            "媒體雙重失敗，刪除半完成 row（id=%s slug=%s idem=%s），讓 worker 重試 / dead-letter",
+            "媒體雙重失敗，刪除半完成 row（id=%s slug=%s idem=%s），graceful END",
             episode_id,
             slug,
             idem_key,
         )
         await repo.delete_episode_by_idem(idem_key)
-        raise RuntimeError(f"upload_artifacts 雙重失敗且無本機 fallback，row 已清。slug={slug}")
+        # 上層 graph 已 conditional 分流到 END；這裡再寫一次 errors 是防呆，
+        # 確保即使 conditional edge 未來被改壞也不會觸發 worker pgmq vt 重投 → render 重做。
+        return {
+            "errors": [
+                *state.get("errors", []),
+                f"upload_artifacts 雙重失敗，row 已清。slug={slug}",
+            ]
+        }
 
     # repo 是 MockRepo 或 shared.db.repo 模組，surface 相同——直接呼叫，不做 hasattr 分派。
     await repo.update_episode_keys(

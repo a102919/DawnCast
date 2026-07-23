@@ -24,6 +24,7 @@ from shared.errors import GenerationError
 
 from .nodes import (
     backfill_dict_node,
+    dead_letter_node,
     failover_decision,
     failover_write_script_node,
     insert_deliveries_node,
@@ -34,6 +35,7 @@ from .nodes import (
     render_episode_node,
     retrieve_sources_node,
     rewrite_iteration_bump_node,
+    storage_decision,
     tone_selector_node,
     update_episode_keys_node,
     upload_artifacts_node,
@@ -76,6 +78,7 @@ def build_pod(*, checkpointer: MemorySaver | None = None) -> Any:
     builder.add_node("upsert_episode", upsert_episode_node)
     builder.add_node("render_episode", render_episode_node)
     builder.add_node("upload_artifacts", upload_artifacts_node)
+    builder.add_node("dead_letter", dead_letter_node)
     builder.add_node("update_episode_keys", update_episode_keys_node)
     builder.add_node("insert_deliveries", insert_deliveries_node)
     builder.add_node("backfill_dict", backfill_dict_node)
@@ -130,7 +133,18 @@ def build_pod(*, checkpointer: MemorySaver | None = None) -> Any:
     )
 
     builder.add_edge("render_episode", "upload_artifacts")
-    builder.add_edge("upload_artifacts", "update_episode_keys")
+    # upload_artifacts 後分流：storage_failed + 無本地 fallback → dead_letter_node
+    # 做 DELETE + graceful END，避免 update_episode_keys 雙重失敗 raise 觸發
+    # LangGraph 整個 invoke 失敗 → worker vt 重投 → render 重做。
+    builder.add_conditional_edges(
+        "upload_artifacts",
+        storage_decision,
+        {
+            "update_keys": "update_episode_keys",
+            "dead_letter": "dead_letter",
+        },
+    )
+    builder.add_edge("dead_letter", END)
     builder.add_edge("update_episode_keys", "insert_deliveries")
     builder.add_edge("insert_deliveries", "backfill_dict")
     builder.add_edge("backfill_dict", END)
