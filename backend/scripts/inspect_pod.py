@@ -84,6 +84,11 @@ def build_argparser() -> argparse.ArgumentParser:
         action="store_true",
         help="走 in-memory mock（不連 DB / LLM）",
     )
+    p.add_argument(
+        "--trace-to-db",
+        action="store_true",
+        help="每個 node 完成時把 trace 寫進 inspect_traces 表（prod trace 用）",
+    )
     return p
 
 
@@ -96,6 +101,78 @@ class _Timer:
 
     def stamp(self) -> float:
         return time.monotonic() - self.t0
+
+
+class _TraceWriter:
+    """Lazy psycopg writer：每個 node 完成 INSERT 一行 trace。
+
+    prod 用 — Zeabur execute-command 120s timeout，inspect_pod foreground 跑
+    245s+ 看不到 stdout。繞法：trace 寫 DB，跑完從 db-pran psql 拉。
+    """
+
+    def __init__(self) -> None:
+        self.run_id = os.environ.get(
+            "INSPECT_RUN_ID",
+            f"inspect-{int(time.time())}-{os.getpid()}",
+        )
+        self._conn: object | None = None
+        self._topic = ""
+        self._engine = ""
+
+    async def open(self, *, topic: str, engine: str) -> None:
+        import psycopg
+
+        self._topic = topic
+        self._engine = engine
+        # 連 db-pran（worker 預設 DATABASE_URL 指向 db-pran.zeabur.internal）
+        self._conn = await psycopg.AsyncConnection.connect(
+            os.environ["DATABASE_URL"], autocommit=True
+        )
+        # CREATE TABLE IF NOT EXISTS 冪等；topic / engine 補欄方便後續查
+        await self._conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS inspect_traces (
+                run_id    text      NOT NULL,
+                seq       int       NOT NULL,
+                ts        double precision NOT NULL,
+                delta     double precision NOT NULL,
+                node_name text      NOT NULL,
+                topic     text      NOT NULL DEFAULT '',
+                engine    text      NOT NULL DEFAULT '',
+                errors    jsonb     NOT NULL DEFAULT '[]'::jsonb,
+                PRIMARY KEY (run_id, seq)
+            )
+            """
+        )
+
+    async def record(
+        self, *, seq: int, ts: float, delta: float, node_name: str, errors: list
+    ) -> None:
+        if self._conn is None:
+            return
+        import json as _json
+
+        await self._conn.execute(  # type: ignore[attr-defined]
+            "INSERT INTO inspect_traces "
+            "(run_id, seq, ts, delta, node_name, topic, engine, errors) "
+            "VALUES (%s, %s, %s, %s, %s, %s, %s, %s::jsonb) "
+            "ON CONFLICT (run_id, seq) DO NOTHING",
+            (
+                self.run_id,
+                seq,
+                ts,
+                delta,
+                node_name,
+                self._topic,
+                self._engine,
+                _json.dumps(errors or []),
+            ),
+        )
+
+    async def close(self) -> None:
+        if self._conn is not None:
+            await self._conn.close()  # type: ignore[attr-defined]
+            self._conn = None
 
 
 async def _run_with_events(args: argparse.Namespace) -> int:
@@ -159,6 +236,9 @@ async def _run_with_events(args: argparse.Namespace) -> int:
         },
     }
     if args.mock:
+        from shared.config import get_settings
+
+        cfg = get_settings()
         config["configurable"] = {  # type: ignore[assignment]
             **config["configurable"],  # type: ignore[operator]
             "chat": chat,
@@ -167,7 +247,7 @@ async def _run_with_events(args: argparse.Namespace) -> int:
             "r2": r2,
             "queue": queue,
             "renderer": renderer,
-            "settings": None,
+            "settings": cfg,
         }
     else:
         from shared.config import get_settings
@@ -192,6 +272,15 @@ async def _run_with_events(args: argparse.Namespace) -> int:
         print(f"[{ts:6.2f}] {msg}", flush=True)
 
     _emit(timer.stamp(), "開始 graph.astream(stream_mode='updates')")
+    trace = _TraceWriter()
+    if args.trace_to_db:
+        engine_name = "mock" if args.mock else "prod"
+        await trace.open(topic=args.topic, engine=engine_name)
+        _emit(
+            timer.stamp(),
+            f"trace DB mode 啟用：run_id={trace.run_id}",
+        )
+    seq = 0
     try:
         async with asyncio.timeout(args.timeout_sec):
             async for ev in graph.astream(
@@ -226,6 +315,20 @@ async def _run_with_events(args: argparse.Namespace) -> int:
                     last_ts = now
                     events.append((now, node_name, delta))
                     _emit(now, f"✓ {node_name:<35s} (delta={delta:6.2f}s)")
+                    if args.trace_to_db:
+                        seq += 1
+                        node_errors = (
+                            list(state_delta.get("errors", []))
+                            if isinstance(state_delta, dict)
+                            else []
+                        )
+                        await trace.record(
+                            seq=seq,
+                            ts=now,
+                            delta=delta,
+                            node_name=node_name,
+                            errors=node_errors,
+                        )
 
                     # 顯示重要的 state 變化
                     if state_delta and isinstance(state_delta, dict):
@@ -249,17 +352,20 @@ async def _run_with_events(args: argparse.Namespace) -> int:
 
     except asyncio.TimeoutError:
         print(f"[{timer.stamp():6.2f}] ⏰ TIMEOUT ({args.timeout_sec}s) 抵達；node_entered={list(node_entered)}")
+        await trace.close()
         return 3
     except Exception as exc:
         print(f"[{timer.stamp():6.2f}] ✗ EXCEPTION {type(exc).__name__}: {exc}")
         import traceback
         traceback.print_exc()
+        await trace.close()
         return 2
 
     print()
     print("=" * 70)
     print(f"[{timer.stamp():6.2f}] 完成，總節點數 {len(events)}")
     print("=" * 70)
+    await trace.close()
 
     # 列出「最慢前 5 名」
     if events:
