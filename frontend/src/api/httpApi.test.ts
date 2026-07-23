@@ -70,6 +70,36 @@ describe('httpApi envelope 解包', () => {
     await expect(httpApi.clearVocab()).resolves.toBeUndefined()
   })
 
+  it('每日訂單接受後端回傳的 nullable 欄位', async () => {
+    mockFetchOnce(200, {
+      ok: true,
+      error: null,
+      data: {
+        date: '2026-07-23',
+        selectedTopics: ['tech'],
+        specificRequest: null,
+        status: 'pending',
+        deliveryTime: '07:00',
+        createdAt: '2026-07-23T23:05:21Z',
+        updatedAt: '2026-07-23T23:05:21Z',
+        playedAt: null,
+        entryMode: 'topic',
+        lengthTier: 'medium',
+      },
+    })
+    await expect(
+      httpApi.saveDailyOrder({
+        date: '2026-07-23',
+        selectedTopics: ['tech'],
+        status: 'pending',
+        deliveryTime: '07:00',
+        createdAt: '2026-07-23T23:05:21Z',
+        updatedAt: '2026-07-23T23:05:21Z',
+        entryMode: 'topic',
+        lengthTier: 'medium',
+      }),
+    ).resolves.toMatchObject({ specificRequest: null, playedAt: null })
+  })
   it('回應 data 結構不符 schema 時丟出 schema_mismatch', async () => {
     mockFetchOnce(200, { ok: true, error: null, data: { word: 123 } })
     await expect(httpApi.lookupDict('loop')).rejects.toMatchObject({ code: 'schema_mismatch' })

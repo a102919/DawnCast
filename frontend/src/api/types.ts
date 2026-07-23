@@ -60,13 +60,13 @@ export type LengthTier = 'short' | 'medium' | 'long'
 export type DailyOrder = {
   readonly date: string
   readonly selectedTopics: readonly string[]
-  readonly specificRequest?: string
+  readonly specificRequest?: string | null
   readonly status: DailyOrderStatus
   /** 出餐時間 'HH:MM'，預設 '07:00' */
   readonly deliveryTime: string
   readonly createdAt: string
   readonly updatedAt: string
-  readonly playedAt?: string
+  readonly playedAt?: string | null
   /** Phase 4：入口類型，舊 localStorage 訂單會是 undefined，由 provider 補預設 'topic' */
   readonly entryMode?: EntryMode
   /** Phase 4：長度 tier，舊 localStorage 訂單會是 undefined，由 provider 補預設 'medium' */
@@ -76,7 +76,7 @@ export type DailyOrder = {
 /** 寫入時不需要 date / createdAt / updatedAt / playedAt，provider 補齊 */
 export type DailyOrderInput = {
   readonly selectedTopics: readonly string[]
-  readonly specificRequest?: string
+  readonly specificRequest?: string | null
   readonly status?: DailyOrderStatus
   readonly deliveryTime: string
   readonly entryMode?: EntryMode

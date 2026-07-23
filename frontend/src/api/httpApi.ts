@@ -168,12 +168,12 @@ const DailyOrderStatusSchema = z.enum(['pending', 'queued', 'played']) satisfies
 const DailyOrderSchema = z.object({
   date: z.string(),
   selectedTopics: z.array(z.string()),
-  specificRequest: z.string().optional(),
+  specificRequest: z.string().nullable().optional(),
   status: DailyOrderStatusSchema,
   deliveryTime: z.string(),
   createdAt: z.string(),
   updatedAt: z.string(),
-  playedAt: z.string().optional(),
+  playedAt: z.string().nullable().optional(),
   // 後端 DailyOrder model 兩欄皆有 DB default（見 lessons.md 2026-07-15），
   // 這裡驗的是即時 HTTP 回應（見下方呼叫端），不是 localStorage 舊單快取，
   // 故不用再放寬——真的缺欄位應該讓 zod 直接炸，而不是默默補 undefined。

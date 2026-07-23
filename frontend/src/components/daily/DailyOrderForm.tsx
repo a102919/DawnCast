@@ -270,8 +270,10 @@ export function DailyOrderForm({
       </div>
 
       {/* 主題 chips */}
-      <div className="space-y-2">
-        <div className="text-xs font-medium text-text-tertiary">主題</div>
+      <div className="space-y-2" aria-required="true">
+        <div className="text-xs font-medium text-text-tertiary">
+          主題 <span className="text-warning" aria-hidden>*</span>
+        </div>
         <div className="flex gap-1.5 flex-wrap">
           {TOPIC_ORDER.map(key => (
             <Chip
@@ -283,6 +285,11 @@ export function DailyOrderForm({
             </Chip>
           ))}
         </div>
+        {topics.length === 0 && !locked && !isDateInPast && (
+          <p className="text-[11px] text-warning" role="status" aria-live="polite">
+            至少選一個主題，才能送出訂單。
+          </p>
+        )}
       </div>
 
       {/* 進階區塊觸發器:展開/收合指定內容 + 出餐時間。
@@ -374,6 +381,8 @@ export function DailyOrderForm({
         <Button
           onClick={handlePrimary}
           disabled={!canSubmit || busy}
+          title={canSubmit ? undefined : '請先選至少一個主題'}
+          aria-label={canSubmit ? undefined : '送出訂單（請先選主題）'}
           size="md"
           variant="primary"
         >

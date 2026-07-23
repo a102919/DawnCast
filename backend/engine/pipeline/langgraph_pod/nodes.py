@@ -126,25 +126,6 @@ def _ctx(config: RunnableConfig) -> dict[str, Any]:
     return configurable
 
 
-# ── Topic / 大主題分類（沿用 production 的 _TOPIC_MAP）──────
-
-
-_TOPIC_MAP: dict[str, str] = {
-    "tech": "tech",
-    "科技": "tech",
-    "business": "business",
-    "商業": "business",
-    "culture": "culture",
-    "文化": "culture",
-    "science": "science",
-    "科學": "science",
-}
-
-
-def _classify_topic(big_topic: str) -> str:
-    return _TOPIC_MAP.get(big_topic.strip().casefold(), "tech")
-
-
 def _slugify(canonical: str) -> str:
     base = re.sub(r"[^a-z0-9]+", "_", canonical.casefold()).strip("_")
     base = base[:40] or "episode"
@@ -351,6 +332,14 @@ def _build_pod_messages(
         "translate the meaning naturally, NOT word-for-word.\n\n"
         "# TITLE\n- `topic_zh`：一句吸引人的中文標題（台灣正體中文），"
         "呈現這集的角度與鉤子，不是 `topic` 的逐字翻譯。\n\n"
+        "# CATEGORY\n"
+        "- `category` MUST be exactly one of: tech, business, culture, science.\n"
+        "- Classify the FINAL episode by its dominant subject and main takeaway: "
+        "tech = technology/software/AI; business = companies/markets/economics/work; "
+        "culture = arts/media/society/language/customs; "
+        "science = natural science/medicine/research.\n"
+        "- For overlap, choose the category needed to understand the main takeaway. "
+        "Do not classify by entry mode, format, or the first listed input topic.\n\n"
         "# OUTPUT\n- Output ONLY the JSON object. No markdown, no code fences, no commentary.\n\n"
         f"{tones_block}\n"
         f"{_HOOK_TECHNIQUES}"
@@ -362,6 +351,7 @@ def _build_pod_messages(
         f"{_sources_block(sources or [])}\n\n"
         "JSON SCHEMA (must match exactly):\n"
         '{"topic": str, "topic_zh": str, '
+        '"category": "tech"|"business"|"culture"|"science", '
         '"extracted_facts": [{"claim": str, "source_ids": [str]}], '
         '"target_vocab": [{"word": str, "explanation": str}], '
         f'"format": "{format}", '
@@ -733,7 +723,7 @@ async def upsert_episode_node(state: PodState, config: RunnableConfig) -> dict[s
         idempotency_key=idem_key,
         slug=slug,
         title=script.topic,
-        topic=_classify_topic(big_topic),
+        topic=script.category,
         big_topic=big_topic,
         angle=angle,
         topic_type=state["topic_type"],

@@ -24,6 +24,7 @@ ANGLES: tuple[tuple[str, str], ...] = (
 )
 TopicType = Literal["news", "product", "evergreen", "skill"]
 FreshnessClass = Literal["evergreen", "timely", "dated"]
+EpisodeCategory = Literal["tech", "business", "culture", "science"]
 
 # 長度 tier（PRD 重新設計 §2）：短篇快訊 / 中篇標準集 / 長篇深度剖析。
 LengthTier = Literal["short", "medium", "long"]
@@ -77,6 +78,7 @@ class ScriptJSON(BaseModel):
 
     topic: str = Field(min_length=1)
     topic_zh: str = Field(min_length=1)  # 中文標題，非逐字翻譯——LLM 直接生成自然標題
+    category: EpisodeCategory
     extracted_facts: list[SourcedFact] = Field(min_length=1)
     target_vocab: list[TargetVocab] = Field(min_length=1)
     script: list[ScriptLine] = Field(min_length=8)  # 太短直接判失敗

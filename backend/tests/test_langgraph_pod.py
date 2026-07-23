@@ -33,7 +33,7 @@ from shared.models import ScriptJSON
 # ── 共用 fixture ─────────────────────────────────────────────
 
 
-def _script_json(*, format: str = "dialogue") -> str:
+def _script_json(*, format: str = "dialogue", category: str = "science") -> str:
     """合法 ScriptJSON 字串（≥8 行）。dialogue：雙主持人齊備；monologue：單一 Nova。"""
     facts = [
         {"claim": "f1", "source_ids": []},
@@ -51,6 +51,7 @@ def _script_json(*, format: str = "dialogue") -> str:
         {
             "topic": "Quantum",
             "topic_zh": "量子力學入門",
+            "category": category,
             "extracted_facts": facts,
             "target_vocab": [{"word": "quantum", "explanation": "tiny unit"}],
             "format": format,
@@ -108,6 +109,10 @@ async def test_pod_happy_path() -> None:
         renderer=renderer,
     )
     assert eid
+    episode = repo.get_episode(eid)
+    assert episode is not None
+    # 分類以最終稿為準；輸入 big_topic 是「科技」，Quantum 稿仍應寫成 science。
+    assert episode.topic == "science"
     assert len(repo.deliveries) == 2  # u1, u2
     assert len(r2.objects) == 2  # mp3 / srt
     assert chat._call_count == 2  # writer + judge
@@ -552,6 +557,8 @@ def test_build_pod_messages_cefr_and_avoid_facts() -> None:
     assert "1,500 most common" in a2_system
     assert "native-like vocabulary" in b2_system
     assert "old fact" in a2_system  # avoid_facts 進 BAN LIST
+    assert '"category": "tech"|"business"|"culture"|"science"' in a2_system
+    assert "Do not classify by entry mode" in a2_system
     assert "TONE: TONE" not in a2_system  # 修掉的重複前綴不回歸
 
     mono = _build_pod_messages(cefr="B1", avoid_facts=(), format="monologue", **common)

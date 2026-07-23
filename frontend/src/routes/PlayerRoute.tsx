@@ -5,7 +5,6 @@ import { ErrorBanner } from '../components/primitives/ErrorBanner'
 import { AudioPlayer } from '../components/player/AudioPlayer'
 import { PlayerControls } from '../components/player/PlayerControls'
 import { LyricsView } from '../components/lyrics/LyricsView'
-import { EpisodeCover } from '../components/shared/EpisodeCover'
 import { PlayerBottomBar } from '../components/player/PlayerBottomBar'
 import { MobileTranscriptSheet } from '../components/transcript/MobileTranscriptSheet'
 import { WordCardPanel } from '../components/wordcard/WordCardPanel'
@@ -141,6 +140,11 @@ export function PlayerRoute() {
     }
   }
 
+  const handleCueClick = useCallback((cue: Cue) => {
+    seekTo(cue.start)
+    play()
+  }, [seekTo, play])
+
   const handleLookupRetry = () => {
     if (selectedWord && selectedCue) {
       void handleWordClick(selectedWord, selectedCue)
@@ -169,29 +173,20 @@ export function PlayerRoute() {
       {/* 隱形音檔綁時間軸（不上視） */}
       <AudioPlayer audioUrl={episode.audioUrl} />
 
-      {/* Header：podcast cover + metadata */}
-      <header className="flex items-center gap-4 px-4 lg:px-8 pt-6 pb-4 shrink-0">
-        <EpisodeCover episodeId={episode.id} size="lg" />
-        <div className="min-w-0 flex-1">
-          <div className="text-[10px] uppercase tracking-widest text-text-tertiary mb-1">
-            Podcast
-          </div>
-          <h1 className="text-base lg:text-lg font-semibold truncate">{episode.title}</h1>
-        </div>
-      </header>
-
-      {/* 大歌詞：佔滿中間剩餘空間 */}
-      <main className="flex-1 min-h-0 relative">
+      {/* 大歌詞：佔滿中間剩餘空間，封面與標題作為第一個 scroll item 一起滾動 */}
+      <main className="flex-1 min-h-0 relative pb-[100px] lg:pb-40">
         <LyricsView
           episodeId={episode.id}
+          episodeTitle={episode.title}
           cues={episode.cues}
           currentTime={currentTime}
           onWordClick={handleWordClick}
+          onCueClick={handleCueClick}
         />
       </main>
 
       {/* 控制列（桌面） */}
-      <footer className="hidden lg:block px-8 pb-6 pt-4 shrink-0 material-thick border-t border-border">
+      <footer className="hidden lg:block fixed bottom-0 left-0 right-0 z-30 px-8 pb-6 pt-4 bg-bg-primary border-t border-border">
         <PlayerControls duration={episode.cues[episode.cues.length - 1]?.end ?? 0} />
         <div className="flex items-center justify-center gap-4 mt-3">
           <button

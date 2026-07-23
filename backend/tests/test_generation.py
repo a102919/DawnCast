@@ -36,6 +36,7 @@ def test_parse_plain_json() -> None:
     speakers = {line.speaker for line in result.script.script}
     assert speakers == {"Alex", "Sarah"}
     assert len(result.script.script) >= 8
+    assert result.script.category == "tech"
     assert all(line.zh for line in result.script.script)  # 逐行 zh
 
 
@@ -48,6 +49,18 @@ def test_parse_strips_code_fence() -> None:
 def test_parse_invalid_raises_generation_error() -> None:
     with pytest.raises(GenerationError):
         parse_engine_result("not json at all", engine="api_key", model="m", usage={})
+
+
+@pytest.mark.parametrize("category", [None, "other"])
+def test_parse_rejects_missing_or_unknown_category(category: str | None) -> None:
+    payload = json.loads(_fixture_text())
+    if category is None:
+        payload.pop("category")
+    else:
+        payload["category"] = category
+
+    with pytest.raises(GenerationError):
+        parse_engine_result(json.dumps(payload), engine="api_key", model="m", usage={})
 
 
 def test_parse_too_short_raises_generation_error() -> None:

@@ -340,7 +340,7 @@ async def test_generate_job_happy_path(monkeypatch: pytest.MonkeyPatch) -> None:
     episode_id = await generate_job.run_generate_job(body, **mocks)
 
     assert episode_id == "ep-new-id"
-    # episode 分類：科技 → tech
+    # episode 分類以最終稿的 category 為唯一來源。
     assert repo_spy.inserted["topic"] == "tech"
     assert repo_spy.inserted["big_topic"] == "科技"
     # R2 key 格式 episodes/{episode_id}/...
