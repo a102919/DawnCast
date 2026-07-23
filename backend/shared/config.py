@@ -120,7 +120,9 @@ class Settings(BaseSettings):
 
     # ── 外部 HTTP 邊界（安全規範）────────────────────────────
     http_connect_timeout: float = 5.0
-    http_read_timeout: float = 30.0
+    # 180s 給 LLM thinking mode（MiniMax M3 + 4k reasoning budget + 16k script）
+    # 留反應空間；短 timeout 會把正常 LLM call 視為 ReadTimeout。詳 chat.py read_timeout。
+    http_read_timeout: float = 180.0
     http_max_retries: int = 3
 
     # ── Rate limit（T5）──────────────────────────────────────

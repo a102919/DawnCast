@@ -76,7 +76,12 @@ class MiniMaxChatModel(BaseChatModel):
     # 顯式給 reasoning 預算避免 LLM 把整個 max_tokens 拿去思考。
     thinking_budget_tokens: int = 4096
     connect_timeout: float = 5.0
-    read_timeout: float = 30.0
+    # 180s：MiniMax M3 + extended thinking + 16k max_tokens 在 Zeabur outbound
+    # 觀察到單次 response 可達 60-120s（thinking budget 4096 + 12k 腳本）；
+    # 原 30s 會讓正常 LLM call 撞 ReadTimeout → EngineError → dead-letter。
+    # retry 4 attempts × 180s = 720s 上限，仍然小於 job_timeout_sec=480s × 數倍，
+    # 不會掩蓋真實 hang。
+    read_timeout: float = 180.0
     max_retries: int = 3
 
     # 不掛 ctor 副作用（BaseChatModel 透過 pydantic 構造），client lazy 開
