@@ -56,7 +56,7 @@ export function LyricsView({ episodeId, episodeTitle, cues, currentTime, onWordC
 
   useEffect(() => {
     if (activeCueIdx < 0 || isUserScrollingRef.current) return
-    activeRef.current?.scrollIntoView({ behavior: reduceMotion ? 'auto' : 'smooth', block: 'end' })
+    activeRef.current?.scrollIntoView({ behavior: reduceMotion ? 'auto' : 'smooth', block: 'center' })
   }, [activeCueIdx, reduceMotion])
 
   return (
