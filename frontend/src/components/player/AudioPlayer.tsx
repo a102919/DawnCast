@@ -4,6 +4,7 @@ import { usePlayer } from '../../state'
 
 interface AudioPlayerProps {
   readonly audioUrl: string
+  readonly onEnded?: () => void
 }
 
 /** Audio-only player：不顯示影片畫面，只用 <audio> 撐時間軸來源（cue 同步高亮）。
@@ -11,7 +12,7 @@ interface AudioPlayerProps {
  * Ponytail：player 層只負責 setVideoRef 餵 PlayerProvider；視覺外殼在 PlayerRoute 組合
  * （標題/封面/歌詞）。這元件刻意輸出極簡 — Apple Music 風的「看不到播放器，只有內容」感。
  */
-export function AudioPlayer({ audioUrl }: AudioPlayerProps) {
+export function AudioPlayer({ audioUrl, onEnded }: AudioPlayerProps) {
   const audioRef = useRef<HTMLAudioElement>(null)
   const { setVideoRef, playbackRate } = usePlayer()
   const [hasError, setHasError] = useState(false)
@@ -40,6 +41,7 @@ export function AudioPlayer({ audioUrl }: AudioPlayerProps) {
         src={audioUrl}
         preload="metadata"
         onError={() => setHasError(true)}
+        onEnded={onEnded}
         className="hidden"
       />
     </div>

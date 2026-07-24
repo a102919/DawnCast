@@ -10,6 +10,8 @@ export type DictEntry = {
   readonly audioUrl?: string | null
   readonly exampleEn?: string | null
   readonly exampleZh?: string | null
+  // 諧音/關鍵字記憶提示（繁中，台灣在地化記憶法）
+  readonly mnemonic?: string | null
 }
 
 export type VocabItem = {
@@ -32,6 +34,11 @@ export type VocabItem = {
   // 字典例句（後端 JOIN dict_cache 帶出，不存 user_vocab）
   readonly exampleEn?: string | null
   readonly exampleZh?: string | null
+  // 諧音/關鍵字記憶提示：同上，來自 dict_cache JOIN
+  readonly mnemonic?: string | null
+  // 1=new..5=ignored（已精熟）；伺服器建立時預設 1，前端不在新增時送出（比照 nextReview/interval/ease）。
+  // 門檻判斷在前端算，見 VocabProvider.updateCardReview
+  readonly status?: number
 }
 
 export type Settings = {
@@ -122,7 +129,7 @@ export interface Api {
   getSettings(): Promise<Settings>
   updateSettings(patch: Partial<Settings>): Promise<Settings>
   clearVocab(): Promise<void>
-  updateVocab(id: string, patch: Partial<Pick<VocabItem, 'nextReview' | 'interval' | 'ease'>>): Promise<void>
+  updateVocab(id: string, patch: Partial<Pick<VocabItem, 'nextReview' | 'interval' | 'ease' | 'status'>>): Promise<void>
   // 收藏的 podcast episode
   getFavorites(): Promise<readonly string[]>
   addFavorite(id: string): Promise<void>

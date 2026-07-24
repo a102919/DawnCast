@@ -1,6 +1,6 @@
 import type { LucideIcon } from 'lucide-react'
 
-type Tone = 'default' | 'success' | 'warning'
+type Tone = 'default' | 'success' | 'warning' | 'danger'
 
 interface StatCardProps {
   readonly icon?: LucideIcon
@@ -14,6 +14,7 @@ const toneClass: Record<Tone, { container: string; value: string }> = {
   default: { container: 'material-thin border-border/60 shadow-sm', value: 'text-text-primary' },
   success: { container: 'bg-success/10 border-success/30', value: 'text-success' },
   warning: { container: 'bg-warning/10 border-warning/30', value: 'text-warning' },
+  danger: { container: 'bg-danger/10 border-danger/30', value: 'text-danger' },
 }
 
 export function StatCard({ icon: Icon, label, value, unit, tone = 'default' }: StatCardProps) {

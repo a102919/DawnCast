@@ -45,12 +45,15 @@ async def translate_word(word: str) -> dict[str, Any] | None:
         '"ipa": "<IPA 音標；若不確定省略>", '
         '"pos": ["<詞性，例如 n/v/adj>"], '
         '"example_en": "<一個用到這個單字的英文例句>", '
-        '"example_zh": "<上述例句的繁體中文翻譯>"}\n'
+        '"example_zh": "<上述例句的繁體中文翻譯>", '
+        '"mnemonic": "<諧音/關鍵字記憶提示>"}\n'
         "規則：\n"
         "1. translation 必須繁體中文台灣用詞（網路/網路、磁碟/磁碟、滑鼠/滑鼠）。\n"
         "2. example_en 要自然、簡短（≤ 15 字），能展示該字典型用法。\n"
         "3. example_zh 為 example_en 的逐字台繁翻譯。\n"
-        "4. 輸出嚴格 JSON，不要解釋、不要 code fence。\n"
+        "4. mnemonic 是給台灣學習者的諧音/關鍵字文字聯想（≤30字，繁體中文），"
+        "格式類似「發音像『OO』，聯想到＿＿」；只用文字聯想，不要描述圖像/畫面。\n"
+        "5. 輸出嚴格 JSON，不要解釋、不要 code fence。\n"
         f"單字：{word}"
     )
     base_url, token, model = _resolve_llm_creds(settings)
@@ -133,6 +136,9 @@ def _normalize_payload(obj: Any) -> dict[str, Any] | None:
     ex_zh = obj.get("example_zh")
     if isinstance(ex_zh, str) and ex_zh.strip():
         out["example_zh"] = ex_zh.strip()
+    mnemonic = obj.get("mnemonic")
+    if isinstance(mnemonic, str) and mnemonic.strip():
+        out["mnemonic"] = mnemonic.strip()
     return out or None
 
 
@@ -154,13 +160,16 @@ async def translate_batch(words: list[str]) -> dict[str, dict[str, Any] | None]:
         '"ipa": "<IPA 音標；若不確定省略>", '
         '"pos": ["<詞性，例如 n/v/adj>"], '
         '"example_en": "<一個用到這個單字的英文例句>", '
-        '"example_zh": "<上述例句的繁體中文翻譯>"}\n'
+        '"example_zh": "<上述例句的繁體中文翻譯>", '
+        '"mnemonic": "<諧音/關鍵字記憶提示>"}\n'
         "規則：\n"
         "1. word 欄位必須 echo 對應的英文單字（小寫、不可變）。\n"
         "2. translation 必須繁體中文台灣用詞（網路/網路、磁碟/磁碟、滑鼠/滑鼠）。\n"
         "3. example_en 要自然、簡短（≤ 15 字），能展示該字典型用法。\n"
         "4. example_zh 為 example_en 的逐字台繁翻譯。\n"
-        "5. 嚴格只輸出 JSON 陣列，不要解釋、不要 code fence。\n"
+        "5. mnemonic 是給台灣學習者的諧音/關鍵字文字聯想（≤30字，繁體中文），"
+        "格式類似「發音像『OO』，聯想到＿＿」；只用文字聯想，不要描述圖像/畫面。\n"
+        "6. 嚴格只輸出 JSON 陣列，不要解釋、不要 code fence。\n"
         f"單字列表（每行一個，順序固定）：\n{word_list}"
     )
     base_url, token, model = _resolve_llm_creds(settings)

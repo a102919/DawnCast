@@ -6,9 +6,11 @@ import { useVocab, usePlayer } from '../state'
 import { Chip } from '../components/primitives/Chip'
 import { EmptyState } from '../components/primitives/EmptyState'
 import { VocabEntryCard } from '../components/vocab/VocabEntryCard'
+import { MASTERED_STATUS } from '../lib/srs'
 import type { VocabItem } from '../api/types'
 
 type PosFilter = 'all' | 'v' | 'n' | 'a'
+type MasteryFilter = 'reviewing' | 'mastered'
 
 const POS_LABELS: Record<PosFilter, string> = {
   all: '全部',
@@ -17,15 +19,25 @@ const POS_LABELS: Record<PosFilter, string> = {
   a: '形容詞',
 } as const
 
+const MASTERY_LABELS: Record<MasteryFilter, string> = {
+  reviewing: '複習中',
+  mastered: '已精熟',
+} as const
+
 export function VocabRoute() {
   const { items, isLoading, removeVocab } = useVocab()
   const { seekTo } = usePlayer()
   const navigate = useNavigate()
   const [query, setQuery] = useState('')
   const [posFilter, setPosFilter] = useState<PosFilter>('all')
+  const [masteryFilter, setMasteryFilter] = useState<MasteryFilter>('reviewing')
 
   const filtered = useMemo(() => {
-    let result = [...items]
+    let result = items.filter(v =>
+      masteryFilter === 'mastered'
+        ? v.status === MASTERED_STATUS
+        : v.status !== MASTERED_STATUS
+    )
     if (query.trim()) {
       const q = query.toLowerCase()
       result = result.filter(
@@ -36,7 +48,7 @@ export function VocabRoute() {
       result = result.filter(v => v.pos?.startsWith(posFilter))
     }
     return result
-  }, [items, query, posFilter])
+  }, [items, query, posFilter, masteryFilter])
 
   const handleSeek = (item: VocabItem) => {
     seekTo(item.sourceTimestamp)
@@ -83,6 +95,19 @@ export function VocabRoute() {
         />
       </div>
 
+      {/* 複習中／已精熟 */}
+      <div className="flex gap-1.5 mb-2.5">
+        {(Object.keys(MASTERY_LABELS) as MasteryFilter[]).map(key => (
+          <Chip
+            key={key}
+            active={masteryFilter === key}
+            onClick={() => setMasteryFilter(key)}
+          >
+            {MASTERY_LABELS[key]}
+          </Chip>
+        ))}
+      </div>
+
       {/* 詞性篩選 */}
       <div className="flex gap-1.5 mb-4">
         {(Object.keys(POS_LABELS) as PosFilter[]).map(key => (
@@ -100,6 +125,8 @@ export function VocabRoute() {
       {isLoading ? null : filtered.length === 0 ? (
         items.length === 0 ? (
           <EmptyState icon={BookOpen} title="單字本是空的" description="在播放頁點擊字幕中的單字即可收錄" />
+        ) : masteryFilter === 'mastered' ? (
+          <EmptyState icon={Sparkles} title="還沒有已精熟的單字" description="持續複習，間隔拉長到 90 天以上就會出現在這裡" />
         ) : (
           <EmptyState icon={SearchX} title="找不到符合的單字" />
         )

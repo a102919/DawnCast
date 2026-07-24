@@ -6,6 +6,11 @@ export function formatDateZhTW(isoDate: string): string {
   return new Intl.DateTimeFormat('zh-TW', { month: 'long', day: 'numeric' }).format(d)
 }
 
+/** LLM 產出的多行文字（釋義、記憶提示等）以字面 `\n` 存在資料庫，這裡還原成真正換行。 */
+export function formatMultiline(text: string): string {
+  return text.replaceAll('\\n', '\n')
+}
+
 export function formatTimestamp(seconds: number): string {
   const m = Math.floor(seconds / 60)
   const s = Math.floor(seconds % 60)

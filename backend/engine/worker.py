@@ -35,7 +35,7 @@ logger = logging.getLogger(__name__)
 
 CONTROL_QUEUE = "control"
 GENERATE_QUEUE = "generate"
-GENERATE_VT = 600  # 生成 job 較重，隱形鎖 10 分鐘（> job_timeout_sec 預設 8 分）
+GENERATE_VT = 1100  # 生成 job 較重，隱形鎖 18 分鐘（> job_timeout_sec 預設 15 分）
 CONTROL_VT = 120
 IDLE_SLEEP_SEC = 2.0
 

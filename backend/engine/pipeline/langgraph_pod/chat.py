@@ -276,6 +276,9 @@ class FakeChatModel(BaseChatModel):
         run_manager: Any = None,
         **kwargs: Any,
     ) -> ChatResult:
+        # 先取再 increment：先前 increment 完再取，導致 _next() 看到的 _writer_count
+        # 已經是 1，第一次 ainvoke 永遠拿 index 1（off-by-one）。原本測試只給 1 個
+        # response 沒踩到，現在 outline + 3 段的 writer pool 才有 4 個，明顯出錯。
         resp = self._next()
         self._call_count += 1
         if self.role == "judge":

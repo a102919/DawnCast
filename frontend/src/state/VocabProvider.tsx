@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState, type ReactNode } from 'react'
 import { api, type VocabItem } from '../api'
+import { MASTERED_STATUS } from '../lib/srs'
 import { VocabContext, type VocabContextValue } from './vocabContextValue'
 
 function sm2(quality: number, prevInterval: number, prevEase: number): { interval: number; ease: number } {
@@ -7,6 +8,16 @@ function sm2(quality: number, prevInterval: number, prevEase: number): { interva
   if (quality < 3) return { interval: 1, ease }
   if (prevInterval <= 1) return { interval: 6, ease }
   return { interval: Math.round(prevInterval * prevEase), ease }
+}
+
+// 儲存強度一旦累積到這個間隔天數，視為已精熟（Bjork 雙強度模型：長間隔代表長期記憶已穩固）。
+// 純前端調校旋鈕：跟現有「SM-2 前端算、後端信任存值」同一套分工，之後要調不用動後端。
+const MASTERED_INTERVAL_THRESHOLD = 90
+
+function nextStatus(quality: number, interval: number, prevStatus: number): number {
+  if (quality < 3) return 1 // 忘記了：不管原本是不是已精熟，退回複習池
+  if (interval >= MASTERED_INTERVAL_THRESHOLD) return MASTERED_STATUS
+  return prevStatus
 }
 
 function todayPlusDays(days: number): string {
@@ -63,8 +74,9 @@ export function VocabProvider({ children }: { readonly children: ReactNode }) {
     if (!item) return
     const { interval, ease } = sm2(quality, item.interval ?? 1, item.ease ?? 2.5)
     const nextReview = todayPlusDays(interval)
-    await api.updateVocab(id, { nextReview, interval, ease })
-    setItems(prev => prev.map(v => v.id === id ? { ...v, nextReview, interval, ease } : v))
+    const status = nextStatus(quality, interval, item.status ?? 1)
+    await api.updateVocab(id, { nextReview, interval, ease, status })
+    setItems(prev => prev.map(v => v.id === id ? { ...v, nextReview, interval, ease, status } : v))
   }, [items])
 
   const value: VocabContextValue = {

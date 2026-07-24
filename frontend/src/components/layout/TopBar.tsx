@@ -10,6 +10,8 @@ export function TopBar() {
   const isSettingsActive = pathname.startsWith('/settings')
   const isPlayerPage = pathname.startsWith('/player')
 
+  if (pathname === '/login') return null
+
   return (
     <header className="sticky top-0 z-40 material-thin border-b border-border">
       <div className="h-[env(safe-area-inset-top,0px)]" />

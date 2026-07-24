@@ -17,17 +17,19 @@ Node 邊界規則：
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import re
 import shutil
 import uuid
 from pathlib import Path
-from typing import Any, Literal, TypedDict
+from typing import Any, Literal, TypedDict, cast
 
 from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_core.runnables import RunnableConfig
 from langgraph.graph import END
 from psycopg.errors import ForeignKeyViolation
+from pydantic import ValidationError as PydanticValidationError
 
 from engine.media import (
     EpisodeArtifacts,
@@ -36,11 +38,18 @@ from engine.media import (
 )
 from engine.pipeline.langgraph_pod.prompt import (
     _strip_code_fence,
-    parse_engine_result,
 )
 from shared.config import Settings
-from shared.errors import RateLimitError, SourceFetchError
-from shared.models import JudgeVerdict, ScriptFormat, ScriptJSON, SourceSnippet
+from shared.errors import GenerationError, RateLimitError, SourceFetchError
+from shared.models import (
+    JudgeVerdict,
+    ScriptFormat,
+    ScriptJSON,
+    ScriptLine,
+    ScriptOutline,
+    SourcedFact,
+    SourceSnippet,
+)
 
 from .state import PodState
 
@@ -68,7 +77,10 @@ _LENGTH_TIERS: dict[str, _TierConfig] = {
 
 # CEFR → 語速（wpm）。取代原本寫死的「550-750 字」，用語速反推目標字數，
 # 避免長度加長時語速被迫失真（研究發現：舊寫死值隱含 137-250wpm，超出自然語速）。
-_CEFR_WPM: dict[str, int] = {"A2": 120, "B1": 140, "B2": 150}
+# B1 = 190：三次真實渲染樣本（1015 字/333.15s≈182.8wpm、951 字/309.43s≈184.4wpm、
+# 1003 字/303.19s≈198.5wpm）平均 ~188.6，取 190 略保守估；每次樣本都比上一版
+# 校準值高，顯示先前的值持續低估——A2/B2 尚無真實樣本，維持原值待後續校準。
+_CEFR_WPM: dict[str, int] = {"A2": 120, "B1": 190, "B2": 150}
 
 # CEFR → 等級專屬寫作規範。沒有這塊時 A2 和 B2 拿到一模一樣的指令，
 # 「分級」只剩字數差，聽者感受不到難度差異。
@@ -110,6 +122,95 @@ def _word_target(cefr: str, length_tier: str) -> int:
     wpm = _CEFR_WPM.get(cefr, 140)
     _, hi = _LENGTH_TIERS.get(length_tier, _LENGTH_TIERS["medium"])["minutes"]
     return wpm * hi
+
+
+# 字數下限只用 length_tier 的「下限」分鐘數（不是上限）算：
+# 實測 LLM 對字數目標系統性偏保守（785/1320=59%、1015/1320=77% vs. 上限目標），
+# 逼近上限目標常需要無限重試都達不到；用下限當及格線，才是「這集至少要有下限長度」
+# 這個真正在意的底線，可以透過重寫收斂到位。0.9 的折扣純粹是斷詞誤差的緩衝
+# （text 斷詞用空白，連字號詞如 self-soothing 算一個 token，跟 wpm 的自然語速
+# 假設本來就有些微落差）——不是刻意讓底線低於下限分鐘數，之前 0.85 的折扣太大，
+# 就算 wpm 校準完全準確也會讓音檔系統性地比下限短 15%。
+_MIN_LENGTH_FRACTION = 0.9
+
+
+def _word_floor(cefr: str, length_tier: str) -> int:
+    wpm = _CEFR_WPM.get(cefr, 140)
+    lo, _ = _LENGTH_TIERS.get(length_tier, _LENGTH_TIERS["medium"])["minutes"]
+    return int(wpm * lo * _MIN_LENGTH_FRACTION)
+
+
+def _script_word_count(script: ScriptJSON) -> int:
+    return sum(len(line.text.split()) for line in script.script)
+
+
+def _segment_word_targets(cefr: str, length_tier: str) -> list[tuple[int, bool]]:
+    """回傳 [(字數目標, is_chapter_boundary), ...]。
+
+    短篇不分段（單發呼叫目標字數本來就小，分段只多一層合併風險）；
+    中篇依內部切 3 段純粹控制字數，is_chapter_boundary 全 False（讀起來仍是單線
+    推進，不出現 chapter 轉場語言）；長篇依 chapters 數，is_chapter_boundary 用
+    True 對齊既有 _structure_block 對 long tier 的 chapter 轉場語意。
+
+    每段目標字數加總精準等於 _word_target 上限（餘數併入最後一段），
+    確保跟現有「整集字數目標」語意一致，不引入可見的長度漂移。
+    """
+    tier = _LENGTH_TIERS.get(length_tier, _LENGTH_TIERS["medium"])
+    chapters = tier["chapters"]
+
+    if chapters <= 1:
+        # short / medium 都不分章。short 整集一發；medium 為了字數控制切成 3 段
+        # 但關係圖讀起來仍是單線，所以 is_chapter_boundary=False。
+        if length_tier == "short":
+            return [(_word_target(cefr, length_tier), False)]
+        n_segments = 3
+        targets = [(_word_target(cefr, length_tier) // n_segments, False)] * n_segments
+        # 餘數併入最後一段，避免加總漂移。
+        remainder = _word_target(cefr, length_tier) - sum(t for t, _ in targets)
+        targets[-1] = (targets[-1][0] + remainder, False)
+        return targets
+
+    # long tier：段數 = chapters，is_chapter_boundary 全 True。
+    n_segments = chapters
+    targets = [(_word_target(cefr, length_tier) // n_segments, True)] * n_segments
+    remainder = _word_target(cefr, length_tier) - sum(t for t, _ in targets)
+    targets[-1] = (targets[-1][0] + remainder, True)
+    return targets
+
+
+def _build_lemma_pool(text: str) -> set[str]:
+    """共用 helper：把一段 text 斷詞、lemmatize、回傳所有候選 lemma 的集合。
+
+    ScriptJSON._target_vocab_appears_in_script 與段落層級的 vocab 檢查都用這套
+    規則，避免兩處邏輯漂移。
+    """
+    from shared.lemmatize import lemmatize  # noqa: PLC0415
+
+    pool: set[str] = set()
+    for token in re.findall(r"[A-Za-z']+", text.casefold()):
+        pool.update(lemmatize(token))
+    return pool
+def _vocab_words_present(text: str, vocab_words: list[str]) -> list[str]:
+    """回傳「在 text 裡沒出現（含詞形變化都沒有）」的 vocab_words。空 list = 全部命中。"""
+    pool = _build_lemma_pool(text)
+    missing: list[str] = []
+    for w in vocab_words:
+        w_lower = w.casefold()
+        if " " in w_lower or "-" in w_lower:
+            parts = [p for p in re.split(r"[\s-]+", w_lower) if p]
+            if not all(p in pool for p in parts):
+                missing.append(w)
+        elif w_lower not in pool:
+            missing.append(w)
+    return missing
+
+
+def _first_duplicate_adjacent_zh(lines: list[ScriptLine]) -> int | None:
+    """回傳第一個跟前一行的 zh 完全相同的 index；None = 沒有重複。"""
+    for i in range(1, len(lines)):
+        if lines[i].zh == lines[i - 1].zh:
+            return i
+    return None
 
 
 # ── 對應 config["configurable"] 的 runtime context ─────────
@@ -253,7 +354,10 @@ def _structure_block(length_tier: str) -> str:
         f"# STRUCTURE\n"
         f"- 目標字彙 {vocab_lo}-{vocab_hi} 個，隨內容自然帶出（不要開頭一次列完）；"
         "長篇可額外加 3-5 個高價值加碼字，但既有字彙數不因長度增加而膨脹"
-        "（多出的時間用來對同一組字彙做不同語境的重複）。\n"
+        "（多出的時間用來對同一組字彙做不同語境的重複）。"
+        "每個列進 target_vocab 的字都必須真的出現在對話 text 裡（含詞形變化，"
+        "例如 escalate/escalated/escalating 算同一個字算出現過）；沒有真的用到"
+        "就不要列進 target_vocab，這是硬性規則，會被程式檢查。\n"
         f"{chapter_line}\n{recap_line}"
     )
 
@@ -285,7 +389,48 @@ def _sources_block(sources: list[SourceSnippet], avoid_facts: tuple[str, ...] = 
     return "\n".join(lines)
 
 
-def _build_pod_messages(
+def _shared_style_prefix(
+    *,
+    cefr: str,
+    tone: str,
+    format: ScriptFormat,
+    avoid_facts: tuple[str, ...] = (),
+) -> str:
+    """outline / segment 兩個 builder 共用的前半段：角色設定 + 觀眾 + 必備風格。
+
+    把 _build_pod_messages 原本一長串的常數拼裝共用、抽出來——同一份風格指令不要
+    在兩個 builder 各自重複一份，免得哪邊改了另一邊沒跟上。HOOK / EXPLAINER /
+    voice / BAN_LIST 是兩個 builder 都要的硬規範，集中在這裡；`length_tier` /
+    `sources` / `structure_block` 是 outline/segment 各自專屬的組件，不放這裡。
+    """
+    tones_block = _TONE_BLOCKS.get(tone, _TONE_BLOCKS["playful"])
+    cefr_guide = _CEFR_GUIDE.get(cefr, _CEFR_GUIDE["B1"])
+
+    if format == "monologue":
+        cast_line = "Write a solo narration by ONE host: Nova, speaking directly to the listener."
+        voice_block = _MONOLOGUE_VOICE
+    else:
+        cast_line = "Write a natural, friendly conversation between TWO hosts: Alex and Sarah."
+        voice_block = _DIALOGUE_CHEMISTRY
+
+    avoid_lines: list[str] = []
+    if avoid_facts:
+        avoid_lines.append("Do NOT repeat these facts already covered:")
+        avoid_lines.extend(f"- {f}" for f in avoid_facts)
+    avoid_block = "\n".join(avoid_lines) if avoid_lines else "(none)"
+
+    return (
+        f"You are the head writer for DawnCast, a daily English-learning podcast. {cast_line}\n\n"
+        f"# AUDIENCE & LEVEL\n- CEFR {cefr}. {cefr_guide}\n\n"
+        f"{tones_block}\n"
+        f"{_HOOK_TECHNIQUES}"
+        f"{_EXPLAINER_SPINE}"
+        f"{voice_block}"
+        f"{_BAN_LIST.format(avoid_block=avoid_block)}"
+    )
+
+
+def _build_outline_messages(
     *,
     canonical_topic: str,
     big_topic: str,
@@ -293,97 +438,203 @@ def _build_pod_messages(
     angle: str,
     cefr: str,
     tone: str,
-    length_tier: str = "medium",
-    format: ScriptFormat = "dialogue",
-    sources: list[SourceSnippet] | None = None,
-    avoid_summary: str | None,
+    length_tier: str,
+    format: ScriptFormat,
+    sources: list[SourceSnippet] | None,
     avoid_facts: tuple[str, ...],
     feedback: list[str] | None = None,
 ) -> list[dict[str, str]]:
-    """組 system + user messages；feedback 非空時追加 rewrite 指令。"""
-    angles = {
-        "定義": "這是什麼、核心概念入門",
-        "人物故事": "關鍵人物 / 真實案例切入",
-        "常見誤解": "破除迷思、澄清誤會",
-        "應用場景": "日常生活 / 職場怎麼用上",
-        "歷史": "起源與演變",
-        "對比": "與相似概念的差異",
-    }
-    angle_desc = angles.get(angle, "")
-    tones_block = _TONE_BLOCKS.get(tone, _TONE_BLOCKS["playful"])
-    lo, hi = _LENGTH_TIERS.get(length_tier, _LENGTH_TIERS["medium"])["minutes"]
-    word_target = _word_target(cefr, length_tier)
+    """大綱 LLM 呼叫：只規劃「哪些內容切到哪幾段、各段帶哪些字彙」，不寫對話。
 
-    avoid_lines = []
-    if avoid_facts:
-        avoid_lines.append("Do NOT repeat these facts already covered:")
-        avoid_lines.extend(f"- {f}" for f in avoid_facts)
-    if avoid_summary:
-        avoid_lines.append(f"Previous summary: {avoid_summary}")
-    avoid_block = "\n".join(avoid_lines) if avoid_lines else "(none)"
+    段落字數由 _segment_word_targets 算好直接餵給 prompt（避免 LLM 自己猜字數
+    又系統性偏保守）。失敗重試走 _MAX_OUTLINE_RETRIES 固定 2 次（純 parse fix），
+    耗盡才 raise 給外層 RetryPolicy；不佔用 _MAX_CONTRACT_RETRIES 額度。
+    """
+    targets = _segment_word_targets(cefr, length_tier)
+    n = len(targets)
 
-    if format == "monologue":
-        cast_line = "Write a solo narration by ONE host: Nova, speaking directly to the listener."
-        voice_block = _MONOLOGUE_VOICE
-        few_shots = _FEW_SHOTS_MONOLOGUE
-        schema_speaker = '"Nova"'
-    else:
-        cast_line = "Write a natural, friendly conversation between TWO hosts: Alex and Sarah."
-        voice_block = _DIALOGUE_CHEMISTRY
-        few_shots = _FEW_SHOTS_DIALOGUE
-        schema_speaker = '"Alex"|"Sarah"'
+    bullets = "\n".join(
+        (
+            f"- Segment {i + 1}: about {t} English words, "
+            + (
+                "chapter boundary（前面加 transition 句，pause_before=true）"
+                if boundary
+                else "continue seamlessly from the previous segment"
+            )
+        )
+        for i, (t, boundary) in enumerate(targets)
+    )
 
-    cefr_guide = _CEFR_GUIDE.get(cefr, _CEFR_GUIDE["B1"])
+    target_vocab_size = _LENGTH_TIERS.get(length_tier, _LENGTH_TIERS["medium"])["vocab"][1]
+    avoid_lines = list(avoid_facts) if avoid_facts else []
+
     system = (
-        f"You are the head writer for DawnCast, a daily English-learning podcast. {cast_line}\n\n"
-        f"# AUDIENCE & LEVEL\n- CEFR {cefr}. {cefr_guide}\n\n"
-        f"# LENGTH\n- {lo}-{hi} minutes spoken, about {word_target} English words total.\n\n"
-        f"# ANGLE\n- {angle}（{angle_desc}）— 全集都圍繞這個角度。\n\n"
-        "# BILINGUAL\n- Every line MUST have `zh` in natural Taiwan Mandarin (台灣正體中文), "
-        "translate the meaning naturally, NOT word-for-word.\n\n"
-        "# TITLE\n- `topic_zh`：一句吸引人的中文標題（台灣正體中文），"
-        "呈現這集的角度與鉤子，不是 `topic` 的逐字翻譯。\n\n"
-        "# CATEGORY\n"
-        "- `category` MUST be exactly one of: tech, business, culture, science.\n"
-        "- Classify the FINAL episode by its dominant subject and main takeaway: "
-        "tech = technology/software/AI; business = companies/markets/economics/work; "
-        "culture = arts/media/society/language/customs; "
-        "science = natural science/medicine/research.\n"
-        "- For overlap, choose the category needed to understand the main takeaway. "
-        "Do not classify by entry mode, format, or the first listed input topic.\n\n"
-        "# OUTPUT\n- Output ONLY the JSON object. No markdown, no code fences, no commentary.\n\n"
-        f"{tones_block}\n"
-        f"{_HOOK_TECHNIQUES}"
-        f"{_EXPLAINER_SPINE}"
-        f"{voice_block}"
-        f"{_BAN_LIST.format(avoid_block=avoid_block)}"
-        f"{_structure_block(length_tier)}\n\n"
-        f"{few_shots}"
-        f"{_sources_block(sources or [], avoid_facts)}\n\n"
+        _shared_style_prefix(
+            cefr=cefr,
+            tone=tone,
+            format=format,
+            avoid_facts=avoid_facts,
+        )
+        + "\n\n"
+        + _structure_block(length_tier)
+        + "\n\n"
+        + f"# OUTLINE TASK\n"
+        f"Plan this episode by splitting the content into exactly {n} segments.\n"
+        f"Each segment's English word target is FIXED below（don't deviate）:\n"
+        f"{bullets}\n\n"
+        f"For each segment give a `focus` (1-2 sentences of what this segment covers)"
+        f" and a `vocab_words` list (subset of target_vocab for this segment).\n"
+        f"`vocab_words` 必須真的是 target_vocab 裡的字，不能憑主題聯想列字（這是硬性規則）。"
+        f" 全集合計 target_vocab 數量上限 {target_vocab_size} 個。\n\n"
+        f"# SOURCES\n{_sources_block(sources or [], avoid_facts)}\n\n"
         "JSON SCHEMA (must match exactly):\n"
         '{"topic": str, "topic_zh": str, '
         '"category": "tech"|"business"|"culture"|"science", '
         '"extracted_facts": [{"claim": str, "source_ids": [str]}], '
         '"target_vocab": [{"word": str, "explanation": str}], '
-        f'"format": "{format}", '
-        '"script": [{"speaker": ' + schema_speaker + ', "text": str, "zh": str, '
-        '"pause_before": bool}]}'
+        f'"segments": [{{"focus": str, "vocab_words": [str]}}]}}\n'
+        "Output ONLY the JSON object. No markdown, no code fences, no commentary."
     )
 
     user_parts = [
-        "Write today's episode.",
+        "Plan today's episode.",
         f"- Canonical topic: {canonical_topic}",
         f"- Big topic: {big_topic}",
         f"- Topic type: {topic_type}",
-        f"- Angle: {angle}（{angle_desc}）",
+        f"- Angle: {angle}",
     ]
+    # avoid_facts 一定要在 system 裡也帶一次（不只是 user）：_sources_block 在
+    # sources 空時就不輸出任何東西，避免只能靠 user 帶的「AVOID」段；
+    # 之前修舊版 _build_pod_messages 那時就放過這個坑（commit 524 系），
+    # 升級 outline builder 時這條規則沒自動繼承下去。
+    if avoid_lines:
+        user_parts.append("\nAVOID these facts (already covered in previous episodes):")
+        user_parts.extend(f"- {f}" for f in avoid_lines)
     if feedback:
-        user_parts.append("\nREVISION INSTRUCTIONS from quality judge:")
+        user_parts.append("\nREVISION INSTRUCTIONS:")
         user_parts.extend(f"- {line}" for line in feedback)
-        user_parts.append(
-            "\nRewrite the script incorporating the above. Keep the same topic/angle."
-        )
+        user_parts.append("\nRe-output the JSON outline.")
     user_parts.append("\nReturn the JSON object now.")
+
+    return [
+        {"role": "system", "content": system},
+        {"role": "user", "content": "\n".join(user_parts)},
+    ]
+
+
+def _build_segment_messages(
+    *,
+    canonical_topic: str,
+    big_topic: str,
+    topic_type: str,
+    angle: str,
+    cefr: str,
+    tone: str,
+    length_tier: str,
+    format: ScriptFormat,
+    sources: list[SourceSnippet] | None,
+    avoid_facts: tuple[str, ...],
+    segment_index: int,
+    segment_count: int,
+    segment_focus: str,
+    segment_vocab: list[str],
+    segment_word_target: int,
+    is_chapter_boundary: bool,
+    is_final_segment: bool,
+    previous_tail_lines: list[ScriptLine],
+    extracted_facts: list[SourcedFact] | None = None,
+    feedback: list[str] | None = None,
+) -> list[dict[str, str]]:
+    """單段擴寫 LLM 呼叫：只負責這段的對話內容，不重複 topic/vocab/facts。
+
+    前後接續：帶上一段最後 2-3 行原文（不是整段全文，省 token）讓 LLM 從那裡
+    繼續寫，避免話題/語氣斷裂或內容重複。中間段禁止「重新開場」、「總結轉場」；
+    chapter boundary 段例外，保留既有 chapter 轉場語意。
+
+    extracted_facts 從 outline 帶過來，讓這段寫稿不自創/扭曲已核准的事實；
+    不帶時退化（舊呼叫端/Mock 測試可能不傳，行為不變）。
+    """
+    prev_tail = previous_tail_lines[-3:] if previous_tail_lines else []
+    prev_text = "\n".join(f"{ln.speaker}: {ln.text}" for ln in prev_tail)
+
+    if segment_index == 0:
+        position_block = (
+            "This is the **FIRST** segment of the episode. "
+            "Open with one of the hook techniques (curiosity gap / in medias res / "
+            "counter-intuitive stat / character-led). Do NOT use a generic intro."
+        )
+    elif is_final_segment:
+        position_block = (
+            "This is the **FINAL** segment. Land the payoff, then add a short recap "
+            "of the main takeaway for the listener."
+        )
+    elif is_chapter_boundary:
+        position_block = (
+            "This is a **chapter boundary** segment. Start with a brief reset/transition "
+            "sentence (回顧前段 + 一句話帶到這段), and set `pause_before: true` on the first line."
+        )
+    else:
+        position_block = (
+            "This is a **middle** segment. Continue directly from the previous segment's "
+            "ending — do NOT re-open, do NOT summarize what came before, do NOT add a "
+            "transition sentence. Just keep the conversation going."
+        )
+
+    schema_speaker = '"Nova"' if format == "monologue" else '"Alex"|"Sarah"'
+    few_shots = _FEW_SHOTS_MONOLOGUE if format == "monologue" else _FEW_SHOTS_DIALOGUE
+
+    system = (
+        _shared_style_prefix(
+            cefr=cefr,
+            tone=tone,
+            format=format,
+            avoid_facts=avoid_facts,
+        )
+        + "\n\n"
+        + "# BILINGUAL\n"
+        "- Every line MUST have `zh` in natural Taiwan Mandarin (台灣正體中文), "
+        "translate the meaning naturally, NOT word-for-word.\n"
+        "- `zh` 只能翻譯「這一行自己的」`text`，禁止把下一行的內容提前挪進這一行的 zh，"
+        "也禁止兩個連續行的 zh 一模一樣（這是程式會擋下來的硬性規則）。\n\n"
+        "# SOURCES\n"
+        f"{_sources_block(sources or [], avoid_facts)}\n\n"
+        f"{few_shots}\n\n"
+        "JSON SCHEMA (must match exactly, ONLY the script array):\n"
+        '{"script": [{"speaker": ' + schema_speaker + ', "text": str, "zh": str, '
+        '"pause_before": bool}]}\n'
+        "Output ONLY the JSON object. No markdown, no code fences, no commentary."
+    )
+
+    user_parts = [
+        f"Write segment {segment_index + 1} of {segment_count}.",
+        f"- Canonical topic: {canonical_topic}",
+        f"- Big topic: {big_topic}",
+        f"- Topic type: {topic_type}",
+        f"- Angle: {angle}",
+        f"\n# THIS SEGMENT\n"
+        f"- Focus: {segment_focus}\n"
+        f"- Word target: ~{segment_word_target} English words (this segment only)\n"
+        f"- Vocab words to weave in naturally: {segment_vocab or '(none)'}\n"
+        f"\n# POSITION\n{position_block}\n",
+    ]
+    if extracted_facts:
+        facts_lines = "\n".join(
+            f"- {f.claim}" + (f" [{', '.join(f.source_ids)}]" if f.source_ids else "")
+            for f in extracted_facts
+        )
+        user_parts.append(
+            f"\n# APPROVED FACTS（這集大綱已核准的事實，腳本內容不得與其牴觸）\n{facts_lines}\n"
+        )
+    if prev_text:
+        user_parts.append(
+            f"\n# PREVIOUS SEGMENT (last 3 lines, continue from here):\n{prev_text}\n"
+        )
+    if feedback:
+        user_parts.append("\nREVISION INSTRUCTIONS:")
+        user_parts.extend(f"- {line}" for line in feedback)
+        user_parts.append("\nRewrite this segment incorporating the above.")
+    user_parts.append("\nReturn the JSON object now.")
+    # few-shots 透過 system 帶在頂部不需要再進 user_parts（保持 user 乾淨）
 
     return [
         {"role": "system", "content": system},
@@ -463,50 +714,537 @@ def tone_selector_node(state: PodState, config: RunnableConfig) -> dict[str, Any
 
 # ── Node 2: write_script ─────────────────────────────────
 
+# 兩層重試樹的兩個常數：
+# - 大綱生成失敗（例如 LLM 沒按 schema）：純 parse fix，原地重試 2 次就夠，重多了
+#   只是浪費 token；耗盡才 raise 給 graph.py 的 _WRITER_RETRY 當最後防線。
+# - 整集合併後契約/字數沒過：大綱內容沒問題（內容規劃對），所以大綱不重打，
+#   只重打段落並動態調高每段字數目標。原本 5 次：分段後 LLM 對單段目標更容易
+#   達標，預期 Level 1 段落內重試擋掉大部分修法，Level 2 觸發頻率會明顯降，
+#   拉回 3 次跟使用者「不用省 token」但避免無謂燒錢的平衡點。
+_MAX_OUTLINE_RETRIES = 2
+_MAX_CONTRACT_RETRIES = 3
+# 段落層級 vocab/zh 修不好的額外重打上限。Level 1 是便宜的重試（單段而已），
+# 給 2 次額度讓 LLM 有機會自己修正；超過就 raise 出去，讓 Level 2 整輪重打。
+_MAX_SEGMENT_RETRIES = 2
 
-async def _invoke_writer(
-    chat: Any, state: PodState, settings: Settings, *, engine_label: str, usage_node: str
-) -> dict[str, Any]:
-    """primary / failover 共用的寫稿呼叫：組 prompt → 打 LLM → 解析。
 
-    RateLimitError → 回 rate_limited=True 讓 conditional edge 路由，不 raise。
-    GenerationError 照樣 propagate 給 RetryPolicy（max_attempts=3 防重生風暴）。
+def _parse_outline(raw_text: str) -> ScriptOutline:
+    """剝 code fence → 驗證成 ScriptOutline。
+
+    結構性失敗（schema 不符 / vocab_words 不在 target_vocab 裡）一律 raise
+    GenerationError，讓 _invoke_writer 觸發 _MAX_OUTLINE_RETRIES 級重試。
+    不負責量測 token usage（由 caller 累加）。
     """
-    msgs = _build_pod_messages(
+    cleaned = _strip_code_fence(raw_text)
+    try:
+        return ScriptOutline.model_validate_json(cleaned)
+    except (PydanticValidationError, json.JSONDecodeError) as exc:
+        raise GenerationError(f"大綱回應無法解析成合法 ScriptOutline：{exc}") from exc
+
+
+def _parse_segment_script(raw_text: str) -> list[ScriptLine]:
+    """剝 code fence → 解出這一段的 script 陣列。
+
+    結構性失敗一律 raise GenerationError。返回 list[ScriptLine] 而非 ScriptJSON
+    是因為段落層級只在意對話本身，topic/category/vocab 那些在大綱定案。
+    """
+    cleaned = _strip_code_fence(raw_text)
+    try:
+        data = json.loads(cleaned)
+        script_data = data["script"]
+    except (json.JSONDecodeError, KeyError, TypeError) as exc:
+        raise GenerationError(f"段落回應不是合法 JSON 物件含 script 陣列：{exc}") from exc
+    try:
+        return [ScriptLine.model_validate(ln) for ln in script_data]
+    except PydanticValidationError as exc:
+        raise GenerationError(f"段落 script 行驗證失敗：{exc}") from exc
+
+
+def _merge_outline_and_segments(
+    outline: ScriptOutline,
+    segment_scripts: list[list[ScriptLine]],
+    fmt: ScriptFormat,
+) -> ScriptJSON:
+    """把大綱的 metadata + 各段 script 合併成完整 ScriptJSON。
+
+    走 full ScriptJSON.model_validate，所以 _speakers_match_format /
+    _no_duplicate_adjacent_zh / _target_vocab_appears_in_script 三個既有
+    validator 會自動對合併後的全文跑一次，天然接住段落邊界交界處的問題
+    （例如邊界兩行 zh 恰好重複、整集合併後 vocab 才命中）。
+    """
+    if len(segment_scripts) != len(outline.segments):
+        raise ValueError(
+            f"段落數量 {len(segment_scripts)} 與大綱 segments {len(outline.segments)} 不符"
+        )
+    merged_lines: list[ScriptLine] = []
+    for seg_lines in segment_scripts:
+        merged_lines.extend(seg_lines)
+    payload = {
+        "topic": outline.topic,
+        "topic_zh": outline.topic_zh,
+        "category": outline.category,
+        "extracted_facts": [f.model_dump() for f in outline.extracted_facts],
+        "target_vocab": [v.model_dump() for v in outline.target_vocab],
+        "script": [ln.model_dump() for ln in merged_lines],
+        "format": fmt,
+    }
+    return ScriptJSON.model_validate(payload)
+
+
+async def _generate_outline(
+    chat: Any,
+    state: PodState,
+    settings: Settings,
+    *,
+    engine_label: str,
+    usage_node: str,
+    cefr: str,
+    length_tier: str,
+    feedback: list[str] | None = None,
+) -> tuple[ScriptOutline, dict[str, Any], dict[str, int]]:
+    """打 LLM 產大綱。回傳 (outline, usage_metadata_by_call, total_usage)。
+
+    失敗重試 _MAX_OUTLINE_RETRIES 次（純 parse fix），耗盡 raise GenerationError
+    給外層 RetryPolicy 接手。RateLimitError 改回傳特殊 sentinel 給 caller 路由。
+    """
+    msgs = _build_outline_messages(
         canonical_topic=state["canonical_topic"],
         big_topic=state["big_topic"],
         topic_type=state["topic_type"],
         angle=state["angle"],
-        cefr=state.get("cefr") or settings.cefr_level,
+        cefr=cefr,
         tone=state.get("tone", "playful"),
-        length_tier=state.get("length_tier") or "medium",
+        length_tier=length_tier,
         format=state.get("format", "dialogue"),
         sources=state.get("sources"),
-        avoid_summary=None,
         avoid_facts=tuple(state.get("avoid_facts") or ()),
-        feedback=state.get("judge_feedback") or None,
+        feedback=feedback,
     )
 
-    try:
-        ai_msg = await chat.ainvoke(_to_lc_messages(msgs))
-    except RateLimitError:
-        logger.warning("%s 撞限流 big_topic=%s", usage_node, state["big_topic"])
-        return {"rate_limited": True, "engine_used": engine_label}
+    last_exc: GenerationError | None = None
+    total_usage = {"input_tokens": 0, "output_tokens": 0}
+    for attempt in range(_MAX_OUTLINE_RETRIES + 1):
+        try:
+            ai_msg = await chat.ainvoke(_to_lc_messages(msgs))
+        except RateLimitError:
+            logger.warning("%s 撞限流 big_topic=%s (outline)", usage_node, state["big_topic"])
+            raise
 
-    usage = _usage_from_ai_msg(ai_msg)
-    result = parse_engine_result(
-        ai_msg.content,
-        engine=(
-            engine_label if engine_label == "failover" else getattr(chat, "_llm_type", "chat")
-        ),
-        model=getattr(chat, "model", "unknown"),
-        usage=usage,
+        usage = _usage_from_ai_msg(ai_msg)
+        total_usage["input_tokens"] += cast(int, usage.get("input_tokens", 0))
+        total_usage["output_tokens"] += cast(int, usage.get("output_tokens", 0))
+
+        try:
+            return _parse_outline(ai_msg.content), usage, total_usage
+        except GenerationError as exc:
+            last_exc = exc
+            logger.warning(
+                "%s outline 第 %d/%d 次解析失敗 big_topic=%s: %s",
+                usage_node,
+                attempt + 1,
+                _MAX_OUTLINE_RETRIES + 1,
+                state["big_topic"],
+                exc,
+            )
+            if attempt < _MAX_OUTLINE_RETRIES:
+                msgs = _build_outline_messages(
+                    canonical_topic=state["canonical_topic"],
+                    big_topic=state["big_topic"],
+                    topic_type=state["topic_type"],
+                    angle=state["angle"],
+                    cefr=cefr,
+                    tone=state.get("tone", "playful"),
+                    length_tier=length_tier,
+                    format=state.get("format", "dialogue"),
+                    sources=state.get("sources"),
+                    avoid_facts=tuple(state.get("avoid_facts") or ()),
+                    feedback=[f"上一版大綱無法解析成合法結構：{exc}"],
+                )
+                continue
+    assert last_exc is not None
+    raise last_exc
+
+
+async def _generate_segment(  # type: ignore[return]
+    chat: Any,
+    state: PodState,
+    settings: Settings,
+    *,
+    engine_label: str,
+    usage_node: str,
+    cefr: str,
+    length_tier: str,
+    segment_index: int,
+    segment_count: int,
+    segment_focus: str,
+    segment_vocab: list[str],
+    segment_word_target: int,
+    is_chapter_boundary: bool,
+    is_final_segment: bool,
+    previous_tail_lines: list[ScriptLine],
+    extracted_facts: list[SourcedFact] | None = None,
+    feedback: list[str] | None = None,
+) -> tuple[list[ScriptLine], dict[str, int]]:
+    """打 LLM 寫單段對話。回傳 (script_lines, total_usage_for_this_segment)。
+
+    Level 1 段落內重試：每段生成完立刻做《段內 vocab 命中 + 段內 zh 不重複》
+    兩項檢查，沒過帶著具體錯誤內容重打這一段，上限 _MAX_SEGMENT_RETRIES 次。
+    RateLimitError 讓 _invoke_writer 整段路由（不 raise 自身）。
+    """
+    fmt = state.get("format", "dialogue")
+    msgs = _build_segment_messages(
+        canonical_topic=state["canonical_topic"],
+        big_topic=state["big_topic"],
+        topic_type=state["topic_type"],
+        angle=state["angle"],
+        cefr=cefr,
+        tone=state.get("tone", "playful"),
+        length_tier=length_tier,
+        format=fmt,
+        sources=state.get("sources"),
+        avoid_facts=tuple(state.get("avoid_facts") or ()),
+        segment_index=segment_index,
+        segment_count=segment_count,
+        segment_focus=segment_focus,
+        segment_vocab=segment_vocab,
+        segment_word_target=segment_word_target,
+        is_chapter_boundary=is_chapter_boundary,
+        is_final_segment=is_final_segment,
+        previous_tail_lines=previous_tail_lines,
+        extracted_facts=extracted_facts,
+        feedback=feedback,
+    )
+
+    total_usage = {"input_tokens": 0, "output_tokens": 0}
+    last_exc: GenerationError | None = None
+    for attempt in range(_MAX_SEGMENT_RETRIES + 1):
+        try:
+            ai_msg = await chat.ainvoke(_to_lc_messages(msgs))
+        except RateLimitError:
+            logger.warning(
+                "%s 撞限流 big_topic=%s (segment %d/%d)",
+                usage_node,
+                state["big_topic"],
+                segment_index + 1,
+                segment_count,
+            )
+            raise
+
+        usage = _usage_from_ai_msg(ai_msg)
+        total_usage["input_tokens"] += cast(int, usage.get("input_tokens", 0))
+        total_usage["output_tokens"] += cast(int, usage.get("output_tokens", 0))
+
+        try:
+            lines = _parse_segment_script(ai_msg.content)
+        except GenerationError as exc:
+            last_exc = exc
+            logger.warning(
+                "%s segment %d/%d 第 %d 次解析失敗 big_topic=%s: %s",
+                usage_node,
+                segment_index + 1,
+                segment_count,
+                attempt + 1,
+                state["big_topic"],
+                exc,
+            )
+            if attempt < _MAX_SEGMENT_RETRIES:
+                msgs = _build_segment_messages(
+                    canonical_topic=state["canonical_topic"],
+                    big_topic=state["big_topic"],
+                    topic_type=state["topic_type"],
+                    angle=state["angle"],
+                    cefr=cefr,
+                    tone=state.get("tone", "playful"),
+                    length_tier=length_tier,
+                    format=fmt,
+                    sources=state.get("sources"),
+                    avoid_facts=tuple(state.get("avoid_facts") or ()),
+                    segment_index=segment_index,
+                    segment_count=segment_count,
+                    segment_focus=segment_focus,
+                    segment_vocab=segment_vocab,
+                    segment_word_target=segment_word_target,
+                    is_chapter_boundary=is_chapter_boundary,
+                    is_final_segment=is_final_segment,
+                    previous_tail_lines=previous_tail_lines,
+                    extracted_facts=extracted_facts,
+                    feedback=[f"上一版這段 JSON 解析失敗：{exc}"],
+                )
+                continue
+            raise
+
+        # Level 1 段落內檢查：vocab 命中 + 段內 zh 不重複。
+        seg_text = " ".join(ln.text for ln in lines)
+        missing_vocab = _vocab_words_present(seg_text, segment_vocab)
+        dup_idx = _first_duplicate_adjacent_zh(lines)
+        if not missing_vocab and dup_idx is None:
+            return lines, total_usage
+
+        feedback_msgs: list[str] = []
+        if missing_vocab:
+            feedback_msgs.append(
+                f"這段應該用到的 vocab 沒真的寫進對話（含詞形變化都沒有）：{missing_vocab}"
+            )
+        if dup_idx is not None:
+            feedback_msgs.append(
+                f"script[{dup_idx}] 與 script[{dup_idx - 1}] 的 zh 完全相同"
+                "（中英對齊漂移，必須重寫）"
+            )
+        logger.warning(
+            "%s segment %d/%d Level 1 檢查失敗 big_topic=%s: %s",
+            usage_node,
+            segment_index + 1,
+            segment_count,
+            state["big_topic"],
+            feedback_msgs,
+        )
+        last_exc = GenerationError(f"段落 {segment_index + 1} 段內契約失敗：{feedback_msgs}")
+        if attempt < _MAX_SEGMENT_RETRIES:
+            msgs = _build_segment_messages(
+                canonical_topic=state["canonical_topic"],
+                big_topic=state["big_topic"],
+                topic_type=state["topic_type"],
+                angle=state["angle"],
+                cefr=cefr,
+                tone=state.get("tone", "playful"),
+                length_tier=length_tier,
+                format=fmt,
+                sources=state.get("sources"),
+                avoid_facts=tuple(state.get("avoid_facts") or ()),
+                segment_index=segment_index,
+                segment_count=segment_count,
+                segment_focus=segment_focus,
+                segment_vocab=segment_vocab,
+                segment_word_target=segment_word_target,
+                is_chapter_boundary=is_chapter_boundary,
+                is_final_segment=is_final_segment,
+                previous_tail_lines=previous_tail_lines,
+                extracted_facts=extracted_facts,
+                feedback=feedback_msgs,
+            )
+            continue
+        # mypy 不追蹤「for 跑完 last_exc 必非 None」這個 invariant——assert 在 strict
+        # 模式不會 narrow，raise last_exc 在 mypy 看來仍可能為 None。
+        assert last_exc is not None
+        raise last_exc
+
+
+async def _invoke_writer(
+    chat: Any, state: PodState, settings: Settings, *, engine_label: str, usage_node: str
+) -> dict[str, Any]:
+    """primary / failover 共用的寫稿呼叫：outline 1 次 + 分段 N 次。
+
+    兩層重試樹：
+      Level 1（段落內，便宜）：每段生成完立刻檢查 vocab 命中 + 段內 zh 不重複，
+        沒過重打「這一段」最多 _MAX_SEGMENT_RETRIES 額度。
+      Level 2（合併後，整集）：所有段落過關後合併成 ScriptJSON，走現有三個
+        model_validator；任一沒過或總字數 < word_floor → 重打「全部段落」
+        最多 _MAX_CONTRACT_RETRIES 額度，並把每段字數目標依短缺比例調高
+        （大綱不重打，內容規劃對，只是字數擴寫沒到位）。
+
+    RateLimitError 任何階段都 raise 給 _invoke_writer 入口的 try/except 接住，
+    回 rate_limited=True 給 conditional edge 路由。
+
+    額度用完仍偏短 → 用歷來最長的一版出稿（best-draft fallback），不 raise
+    讓整集生成失敗（字數是軟性品質目標）。
+    """
+    base_feedback = list(state.get("judge_feedback") or [])
+    total_usage = {"input_tokens": 0, "output_tokens": 0}
+    cefr = state.get("cefr") or settings.cefr_level
+    length_tier = state.get("length_tier") or "medium"
+    fmt = state.get("format", "dialogue")
+    word_floor = _word_floor(cefr, length_tier)
+
+    best_result: ScriptJSON | None = None
+    best_word_count = -1
+
+    # 第一階段：生大綱（純結構性 parse fix，重試極少）
+    outline: ScriptOutline | None = None
+    try:
+        outline, _, outline_usage = await _generate_outline(
+            chat,
+            state,
+            settings,
+            engine_label=engine_label,
+            usage_node=usage_node,
+            cefr=cefr,
+            length_tier=length_tier,
+            feedback=base_feedback or None,
+        )
+    except RateLimitError:
+        return {"rate_limited": True, "engine_used": engine_label}
+    total_usage["input_tokens"] += outline_usage["input_tokens"]
+    total_usage["output_tokens"] += outline_usage["output_tokens"]
+    assert outline is not None
+
+    # 第二階段：分段 → 合併 → Level 2 驗證，重打可調整每段字數目標
+    adjuster = 1.0
+    last_exc: GenerationError | None = None
+    word_total = _word_target(cefr, length_tier)
+    # 段落分配基準：均分 word_total 到 outline.segments，每段都標 boundary=False（這裡
+    # 只管字數；chaper 邊界語意由 prompt 端 is_chapter_boundary 處理，底下 round 內
+    # 依 long tier 決定）。sections 數量由 outline 決定，不寫死。
+    n_segments = len(outline.segments)
+    base_segment_words = [(max(1, word_total // n_segments), False)] * n_segments
+    base_segment_words[-1] = (
+        base_segment_words[-1][0] + (word_total - word_total // n_segments * n_segments),
+        False,
+    )
+    # long tier 把所有段都標成 chapter boundary（_build_segment_messages 看 is_chapter_boundary
+    # 決定要不要加 transition + pause_before）。
+    if length_tier == "long":
+        base_segment_words = [(w, True) for w, _ in base_segment_words]
+
+    for round_idx in range(_MAX_CONTRACT_RETRIES):
+        targets = [
+            (max(1, int(w * adjuster)), boundary) for (w, boundary) in base_segment_words
+        ]
+        # 動態調高後仍維持加總對齊到 word_total（不引入可見長度漂移）。
+        # 但 adjuster > 1 時 sum 已經超過 word_total，剩餘量為負，硬補會把最後一段
+        # 變成負數（實測 adjuster=2 → 末段變 -504，_generate_segment 那邊 max(1,…) 才
+        # 救回，但 prompt 看到的負 target 已經失真）。改寫：remainder 不夠時寧可放寬
+        # 對齊約束，避免污染 LLM 指令。
+        remainder = word_total - sum(t for t, _ in targets)
+        if remainder < 0:
+            # 整體已超過 word_total：不再往下扣，overshoot 是「每段目標拉高後」的
+            # 副作用，可接受；總字數上限本來就在 ScriptJSON 走合併後實際計算，不靠這個對齊。
+            pass
+        elif remainder > 0:
+            t_list = [t for t, _ in targets]
+            t_list[-1] += remainder
+            targets = list(zip(t_list, [b for _, b in targets], strict=True))
+
+        segment_scripts: list[list[ScriptLine]] = []
+        try:
+            for seg_idx, (outline_seg, (target_words, boundary)) in enumerate(
+                zip(outline.segments, targets, strict=True)
+            ):
+                prev_tail = segment_scripts[-1][-3:] if segment_scripts else []
+                lines, seg_usage = await _generate_segment(
+                    chat,
+                    state,
+                    settings,
+                    engine_label=engine_label,
+                    usage_node=usage_node,
+                    cefr=cefr,
+                    length_tier=length_tier,
+                    segment_index=seg_idx,
+                    segment_count=len(outline.segments),
+                    segment_focus=outline_seg.focus,
+                    segment_vocab=outline_seg.vocab_words,
+                    segment_word_target=target_words,
+                    is_chapter_boundary=boundary,
+                    is_final_segment=(seg_idx == len(outline.segments) - 1),
+                    previous_tail_lines=prev_tail,
+                    extracted_facts=outline.extracted_facts,
+                    feedback=base_feedback or None,
+                )
+                total_usage["input_tokens"] += seg_usage["input_tokens"]
+                total_usage["output_tokens"] += seg_usage["output_tokens"]
+                segment_scripts.append(lines)
+        except RateLimitError:
+            return {"rate_limited": True, "engine_used": engine_label}
+        except GenerationError as exc:
+            last_exc = exc
+            logger.warning(
+                "%s 第 %d/%d 輪段落內契約失敗 big_topic=%s: %s",
+                usage_node,
+                round_idx + 1,
+                _MAX_CONTRACT_RETRIES,
+                state["big_topic"],
+                exc,
+            )
+            adjuster *= 1.1
+            continue
+
+        # Level 2：合併後跑 ScriptJSON 三個 validator + 字數 floor
+        try:
+            full_script = _merge_outline_and_segments(outline, segment_scripts, fmt)
+        except (PydanticValidationError, ValueError) as exc:
+            last_exc = GenerationError(f"合併後 ScriptJSON 違反契約：{exc}")
+            logger.warning(
+                "%s 第 %d/%d 輪合併驗證失敗 big_topic=%s: %s",
+                usage_node,
+                round_idx + 1,
+                _MAX_CONTRACT_RETRIES,
+                state["big_topic"],
+                last_exc,
+            )
+            adjuster *= 1.1
+            continue
+
+        word_count = _script_word_count(full_script)
+        if word_count > best_word_count:
+            best_result, best_word_count = full_script, word_count
+
+        if word_count >= word_floor:
+            return {
+                "script": full_script,
+                "engine_used": engine_label,
+                "rate_limited": False,
+                "token_usage": [{"node": usage_node, **total_usage}],
+            }
+
+        # 字數不足是軟性品質目標，不是硬契約：最後一輪用最長的出稿（fallback）。
+        is_last_round = round_idx == _MAX_CONTRACT_RETRIES - 1
+        if is_last_round:
+            assert best_result is not None
+            if best_word_count < word_floor:
+                logger.warning(
+                    "%s 字數重試耗盡仍偏短 big_topic=%s: %d words（floor=%d），用最長一版出稿",
+                    usage_node,
+                    state["big_topic"],
+                    best_word_count,
+                    word_floor,
+                )
+            return {
+                "script": best_result,
+                "engine_used": engine_label,
+                "rate_limited": False,
+                "token_usage": [{"node": usage_node, **total_usage}],
+            }
+
+        logger.warning(
+            "%s 第 %d/%d 輪合併後字數不足 big_topic=%s: %d words（floor=%d），"
+            "下一輪每段字數目標 ×%.2f",
+            usage_node,
+            round_idx + 1,
+            _MAX_CONTRACT_RETRIES,
+            state["big_topic"],
+            word_count,
+            word_floor,
+            adjuster * 1.1,
+        )
+        # 短缺比例 × 1.2 給保險係數（避免連續小幅短缺浪費回合）。
+        ratio = (word_floor / max(word_count, 1)) * 1.2
+        adjuster = max(adjuster, ratio)
+        last_exc = GenerationError(
+            f"整集 {word_count} 字低於 {word_floor} 下限"
+        )
+
+    # 全部回合都因契約違規失敗（不是字數不足），用最長的一版出稿（best-draft fallback）。
+    # 若 best_result 仍是 None 代表沒任何一輪過 Level 2 合併驗證——沒有「最長的一版」
+    # 可出，這時 raise last_exc 給 RetryPolicy 走 vt-retry 比塞空稿合理。
+    if best_result is None:
+        assert last_exc is not None
+        logger.error(
+            "%s 重試耗盡且無 best-draft 可用 big_topic=%s: %s",
+            usage_node,
+            state["big_topic"],
+            last_exc,
+        )
+        raise last_exc
+    logger.warning(
+        "%s 重試耗盡仍契約失敗 big_topic=%s（last: %s），用最長一版出稿",
+        usage_node,
+        state["big_topic"],
+        last_exc,
     )
     return {
-        "script": result.script,
-        "engine_used": result.engine,
+        "script": best_result,
+        "engine_used": engine_label,
         "rate_limited": False,
-        "token_usage": [{"node": usage_node, **usage}],
+        "token_usage": [{"node": usage_node, **total_usage}],
     }
 
 

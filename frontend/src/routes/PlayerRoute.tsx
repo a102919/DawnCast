@@ -1,5 +1,5 @@
 import { useState, useEffect, useMemo, useCallback, useRef } from 'react'
-import { useParams } from 'react-router-dom'
+import { useParams, useNavigate } from 'react-router-dom'
 import { Sparkles, BookMarked, MessageCircle } from 'lucide-react'
 import { toast } from 'sonner'
 import { ErrorBanner } from '../components/primitives/ErrorBanner'
@@ -13,10 +13,11 @@ import type { Episode, Cue } from '../types/episode'
 import type { DictEntry } from '../api/types'
 import { api } from '../api'
 import { usePlayer, useDailyOrder, useSettings, useActivity, useVocab } from '../state'
-import { findActiveCueIndex, buildConversationPrompt } from '../lib'
+import { findActiveCueIndex, buildConversationPrompt, filterDueDeck } from '../lib'
 
 export function PlayerRoute() {
   const { id } = useParams<{ id: string }>()
+  const navigate = useNavigate()
   const [episode, setEpisode] = useState<Episode | null>(null)
   const [fetchError, setFetchError] = useState<string | null>(null)
   const [selectedWord, setSelectedWord] = useState<string | null>(null)
@@ -34,6 +35,7 @@ export function PlayerRoute() {
   const hasMarkedListened = useRef(false)
   const hasMarkedDailyPlayed = useRef(false)
   const initialSeekAppliedRef = useRef(false)
+  const hasNotifiedDueRef = useRef(false)
 
   const loadEpisode = useCallback(async () => {
     setFetchError(null)
@@ -77,6 +79,7 @@ export function PlayerRoute() {
       episodeIdRef.current = episode.id
       initialSeekAppliedRef.current = false
       hasMarkedListened.current = false
+      hasNotifiedDueRef.current = false
     }
   }, [episode])
 
@@ -152,6 +155,16 @@ export function PlayerRoute() {
     }
   }
 
+  const handleEpisodeEnded = useCallback(() => {
+    if (hasNotifiedDueRef.current) return
+    const dueCount = filterDueDeck(vocabItems).length
+    if (dueCount === 0) return
+    hasNotifiedDueRef.current = true
+    toast(`還有 ${dueCount} 個單字到期待複習`, {
+      action: { label: '去複習', onClick: () => navigate('/flashcards') },
+    })
+  }, [vocabItems, navigate])
+
   const handleCopyPrompt = async () => {
     if (!episode) return
     const prompt = buildConversationPrompt({
@@ -189,7 +202,7 @@ export function PlayerRoute() {
   return (
     <div className="bg-bg-canvas h-[calc(100dvh-56px-env(safe-area-inset-top,0px))] overflow-hidden text-text-primary flex flex-col">
       {/* 隱形音檔綁時間軸（不上視） */}
-      <AudioPlayer audioUrl={episode.audioUrl} />
+      <AudioPlayer audioUrl={episode.audioUrl} onEnded={handleEpisodeEnded} />
 
       {/* 大歌詞：佔滿中間剩餘空間，封面與標題作為第一個 scroll item 一起滾動 */}
       <main className="flex-1 min-h-0 relative pb-[100px] lg:pb-40">

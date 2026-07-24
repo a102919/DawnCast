@@ -42,11 +42,13 @@ async def _upsert(word: str, payload: dict[str, Any]) -> bool:
     pos = payload.get("pos") or []
     example_en = payload.get("example_en")
     example_zh = payload.get("example_zh")
+    mnemonic = payload.get("mnemonic")
     async with connection() as conn, conn.cursor() as cur:
         await cur.execute(
             """
-            insert into public.dict_cache (word, ipa, pos, translation, example_en, example_zh)
-            values (%s, %s, %s::jsonb, %s, %s, %s)
+            insert into public.dict_cache
+              (word, ipa, pos, translation, example_en, example_zh, mnemonic)
+            values (%s, %s, %s::jsonb, %s, %s, %s, %s)
             on conflict (word) do update set
                 ipa = coalesce(excluded.ipa, public.dict_cache.ipa),
                 translation = case
@@ -55,9 +57,18 @@ async def _upsert(word: str, payload: dict[str, Any]) -> bool:
                     else public.dict_cache.translation
                 end,
                 example_en = coalesce(excluded.example_en, public.dict_cache.example_en),
-                example_zh = coalesce(excluded.example_zh, public.dict_cache.example_zh)
+                example_zh = coalesce(excluded.example_zh, public.dict_cache.example_zh),
+                mnemonic = coalesce(excluded.mnemonic, public.dict_cache.mnemonic)
             """,
-            (word, ipa, json.dumps(pos, ensure_ascii=False), translation, example_en, example_zh),
+            (
+                word,
+                ipa,
+                json.dumps(pos, ensure_ascii=False),
+                translation,
+                example_en,
+                example_zh,
+                mnemonic,
+            ),
         )
     return True
 

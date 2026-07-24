@@ -33,11 +33,15 @@ class AddVocabBody(CamelModel):
 
 
 class UpdateVocabBody(CamelModel):
-    """updateVocab(id, patch{nextReview,interval,ease})。皆 optional。"""
+    """updateVocab(id, patch{nextReview,interval,ease,status})。皆 optional。"""
 
     next_review: str | None = None
     interval: int | None = None
     ease: float | None = None
+    # 1=new..5=ignored（精熟）；對齊 migration 0001 註解與 DB default。
+    # 前端 VocabProvider.nextStatus 從 quality 算出 status，沒驗 → 直接繞過門檻
+    # 把卡片標成 mastered，必須在邊界層擋下。
+    status: int | None = Field(default=None, ge=1, le=5)
 
 
 class UpdateSettingsBody(CamelModel):

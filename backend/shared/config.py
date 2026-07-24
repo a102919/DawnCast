@@ -158,7 +158,11 @@ class Settings(BaseSettings):
     # 夜間批次的日曆日錨點時區。worker 不用容器本機時間（通常 UTC），
     # 一律以此時區算「今天」，與前端 user tz 寫入的 order_date 對齊。
     app_timezone: str = "Asia/Taipei"
-    job_timeout_sec: int = 8 * 60
+    # 拉高到 900：分段生成（outline 1 次 + N 段連續呼叫）總耗時必然
+    # 比單段更長，且每段 LLM 連續 round 觸發 retry 時還會再拉長
+    # （真實 Medium B1 單 writer 已測到 474s，逼近舊值 480s）；
+    # worker.py GENERATE_VT 同時調高以維持底下註解的不變式。
+    job_timeout_sec: int = 15 * 60
     dead_letter_after: int = 3
     pause_sec: float = 0.3
     # chapter/話題轉換邊界的停頓（ScriptLine.pause_before=True 時套用）。

@@ -29,6 +29,8 @@ class DictEntry(CamelModel):
     audio_url: str | None = None
     example_en: str | None = None
     example_zh: str | None = None
+    # 諧音/關鍵字記憶提示（繁中，台灣在地化記憶法）：來自同一支翻譯 LLM 呼叫順便產生
+    mnemonic: str | None = None
 
 
 class VocabItem(CamelModel):
@@ -51,6 +53,12 @@ class VocabItem(CamelModel):
     # 字典例句：來自 dict_cache JOIN，不存 user_vocab（每次讀取時拉最新值）
     example_en: str | None = None
     example_zh: str | None = None
+    # 諧音/關鍵字記憶提示：同上，來自 dict_cache JOIN
+    mnemonic: str | None = None
+    # 1=new..5=ignored（已精熟）；門檻判斷在前端算，見 VocabProvider.updateCardReview
+    # ge=1/le=5 對齊 migration 0001 註解與 UpdateVocabBody 邊界驗證，避免 LLM/測試
+    # 寫出 0/-1/999 等垃圾值污染 API 回應。
+    status: int = Field(default=1, ge=1, le=5)
 
 
 class Settings(CamelModel):

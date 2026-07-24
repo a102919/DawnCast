@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from 'react'
 import { motion } from 'framer-motion'
 import { Play, Trash2, ExternalLink } from 'lucide-react'
-import { formatTimestamp, formatPos } from '../../lib'
+import { formatTimestamp, formatPos, formatMultiline } from '../../lib'
 import { api } from '../../api'
 import type { DictEntry, VocabItem } from '../../api/types'
 import type { Cue } from '../../types/episode'
@@ -111,7 +111,7 @@ export function VocabEntryCard({ item, onSeek, onRemove, variant = 'page' }: Voc
                   )}
                 </div>
               )}
-              <div className="text-sm text-text-secondary mt-1 whitespace-pre-line">{item.translation.replaceAll('\\n', '\n')}</div>
+              <div className="text-sm text-text-secondary mt-1 whitespace-pre-line">{formatMultiline(item.translation)}</div>
 
               {/* 來源行 */}
               {isDrawer ? (

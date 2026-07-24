@@ -144,3 +144,19 @@ def test_split_long_lines_leaves_single_unpunctuated_sentence() -> None:
     line = ScriptLine(speaker="Sarah", text=" ".join(["word"] * 50), zh="一句沒有標點的長句子")
     out = _split_long_lines([line], max_words=30)
     assert out == [line]
+
+
+def test_split_long_lines_collapsed_zh_boundary_stays_unsplit() -> None:
+    """回歸：zh 完全沒有句尾標點（_ZH_SENTENCE_RE 切不出邊界）時，累積比例對齊會讓
+    某一組的 zh 邊界塌陷成空字串。舊版用 `zh_chunk or line.zh` 補洞，導致這行跟
+    另一行拿到同一份完整 zh（相鄰重複，實測真實生成時發生過）。修好後應該整行
+    保持原樣不切，不能切出空 zh 或重複 zh。"""
+    text = (
+        "Okay so here is the wild part about deep sea creatures. "
+        "Some of them can survive crushing pressure that would flatten a car. "
+        "Others glow in the dark to attract prey or scare off predators nearby."
+    )
+    zh = "好，深海生物最狂的地方是有些能承受會把車壓扁的水壓，有些會發光引誘獵物或嚇跑掠食者"
+    line = ScriptLine(speaker="Alex", text=text, zh=zh)
+    out = _split_long_lines([line], max_words=15)
+    assert out == [line]

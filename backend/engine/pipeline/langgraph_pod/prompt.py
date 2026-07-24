@@ -109,14 +109,23 @@ def _split_long_lines(
         else:
             zh_bounds = [0, *_zh_split_points(groups, en_sentences, zh_sentences), n_zh]
 
-        for group_idx, (start, end) in enumerate(groups):
+        zh_chunks = [
+            "".join(zh_sentences[zh_bounds[i] : zh_bounds[i + 1]]) for i in range(len(groups))
+        ]
+        if any(not chunk for chunk in zh_chunks):
+            # zh 邊界塌陷出空組：代表這行中英句數/長度比例對不齊，硬切會讓某幾組
+            # 各自 fallback 回同一份整句 zh，變成相鄰兩行 zh 逐字重複（實測踩過這個
+            # 邊界）。安全網：整行維持原樣不切，寧可單行長一點也不要切出重複/缺漏的 zh。
+            out.append(line)
+            continue
+
+        for group_idx, ((start, end), zh_chunk) in enumerate(zip(groups, zh_chunks, strict=True)):
             text_chunk = " ".join(en_sentences[start:end])
-            zh_chunk = "".join(zh_sentences[zh_bounds[group_idx] : zh_bounds[group_idx + 1]])
             out.append(
                 ScriptLine(
                     speaker=line.speaker,
                     text=text_chunk,
-                    zh=zh_chunk or line.zh,  # 邊界塌陷成空組時退回整句 zh（原有保底）
+                    zh=zh_chunk,
                     pause_before=line.pause_before if group_idx == 0 else False,
                 )
             )
@@ -153,5 +162,17 @@ def parse_engine_result(
         script = ScriptJSON.model_validate_json(cleaned)
     except (PydanticValidationError, json.JSONDecodeError) as exc:
         raise GenerationError(f"寫稿回應無法解析成合法 ScriptJSON：{exc}") from exc
-    script = script.model_copy(update={"script": _split_long_lines(script.script)})
+
+    split_script = _split_long_lines(script.script)
+    try:
+        # 用 model_validate（而非 model_copy）重跑一次 cross-field validator：
+        # _split_long_lines 是純 Python 後製，理論上不該重新踩雷，但既然契約
+        # 檢查（zh 不重複／vocab 有出現）本來就是為了保證最終輸出乾淨，就該對
+        # 「真正會拿去用的那份」把關，不是只驗證切割前的草稿。
+        dumped_lines = [ln.model_dump(mode="python") for ln in split_script]
+        script = ScriptJSON.model_validate(
+            {**script.model_dump(mode="python"), "script": dumped_lines}
+        )
+    except PydanticValidationError as exc:
+        raise GenerationError(f"分段後的 ScriptJSON 違反契約：{exc}") from exc
     return EngineResult(script=script, engine=engine, model=model, raw_usage=usage)

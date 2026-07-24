@@ -56,6 +56,8 @@ function AnimatedRoutes() {
 
 // 登入後才掛載：包住所有 data provider，避免未登入時 mount 觸發 401。
 function AuthenticatedShell() {
+  const { pathname } = useLocation()
+  const isImmersive = pathname === '/login'
   return (
     <SettingsProvider>
       <ActivityProvider>
@@ -63,9 +65,9 @@ function AuthenticatedShell() {
           <VocabProvider>
             <FavoritesProvider>
               <DailyOrderProvider>
-                <div className="min-h-screen bg-bg-primary text-text-primary font-sans">
+                <div className={isImmersive ? 'bg-bg-primary text-text-primary font-sans' : 'min-h-screen bg-bg-primary text-text-primary font-sans'}>
                   <TopBar />
-                  <main className="pb-14 lg:pb-0">
+                  <main className={isImmersive ? '' : 'pb-[calc(3.5rem+env(safe-area-inset-bottom))] lg:pb-0'}>
                     <AnimatedRoutes />
                   </main>
                   <BottomNav />

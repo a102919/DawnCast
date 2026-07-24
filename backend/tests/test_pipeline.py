@@ -351,10 +351,25 @@ async def test_private_reuse_skip_if_already_delivered(
 # ── 3. generate_job 串接 ───────────────────────────────────────────
 
 
-def _sample_script() -> ScriptJSON:
-    """讀 tests/fixtures/loop_engineering.json 當合法 ScriptJSON 範本。"""
+def _sample_script(format: str = "dialogue") -> ScriptJSON:
+    """讀 tests/fixtures/loop_engineering.json 當合法 ScriptJSON 範本。
+
+    format="monologue" 時把所有 speaker 換成 Nova：news topic_type 走
+    resolve_format → monologue，merge ScriptJSON validator 會拒絕含 Alex/Sarah
+    的 script；這個 helper 給 idempotency 跨 topic_type 測試用，避免建第二份 fixture。
+    """
     fixture = Path(__file__).resolve().parent / "fixtures" / "loop_engineering.json"
-    return ScriptJSON.model_validate_json(fixture.read_text(encoding="utf-8"))
+    script = ScriptJSON.model_validate_json(fixture.read_text(encoding="utf-8"))
+    if format == "monologue":
+        return script.model_copy(
+            update={
+                "format": "monologue",
+                "script": [
+                    line.model_copy(update={"speaker": "Nova"}) for line in script.script
+                ],
+            }
+        )
+    return script
 
 
 def _sample_artifacts(tmp: Path) -> Any:
@@ -414,7 +429,25 @@ def _patch_generate_job(
     class _FakeR2:
         put_object = staticmethod(fake_put)
 
-    script_json = script.model_dump_json()
+    # 寫稿流程從「一次 LLM 呼叫」升級為「outline + 3 段」（medium tier），
+    # writer pool 形狀是 1 outline + 3 segments + 1 judge。
+    outline_json = json.dumps(
+        {
+            "topic": script.topic,
+            "topic_zh": script.topic_zh,
+            "category": script.category,
+            "extracted_facts": [f.model_dump() for f in script.extracted_facts],
+            "target_vocab": [v.model_dump() for v in script.target_vocab],
+            "segments": [
+                {"focus": f"Part {i + 1}", "vocab_words": []}
+                for i in range(3)
+            ],
+        }
+    )
+    segment_json = json.dumps(
+        {"script": [line.model_dump() for line in script.script]}
+    )
+    writer_pool = [outline_json] + [segment_json] * 3
     # judge 預設給「過」的 verdict（threshold 0.6，五軸全給 0.8 過）
     passing_judge = json.dumps(
         {
@@ -433,17 +466,17 @@ def _patch_generate_job(
             judge_responses=[passing_judge],
         )
         chat_failover = FakeChatModel(
-            responses=[script_json],
+            responses=writer_pool,
             judge_responses=[passing_judge],
         )
     else:
         chat = FakeChatModel(
-            responses=[script_json],
+            responses=writer_pool,
             judge_responses=[passing_judge],
         )
         chat_failover = (
             FakeChatModel(
-                responses=[script_json],
+                responses=writer_pool,
                 judge_responses=[passing_judge],
             )
             if False
@@ -559,10 +592,7 @@ async def test_generate_job_idempotency_key_includes_topic_type(
 ) -> None:
     """同 big_topic/angle/length_tier 但不同 topic_type 必須產生不同的冪等鍵。"""
     _GenRepoSpy.calls.clear()  # 隔離這個測試，別被共用 class-level 累積器污染
-    script = _sample_script()
     repo_spy = _GenRepoSpy()
-    mocks, _, _ = _patch_generate_job(monkeypatch, script=script, repo_spy=repo_spy)
-
     base = {
         "big_topic": "科技",
         "angle": "定義",
@@ -570,8 +600,21 @@ async def test_generate_job_idempotency_key_includes_topic_type(
         "user_ids": ["u1"],
         "length_tier": "medium",
     }
-    news = await generate_job.run_generate_job({**base, "topic_type": "news"}, **mocks)
-    topic = await generate_job.run_generate_job({**base, "topic_type": "topic"}, **mocks)
+    # news → resolve_format → monologue：fixture 必須 speaker 全 Nova，
+    # topic → dialogue：fixture 維持 Alex/Sarah。兩次 run_generate_job 各自
+    # 拿不同 script（mock 內 segment_json 用對應的 script 餵）。
+    news_mocks, _, _ = _patch_generate_job(
+        monkeypatch, script=_sample_script(format="monologue"), repo_spy=repo_spy
+    )
+    news = await generate_job.run_generate_job(
+        {**base, "topic_type": "news"}, **news_mocks
+    )
+    topic_mocks, _, _ = _patch_generate_job(
+        monkeypatch, script=_sample_script(format="dialogue"), repo_spy=repo_spy
+    )
+    topic = await generate_job.run_generate_job(
+        {**base, "topic_type": "topic"}, **topic_mocks
+    )
 
     assert news == "ep-new-id"
     assert topic == "ep-new-id"

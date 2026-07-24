@@ -127,6 +127,7 @@ const DictEntrySchema = z.object({
   audioUrl: z.string().nullable().optional(),
   exampleEn: z.string().nullable().optional(),
   exampleZh: z.string().nullable().optional(),
+  mnemonic: z.string().nullable().optional(),
 }) satisfies z.ZodType<DictEntry> & z.ZodType<components['schemas']['DictEntry']>
 
 const VocabItemSchema = z.object({
@@ -148,6 +149,11 @@ const VocabItemSchema = z.object({
   ease: z.number().nullable().optional(),
   exampleEn: z.string().nullable().optional(),
   exampleZh: z.string().nullable().optional(),
+  mnemonic: z.string().nullable().optional(),
+  // 過渡期容錯：後端欄位剛上線、rolling deploy 期間舊實例不會回 status，否則 zod
+  // schema_mismatch 直接讓整個 VocabRoute + FlashcardRoute 空白。default(1) 對齊
+  // backend VocabItem.status 預設值。
+  status: z.number().default(1),
 }) satisfies z.ZodType<VocabItem> & z.ZodType<components['schemas']['VocabItem']>
 
 const VocabListSchema = z.array(VocabItemSchema)

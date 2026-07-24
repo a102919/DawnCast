@@ -2,12 +2,16 @@ import { Link, useLocation } from 'react-router-dom'
 import { motion } from 'framer-motion'
 import { NAV_TABS } from './navTabs'
 import { useSprings } from '../../lib/motion'
+import { useVocab } from '../../state'
+import { filterDueDeck } from '../../lib'
 
 export function BottomNav() {
   const { pathname } = useLocation()
   const { snappy } = useSprings()
+  const { items } = useVocab()
+  const dueCount = filterDueDeck(items).length
 
-  if (pathname.startsWith('/player')) return null
+  if (pathname.startsWith('/player') || pathname === '/login') return null
 
   return (
     <nav className="lg:hidden fixed bottom-0 inset-x-0 material-thin border-t border-border z-40">
@@ -33,7 +37,14 @@ export function BottomNav() {
                   className="absolute top-0 inset-x-6 h-0.5 rounded-full bg-accent"
                 />
               )}
-              <Icon size={20} strokeWidth={active ? 2.5 : 2} />
+              <div className="relative">
+                <Icon size={20} strokeWidth={active ? 2.5 : 2} />
+                {path === '/vocab' && dueCount > 0 && (
+                  <span className="absolute -top-1 -right-1.5 min-w-[14px] h-[14px] px-0.5 flex items-center justify-center rounded-full bg-danger text-white text-[9px] font-semibold leading-none">
+                    {dueCount > 99 ? '99+' : dueCount}
+                  </span>
+                )}
+              </div>
               <span className="text-[10px] font-medium leading-none">{label}</span>
             </Link>
           )

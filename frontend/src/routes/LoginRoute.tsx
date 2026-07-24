@@ -1,9 +1,11 @@
 import { useState } from 'react'
 import { Link } from 'react-router-dom'
+import { motion } from 'framer-motion'
 import { ArrowLeft, Loader2 } from 'lucide-react'
 import { Button } from '../components/primitives/Button'
 import { ErrorBanner } from '../components/primitives/ErrorBanner'
 import { useAuth } from '../state'
+import { useSprings } from '../lib/motion'
 
 type Status = 'idle' | 'redirecting' | 'error'
 
@@ -34,6 +36,7 @@ export function LoginRoute() {
   const { signInWithGoogle } = useAuth()
   const [status, setStatus] = useState<Status>('idle')
   const [errorMsg, setErrorMsg] = useState<string | null>(null)
+  const { gentle } = useSprings()
 
   const handleSignIn = async () => {
     setStatus('redirecting')
@@ -47,48 +50,71 @@ export function LoginRoute() {
   }
 
   return (
-    <div className="max-w-sm mx-auto px-4 pt-12 pb-8 space-y-6">
-      <Link
-        to="/"
-        className="inline-flex items-center gap-1 text-xs text-text-tertiary hover:text-accent transition-colors duration-fast"
-      >
-        <ArrowLeft size={13} />
-        返回首頁
-      </Link>
+    <div className="relative flex h-dvh flex-col overflow-hidden bg-bg-canvas">
+      {/* 晨曦光暈：呼應 DawnCast 品牌色（favicon 紫→藍漸層），營造破曉氛圍深度 */}
+      <div
+        aria-hidden
+        className="pointer-events-none absolute -top-32 left-1/2 h-[28rem] w-[28rem] -translate-x-1/2 rounded-full bg-gradient-to-br from-[#7e14ff]/25 via-[#47bfff]/15 to-transparent blur-3xl dark:from-[#7e14ff]/35 dark:via-[#47bfff]/20"
+      />
 
-      <div className="text-center space-y-2">
-        <div className="inline-flex items-center justify-center w-12 h-12 rounded-full bg-accent/10 text-accent">
-          <GoogleIcon />
-        </div>
-        <h1 className="text-xl font-bold text-text-primary">登入 DawnCast</h1>
-        <p className="text-sm text-text-secondary leading-relaxed">
-          使用 Google 帳號登入，免設定密碼。
-        </p>
+      <div className="relative flex items-center px-4 pt-[max(1rem,env(safe-area-inset-top))]">
+        <Link
+          to="/"
+          aria-label="返回首頁"
+          className="inline-flex min-h-[44px] min-w-[44px] items-center justify-center rounded-full text-text-secondary transition-[background-color,color] duration-fast ease-apple hover:bg-bg-secondary hover:text-text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+        >
+          <ArrowLeft size={20} />
+        </Link>
       </div>
 
-      {status === 'error' && errorMsg && (
-        <ErrorBanner variant="inline" message={errorMsg} className="text-xs" />
-      )}
+      <div className="relative flex min-h-0 flex-1 flex-col items-center justify-center gap-4 px-6 text-center">
+        <motion.img
+          src="/favicon.svg"
+          alt=""
+          initial={{ opacity: 0, scale: 0.9, y: 8 }}
+          animate={{ opacity: 1, scale: 1, y: 0 }}
+          transition={gentle}
+          className="h-20 w-20 drop-shadow-[0_8px_24px_rgba(126,20,255,0.35)]"
+        />
+        <motion.div
+          initial={{ opacity: 0, y: 8 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ ...gentle, delay: 0.05 }}
+          className="space-y-2"
+        >
+          <h1 className="text-display tracking-display leading-display font-bold text-text-primary">DawnCast</h1>
+          <p className="text-sm leading-relaxed text-text-secondary">使用 Google 帳號登入，免設定密碼。</p>
+        </motion.div>
+      </div>
 
-      <Button
-        variant="primary"
-        size="lg"
-        className="w-full justify-center"
-        disabled={status === 'redirecting'}
-        onClick={() => void handleSignIn()}
+      <motion.div
+        initial={{ opacity: 0, y: 12 }}
+        animate={{ opacity: 1, y: 0 }}
+        transition={{ ...gentle, delay: 0.1 }}
+        className="relative mx-auto w-full max-w-sm space-y-3 px-6 pb-[max(2rem,env(safe-area-inset-bottom))] pt-4"
       >
-        {status === 'redirecting' ? (
-          <>
-            <Loader2 size={16} className="animate-spin" />
-            正在導向 Google
-          </>
-        ) : (
-          <>
-            <GoogleIcon />
-            使用 Google 帳號登入
-          </>
-        )}
-      </Button>
+        {status === 'error' && errorMsg && <ErrorBanner variant="inline" message={errorMsg} className="text-xs" />}
+
+        <Button
+          variant="google"
+          size="lg"
+          className="w-full justify-center rounded-full! transition-shadow"
+          disabled={status === 'redirecting'}
+          onClick={() => void handleSignIn()}
+        >
+          {status === 'redirecting' ? (
+            <>
+              <Loader2 size={16} className="animate-spin" />
+              正在導向 Google
+            </>
+          ) : (
+            <>
+              <GoogleIcon />
+              使用 Google 帳號登入
+            </>
+          )}
+        </Button>
+      </motion.div>
     </div>
   )
 }

@@ -61,7 +61,7 @@ export interface paths {
         head?: never;
         /**
          * Update Vocab
-         * @description 更新 SM-2 欄位（nextReview/interval/ease）。只動本人列。
+         * @description 更新 SM-2 欄位（nextReview/interval/ease/status）。只動本人列。
          */
         patch: operations["update_vocab_vocab__vocab_id__patch"];
         trace?: never;
@@ -869,6 +869,8 @@ export interface components {
             exampleEn?: string | null;
             /** Examplezh */
             exampleZh?: string | null;
+            /** Mnemonic */
+            mnemonic?: string | null;
         };
         /**
          * Episode
@@ -1107,7 +1109,7 @@ export interface components {
         };
         /**
          * UpdateVocabBody
-         * @description updateVocab(id, patch{nextReview,interval,ease})。皆 optional。
+         * @description updateVocab(id, patch{nextReview,interval,ease,status})。皆 optional。
          */
         UpdateVocabBody: {
             /** Nextreview */
@@ -1116,6 +1118,8 @@ export interface components {
             interval?: number | null;
             /** Ease */
             ease?: number | null;
+            /** Status */
+            status?: number | null;
         };
         /** ValidationError */
         ValidationError: {
@@ -1171,6 +1175,13 @@ export interface components {
             exampleEn?: string | null;
             /** Examplezh */
             exampleZh?: string | null;
+            /** Mnemonic */
+            mnemonic?: string | null;
+            /**
+             * Status
+             * @default 1
+             */
+            status: number;
         };
     };
     responses: never;

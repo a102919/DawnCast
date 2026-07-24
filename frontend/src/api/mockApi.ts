@@ -245,6 +245,7 @@ export const mockApi: Api = {
       nextReview: new Date().toLocaleDateString('en-CA'),
       interval: 1,
       ease: 2.5,
+      status: 1,
     }
     writeVocab([newItem, ...items])
     return newItem

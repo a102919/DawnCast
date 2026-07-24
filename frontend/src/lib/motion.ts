@@ -22,7 +22,7 @@ export const reducedMotionSprings: Record<SpringName, Transition> = {
   press: { type: 'tween', duration: 0.1, ease: 'easeOut' },
 }
 
-export function useSprings(): Record<SpringName, Transition> {
+export function useSprings(): Record<SpringName, Transition> & { reduce: boolean } {
   const reduce = useReducedMotion()
-  return reduce ? reducedMotionSprings : springs
+  return { ...(reduce ? reducedMotionSprings : springs), reduce: Boolean(reduce) }
 }

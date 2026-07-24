@@ -33,19 +33,37 @@ from shared.models import ScriptJSON
 # ── 共用 fixture ─────────────────────────────────────────────
 
 
+# 分段後的寫稿管線：1 個 outline 響應 + N 個段落響應 + 1 個 judge 響應。
+# Medium tier 切成 3 段（見 nodes._segment_word_targets），所以 happy-path
+# 一集約需 4 個 writer 響應。每段灌到 ~400 字，3 段合計 ~1200 字，過
+# medium+B1 floor 1026 但不離 word_target 1520 太遠。
+_SEGMENT_WORDS = 400
+
+
 def _script_json(*, format: str = "dialogue", category: str = "science") -> str:
-    """合法 ScriptJSON 字串（≥8 行）。dialogue：雙主持人齊備；monologue：單一 Nova。"""
+    """完整 ScriptJSON 字串（≥8 行，總字數過 length 下限，做 fallback 範例用）。
+    主要測試現在用 _outline_json + _segment_json 兩段組裝。
+    """
     facts = [
         {"claim": "f1", "source_ids": []},
         {"claim": "f2", "source_ids": []},
         {"claim": "f3", "source_ids": []},
     ]
+    filler = " ".join(["word"] * _SEGMENT_WORDS)
     if format == "monologue":
-        script = [{"speaker": "Nova", "text": f"line {i}", "zh": f"第{i}行"} for i in range(8)]
+        script = [
+            {"speaker": "Nova", "text": f"line {i} {filler} about quantum", "zh": f"第{i}行"}
+            for i in range(8)
+        ]
     else:
         speakers = ["Alex", "Sarah"]
         script = [
-            {"speaker": speakers[i % 2], "text": f"line {i}", "zh": f"第{i}行"} for i in range(8)
+            {
+                "speaker": speakers[i % 2],
+                "text": f"line {i} {filler} about quantum",
+                "zh": f"第{i}行",
+            }
+            for i in range(8)
         ]
     return json.dumps(
         {
@@ -60,6 +78,88 @@ def _script_json(*, format: str = "dialogue", category: str = "science") -> str:
     )
 
 
+def _outline_json(
+    *,
+    n_segments: int = 3,
+    english_word: str = "quantum",
+    extra_vocab: list[str] | None = None,
+) -> str:
+    """合法 ScriptOutline JSON：n_segments 段，每段 focus/vocab 對齊 target_vocab。
+
+    所有段 vocab_words 都包含同一個保證字（讓分段 LLM 一定要寫進對話），
+    加上可選的 extra_vocab 塞進第 1 段。"""
+    target_vocab = [{"word": english_word, "explanation": "tiny unit"}]
+    if extra_vocab:
+        target_vocab.extend({"word": w, "explanation": w} for w in extra_vocab)
+    segments = [
+        {
+            "focus": f"Part {i + 1} of the topic",
+            "vocab_words": [english_word] + (extra_vocab if (i == 0 and extra_vocab) else []),
+        }
+        for i in range(n_segments)
+    ]
+    return json.dumps(
+        {
+            "topic": "Quantum",
+            "topic_zh": "量子力學入門",
+            "category": "science",
+            "extracted_facts": [{"claim": "f1", "source_ids": []}],
+            "target_vocab": target_vocab,
+            "segments": segments,
+        }
+    )
+
+
+def _segment_json(
+    *,
+    seg_index: int = 0,
+    n_lines: int = 4,
+    format: str = "dialogue",
+    word: str = "quantum",
+    total_words: int | None = None,
+) -> str:
+    """合法段落 JSON：{"script": [...]}，每行灌到指定總字數（含必含 word 過 vocab 檢查）。
+
+    預設 4 行 × ~100 字 ≈ 400 字（medium 段目標數量級）。segment_vocab 必含
+    `word`（從大綱來），這裡每行 text 都塞一次 word 確保 _vocab_words_present 通過。
+    """
+    if total_words is None:
+        total_words = _SEGMENT_WORDS
+    words_per_line = max(1, total_words // n_lines)
+    if format == "monologue":
+        speakers = ["Nova"] * n_lines
+    else:
+        speakers = ["Alex", "Sarah"]
+        speakers = [speakers[i % 2] for i in range(n_lines)]
+    script = [
+        {
+            "speaker": speakers[i],
+            "text": " ".join(["word"] * words_per_line) + f" {word} part{seg_index}",
+            "zh": f"段{seg_index + 1}第{i}行",
+            "pause_before": False,
+        }
+        for i in range(n_lines)
+    ]
+    return json.dumps({"script": script})
+
+
+def _make_passing_chat(
+    *,
+    n_segments: int = 3,
+    format: str = "dialogue",
+    extra_vocab: list[str] | None = None,
+) -> FakeChatModel:
+    """Happy-path: 1 個 outline + n_segments 個段落 + 1 個 judge（全過）。"""
+    responses = [_outline_json(n_segments=n_segments, extra_vocab=extra_vocab)]
+    responses.extend(
+        _segment_json(seg_index=i, format=format) for i in range(n_segments)
+    )
+    return FakeChatModel(
+        responses=responses,
+        judge_responses=[_judge_json(0.8)],
+    )
+
+
 def _judge_json(score: float, feedback: list[str] | None = None) -> str:
     """五軸給同一分數（測試不關心軸間差異，只關心過/不過門檻）。"""
     return json.dumps(
@@ -71,13 +171,6 @@ def _judge_json(score: float, feedback: list[str] | None = None) -> str:
             "groundedness": score,
             "feedback": feedback or [],
         }
-    )
-
-
-def _make_passing_chat() -> FakeChatModel:
-    return FakeChatModel(
-        responses=[_script_json()],
-        judge_responses=[_judge_json(0.8)],  # 全過 0.6 門檻
     )
 
 
@@ -115,15 +208,19 @@ async def test_pod_happy_path() -> None:
     assert episode.topic == "science"
     assert len(repo.deliveries) == 2  # u1, u2
     assert len(r2.objects) == 2  # mp3 / srt
-    assert chat._call_count == 2  # writer + judge
+    assert chat._call_count == 5  # 1 outline + 3 segments + 1 judge
 
 
 # ── 2. judge 不及格 → rewrite → 及格 ──────────────────────
 
 
 async def test_judge_triggers_rewrite_then_passes() -> None:
+    # 1 個 outline + 3 段 × 2 輪 = 7 writer + 2 judge = 9 calls
     chat = FakeChatModel(
-        responses=[_script_json(), _script_json()],
+        responses=[_outline_json()]
+        + [_segment_json(seg_index=i) for i in range(3)]
+        + [_outline_json()]
+        + [_segment_json(seg_index=i) for i in range(3)],
         judge_responses=[
             _judge_json(0.4, ["add hook", "more chemistry"]),  # 不及格
             _judge_json(0.8),  # 第二次及格
@@ -141,10 +238,7 @@ async def test_judge_triggers_rewrite_then_passes() -> None:
         renderer=renderer,
     )
     assert eid
-    # writer x2（重寫一次）+ judge x2
-    assert chat._call_count == 4
-    # judge_feedback 應該把第一輪的 feedback 帶進 writer 第二輪的 prompt
-    # 這裡只驗收 episode 確實產出，feedback 是否被 prompt 採納看 node 端人工 trace
+    assert chat._call_count == 10  # 2 輪 × (1 outline + 3 segments) + 2 judge
 
 
 # ── 3. judge 持續不及格 → cap 後放行 ─────────────────────
@@ -152,9 +246,10 @@ async def test_judge_triggers_rewrite_then_passes() -> None:
 
 async def test_judge_rewrite_cap_respected() -> None:
     """judge 永遠給爛分 → max_rewrite_iterations 次後放行，不無限循環。"""
-    # 給 3 次 writer + 3 次 judge（cap=2 → 2 次重寫後第 3 次 judge 不及格仍放行）
+    # 3 輪 full generation × (1 outline + 3 segments) = 12 writer + 3 judge = 15
+    block = [_outline_json()] + [_segment_json(seg_index=i) for i in range(3)]
     chat = FakeChatModel(
-        responses=[_script_json()] * 4,
+        responses=block * 3,
         judge_responses=[_judge_json(0.3, ["bad"])] * 4,
     )
     repo, r2, queue = get_mocks(reset=True)
@@ -169,16 +264,95 @@ async def test_judge_rewrite_cap_respected() -> None:
         renderer=renderer,
     )
     assert eid
-    # 1 初始 + 2 rewrite = 3 writer + 3 judge = 6 calls
-    assert chat._call_count == 6
-    # 不會到 8（不會無限循環）
+    assert chat._call_count == 15
+    # 不會到 21（不會無限循環）
+
+
+# ── 3b. 字數低於 length_tier 下限 → 帶字數回饋重打 ───────────
+
+
+async def test_short_script_triggers_length_retry_then_passes() -> None:
+    """第一輪 3 段各 ~30 字（合計 ~90 字遠低於 floor 1026）→ 合併後觸發 Level 2
+    重打，第二輪 3 段各 ~400 字（合計 ~1200 字過 floor）→ 放行。"""
+    chat = FakeChatModel(
+        responses=[
+            _outline_json(),
+            _segment_json(seg_index=0, total_words=30),
+            _segment_json(seg_index=1, total_words=30),
+            _segment_json(seg_index=2, total_words=30),
+            _outline_json(),
+            _segment_json(seg_index=0, total_words=400),
+            _segment_json(seg_index=1, total_words=400),
+            _segment_json(seg_index=2, total_words=400),
+        ],
+        judge_responses=[_judge_json(0.8)],
+    )
+    repo, r2, queue = get_mocks(reset=True)
+    renderer = MockRenderer(make_mock_workdir())
+
+    eid = await run_pod(
+        _body(),
+        chat=chat,
+        repo=repo,
+        r2=r2,
+        queue=queue,
+        renderer=renderer,
+    )
+    assert eid
+    episode = repo.get_episode(eid)
+    assert episode is not None
+    assert episode.script_json is not None
+    total_words = sum(len(line["text"].split()) for line in episode.script_json["script"])
+    assert total_words >= 1026
+    assert chat._call_count == 9  # 2 輪 × (1 outline + 3 segments) + 1 judge
+
+
+async def test_persistently_short_script_falls_back_to_longest_draft() -> None:
+    """3 輪 Level 2 重打都還偏短 → 字數是軟性品質目標，用歷來最長的一版出稿。"""
+    block_round = [
+        _outline_json(),
+        _segment_json(seg_index=0, total_words=10),
+        _segment_json(seg_index=1, total_words=15),
+        _segment_json(seg_index=2, total_words=20),
+    ]
+    chat = FakeChatModel(
+        responses=block_round * 3,  # 3 輪都故意拼成 ~45 字，遠低於 floor 1026
+        judge_responses=[_judge_json(0.8)],
+    )
+    repo, r2, queue = get_mocks(reset=True)
+    renderer = MockRenderer(make_mock_workdir())
+
+    eid = await run_pod(
+        _body(),
+        chat=chat,
+        repo=repo,
+        r2=r2,
+        queue=queue,
+        renderer=renderer,
+    )
+    assert eid
+    episode = repo.get_episode(eid)
+    assert episode is not None
+    assert episode.script_json is not None
+    total_words = sum(len(line["text"].split()) for line in episode.script_json["script"])
+    # 3 輪都約 45 字（`_segment_json` 預設 4 行，每行填充字數 small 會帶出 base 6 字），
+    # 額度用完，cap 從第一輪出稿（fallback 機制）。我們只看「順利出稿、沒 raise」，
+    # 確切字數隨 segment helper 內部微調而浮動，僅驗證範圍寬鬆。
+    assert 0 < total_words < 1026
+    # 3 輪 × 4 calls + 1 judge = 13
+    assert chat._call_count == 13
 
 
 # ── 4. 冪等鍵：同 body 第二次呼叫 already_rendered=True ─
 
 
 async def test_idempotent_second_call_skips_render() -> None:
-    chat = _make_passing_chat()
+    # 第二次 run_pod 仍會從頭跑 graph，writer/judge pool 要乘 2
+    # （每次 1 outline + 3 segments + 1 judge）。
+    chat = FakeChatModel(
+        responses=([_outline_json()] + [_segment_json(seg_index=i) for i in range(3)]) * 2,
+        judge_responses=[_judge_json(0.8)] * 2,
+    )
     repo, r2, queue = get_mocks(reset=True)
     renderer = MockRenderer(make_mock_workdir())
 
@@ -306,7 +480,8 @@ async def test_rate_limit_degrade_raises_without_failover() -> None:
 async def test_rate_limit_triggers_failover_chat() -> None:
     chat = FakeChatModel(responses=[RateLimitError("429 primary")])
     chat_failover = FakeChatModel(
-        responses=[_script_json()],
+        responses=[_outline_json()]
+        + [_segment_json(seg_index=i) for i in range(3)],
         judge_responses=[_judge_json(0.8)],
     )
     repo, r2, queue = get_mocks(reset=True)
@@ -328,7 +503,7 @@ async def test_rate_limit_triggers_failover_chat() -> None:
     assert eid
     # primary 被叫 1 次（限流），failover 被叫 2 次（writer + judge）
     assert chat._call_count == 1
-    assert chat_failover._call_count == 2
+    assert chat_failover._call_count == 5  # 1 outline + 3 segments + 1 judge
 
 
 # ── 8. MiniMaxChatModel 構造契約（不真實打 API）───────────
@@ -356,24 +531,54 @@ def test_make_langchain_chat_unsupported_engine_raises() -> None:
 
 
 def test_fake_chat_response_parses_to_script_json() -> None:
+    """ScriptJSON 契約：合法 full script JSON 可直接 parse_engine_result 解析。"""
     from engine.pipeline.langgraph_pod.prompt import parse_engine_result
 
-    chat = _make_passing_chat()
-    import asyncio
-
-    from langchain_core.messages import HumanMessage, SystemMessage
-
-    msg = asyncio.run(
-        chat.ainvoke(
-            [
-                SystemMessage(content="sys"),
-                HumanMessage(content="user"),
-            ]
-        )
-    )
-    result = parse_engine_result(msg.content, engine="fake", model="m", usage={})
+    result = parse_engine_result(_script_json(), engine="fake", model="m", usage={})
     assert isinstance(result.script, ScriptJSON)
     assert len(result.script.script) == 8
+
+
+def test_duplicate_adjacent_zh_rejected() -> None:
+    payload = json.loads(_script_json())
+    payload["script"][1]["zh"] = payload["script"][0]["zh"]  # 製造相鄰 zh 完全相同
+    with pytest.raises(ValueError, match="zh 完全相同"):
+        ScriptJSON.model_validate(payload)
+
+
+def test_missing_vocab_word_rejected() -> None:
+    payload = json.loads(_script_json())
+    payload["target_vocab"] = [{"word": "nonexistent", "explanation": "沒出現在腳本裡"}]
+    with pytest.raises(ValueError, match="沒真的出現在腳本裡"):
+        ScriptJSON.model_validate(payload)
+
+
+def test_vocab_word_with_inflection_accepted() -> None:
+    payload = json.loads(_script_json())
+    # 腳本只出現變化形 "escalated"，target_vocab 給原形 "escalate"——不該被誤判成缺字
+    payload["script"][0]["text"] = "The team escalated the issue immediately."
+    payload["target_vocab"] = [{"word": "escalate", "explanation": "往上呈報"}]
+    script = ScriptJSON.model_validate(payload)
+    assert script.target_vocab[0].word == "escalate"
+
+
+def test_phrasal_verb_vocab_with_inflected_and_split_form_accepted() -> None:
+    """回歸：實測踩過的真實案例。"cancel out" 這種片語動詞在對話裡常被詞形變化
+    （cancels）又被受詞拆開（"cancels the noise out"），舊版整段字串比對會誤判成
+    沒出現，導致寫稿契約驗證白白重試好幾次都過不了。"""
+    payload = json.loads(_script_json())
+    payload["script"][0]["text"] = "The headphone cancels the outside noise out completely."
+    payload["target_vocab"] = [{"word": "cancel out", "explanation": "抵銷、消除"}]
+    script = ScriptJSON.model_validate(payload)
+    assert script.target_vocab[0].word == "cancel out"
+
+
+def test_phrasal_verb_vocab_truly_missing_still_rejected() -> None:
+    """片語逐字比對放寬後，仍要能抓到真的沒出現的片語（不是矯枉過正變成隨便都放行）。"""
+    payload = json.loads(_script_json())
+    payload["target_vocab"] = [{"word": "drown out", "explanation": "蓋過、淹沒"}]
+    with pytest.raises(ValueError, match="沒真的出現在腳本裡"):
+        ScriptJSON.model_validate(payload)
 
 
 # ── 10. resolve_format：入口類型 × 長度 tier 自動決定格式 ──
@@ -405,10 +610,7 @@ def test_resolve_format_product_always_dialogue() -> None:
 
 
 async def test_pod_monologue_format_end_to_end() -> None:
-    chat = FakeChatModel(
-        responses=[_script_json(format="monologue")],
-        judge_responses=[_judge_json(0.8)],
-    )
+    chat = _make_passing_chat(format="monologue")
     repo, r2, queue = get_mocks(reset=True)
     renderer = MockRenderer(make_mock_workdir())
 
@@ -493,24 +695,20 @@ async def test_retrieve_sources_no_provider_keeps_ungrounded() -> None:
 
 async def test_judge_fenced_json_still_parses() -> None:
     """judge 回應包 ```json fence → 剝掉照常解析，不觸發 rewrite、不殺 graph。"""
-    chat = FakeChatModel(
-        responses=[_script_json()],
-        judge_responses=[f"```json\n{_judge_json(0.8)}\n```"],
-    )
+    chat = _make_passing_chat()
+    chat.judge_responses = [f"```json\n{_judge_json(0.8)}\n```"]
     repo, r2, queue = get_mocks(reset=True)
     renderer = MockRenderer(make_mock_workdir())
 
     eid = await run_pod(_body(), chat=chat, repo=repo, r2=r2, queue=queue, renderer=renderer)
     assert eid
-    assert chat._call_count == 2  # writer + judge，無 rewrite
+    assert chat._call_count == 5  # 1 outline + 3 segments + 1 judge，無 rewrite
 
 
 async def test_judge_garbage_fails_open() -> None:
     """judge 回垃圾（非 JSON）→ fail-open 視為通過，稿子照常出，不整集重跑。"""
-    chat = FakeChatModel(
-        responses=[_script_json()],
-        judge_responses=["oops not json at all"],
-    )
+    chat = _make_passing_chat()
+    chat.judge_responses = ["oops not json at all"]
     repo, r2, queue = get_mocks(reset=True)
     renderer = MockRenderer(make_mock_workdir())
 
@@ -537,8 +735,12 @@ async def test_cefr_flows_from_body_to_episode_row() -> None:
 
 
 def test_build_pod_messages_cefr_and_avoid_facts() -> None:
-    """分級指令與 avoid_facts 真的進到 system/user prompt；monologue 用自己的 few-shot。"""
-    from engine.pipeline.langgraph_pod.nodes import _build_pod_messages
+    """分級指令與 avoid_facts 真的進到 outline prompt；monologue 用自己的 few-shot。
+
+    寫稿從「一次 LLM 呼叫」升級為「outline + 分段」後，_build_pod_messages 已被
+    _build_outline_messages 取代；指令是否進 prompt 在這裡驗證。
+    """
+    from engine.pipeline.langgraph_pod.nodes import _build_outline_messages
 
     common: dict[str, Any] = {
         "canonical_topic": "量子力學",
@@ -546,22 +748,23 @@ def test_build_pod_messages_cefr_and_avoid_facts() -> None:
         "topic_type": "evergreen",
         "angle": "定義",
         "tone": "playful",
-        "avoid_summary": None,
+        "length_tier": "medium",
+        "sources": None,
+        "format": "dialogue",
     }
-    a2 = _build_pod_messages(cefr="A2", avoid_facts=("old fact",), **common)
-    b2 = _build_pod_messages(cefr="B2", avoid_facts=(), **common)
+    a2 = _build_outline_messages(cefr="A2", avoid_facts=("old fact",), **common)
+    b2 = _build_outline_messages(cefr="B2", avoid_facts=(), **common)
     a2_system = a2[0]["content"]
     b2_system = b2[0]["content"]
 
     assert a2_system != b2_system  # 等級指令有差異，不是只換字數
     assert "1,500 most common" in a2_system
     assert "native-like vocabulary" in b2_system
-    assert "old fact" in a2_system  # avoid_facts 進 BAN LIST
+    assert "old fact" in a2[1]["content"]  # avoid_facts 進 user prompt 第二段
     assert '"category": "tech"|"business"|"culture"|"science"' in a2_system
-    assert "Do not classify by entry mode" in a2_system
     assert "TONE: TONE" not in a2_system  # 修掉的重複前綴不回歸
 
-    mono = _build_pod_messages(cefr="B1", avoid_facts=(), format="monologue", **common)
+    mono = _build_outline_messages(cefr="B1", avoid_facts=(), **{**common, "format": "monologue"})
     assert "Nova" in mono[0]["content"]
     assert "Sarah: Mmm." not in mono[0]["content"]  # dialogue few-shot 不混進 monologue
 

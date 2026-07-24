@@ -81,7 +81,8 @@ async def lookup_dict(
     # （解決「點複數、查完整釋義」：lemma 條目存在時壓過原 word 命中）
     async with connection() as conn, conn.cursor(row_factory=dict_row) as cur:
         await cur.execute(
-            """select word, ipa, pos, translation, exchange, audio_url, example_en, example_zh
+            """select word, ipa, pos, translation, exchange, audio_url,
+                      example_en, example_zh, mnemonic
                from public.dict_cache
                where word = any(%s::text[])
                order by array_position(%s::text[], word) desc nulls last
@@ -105,8 +106,9 @@ async def lookup_dict(
         async with connection() as conn, conn.cursor(row_factory=dict_row) as cur:
             await cur.execute(
                 """
-                insert into public.dict_cache (word, ipa, pos, translation, example_en, example_zh)
-                values (%s, %s, %s::jsonb, %s, %s, %s)
+                insert into public.dict_cache
+                  (word, ipa, pos, translation, example_en, example_zh, mnemonic)
+                values (%s, %s, %s::jsonb, %s, %s, %s, %s)
                 on conflict (word) do nothing
                 """,
                 (
@@ -116,11 +118,13 @@ async def lookup_dict(
                     payload["translation"],
                     payload.get("example_en"),
                     payload.get("example_zh"),
+                    payload.get("mnemonic"),
                 ),
             )
             # 讀回（拿到 audio_url 等其它欄位的潛在值）
             await cur.execute(
-                """select word, ipa, pos, translation, exchange, audio_url, example_en, example_zh
+                """select word, ipa, pos, translation, exchange, audio_url,
+                          example_en, example_zh, mnemonic
                    from public.dict_cache where word = %s""",
                 (word,),
             )
@@ -135,6 +139,7 @@ async def lookup_dict(
             pos=payload.get("pos") or [],
             example_en=payload.get("example_en"),
             example_zh=payload.get("example_zh"),
+            mnemonic=payload.get("mnemonic"),
         )
         return ok(await _ensure_audio_url(word, fallback))
 
@@ -148,5 +153,6 @@ async def lookup_dict(
             pos=payload.get("pos") or [],
             example_en=payload.get("example_en"),
             example_zh=payload.get("example_zh"),
+            mnemonic=payload.get("mnemonic"),
         )
     )

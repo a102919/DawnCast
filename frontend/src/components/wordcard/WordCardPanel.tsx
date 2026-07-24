@@ -1,11 +1,14 @@
-import { type ReactNode } from 'react'
-import { X, BookmarkPlus, Check, AlertCircle, RotateCcw, Play } from 'lucide-react'
+import { useState, type ReactNode } from 'react'
+import { motion, AnimatePresence } from 'framer-motion'
+import { X, BookmarkPlus, Check, Loader2, AlertCircle, RotateCcw, Play } from 'lucide-react'
 import { toast } from 'sonner'
 import type { DictEntry } from '../../api/types'
 import type { Cue } from '../../types/episode'
 import { useVocab } from '../../state'
-import { formatPos, formatExchange, formatTimestamp } from '../../lib'
+import { formatPos, formatExchange, formatTimestamp, formatMultiline } from '../../lib'
+import { useSprings } from '../../lib/motion'
 import { IconButton, Sheet } from '../primitives'
+import { MnemonicHint } from './MnemonicHint'
 import { PronounceButton } from './PronounceButton'
 
 function highlightWord(sentence: string, word: string): ReactNode {
@@ -38,10 +41,13 @@ interface WordCardPanelProps {
 
 export function WordCardPanel({ isOpen, word, entry, lookupError, onRetry, activeCue, episodeId, activeCueIdx, onClose, onReplayCue }: WordCardPanelProps) {
   const { addVocab, isInVocab } = useVocab()
-  const inVocab = word ? isInVocab(word) : false
+  const { snappy } = useSprings()
+  const inVocab = entry ? isInVocab(entry.word) : false
+  const [isPending, setIsPending] = useState(false)
 
   const handleAddVocab = async () => {
     if (!word || !entry || !activeCue) return
+    setIsPending(true)
     try {
       await addVocab({
         word,
@@ -58,6 +64,8 @@ export function WordCardPanel({ isOpen, word, entry, lookupError, onRetry, activ
       })
     } catch {
       toast.error('加入單字本失敗，請重試')
+    } finally {
+      setIsPending(false)
     }
   }
 
@@ -89,10 +97,12 @@ export function WordCardPanel({ isOpen, word, entry, lookupError, onRetry, activ
             )}
           </div>
           <div className="flex items-center gap-1 mt-1">
-            <button
+            <motion.button
+              layout
               onClick={handleAddVocab}
-              disabled={inVocab || !entry}
-              className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md text-sm font-medium transition-colors duration-fast focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent ${
+              disabled={inVocab || !entry || isPending}
+              transition={snappy}
+              className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md text-sm font-medium overflow-hidden transition-[background-color,color,transform] duration-fast ease-apple active:scale-[0.97] disabled:active:scale-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent ${
                 inVocab
                   ? 'bg-success/10 text-success cursor-default'
                   : !entry
@@ -100,12 +110,43 @@ export function WordCardPanel({ isOpen, word, entry, lookupError, onRetry, activ
                     : 'bg-accent text-white hover:bg-accent-hover cursor-pointer'
               }`}
             >
-              {inVocab ? (
-                <><Check size={14} /> 已收錄</>
-              ) : (
-                <><BookmarkPlus size={14} /> 加入單字本</>
-              )}
-            </button>
+              <AnimatePresence mode="wait" initial={false}>
+                {isPending ? (
+                  <motion.span
+                    key="pending"
+                    initial={{ opacity: 0, scale: 0.7 }}
+                    animate={{ opacity: 1, scale: 1 }}
+                    exit={{ opacity: 0, scale: 0.7 }}
+                    transition={snappy}
+                    className="inline-flex items-center gap-1.5"
+                  >
+                    <Loader2 size={14} className="animate-spin" /> 加入中
+                  </motion.span>
+                ) : inVocab ? (
+                  <motion.span
+                    key="added"
+                    initial={{ opacity: 0, scale: 0.7 }}
+                    animate={{ opacity: 1, scale: 1 }}
+                    exit={{ opacity: 0, scale: 0.7 }}
+                    transition={snappy}
+                    className="inline-flex items-center gap-1.5"
+                  >
+                    <Check size={14} /> 已收錄
+                  </motion.span>
+                ) : (
+                  <motion.span
+                    key="idle"
+                    initial={{ opacity: 0, scale: 0.7 }}
+                    animate={{ opacity: 1, scale: 1 }}
+                    exit={{ opacity: 0, scale: 0.7 }}
+                    transition={snappy}
+                    className="inline-flex items-center gap-1.5"
+                  >
+                    <BookmarkPlus size={14} /> 加入單字本
+                  </motion.span>
+                )}
+              </AnimatePresence>
+            </motion.button>
             <IconButton label="關閉詞卡" onClick={onClose}>
               <X size={18} />
             </IconButton>
@@ -143,7 +184,7 @@ export function WordCardPanel({ isOpen, word, entry, lookupError, onRetry, activ
           <p className="text-text-secondary text-sm">找不到釋義</p>
         ) : (
           <div className="space-y-3">
-            <p className="text-xl font-medium text-text-primary whitespace-pre-line">{entry.translation.replaceAll('\\n', '\n')}</p>
+            <p className="text-xl font-medium text-text-primary whitespace-pre-line">{formatMultiline(entry.translation)}</p>
             {entry.exchange && (
               <p className="text-xs text-text-tertiary">{formatExchange(entry.exchange)}</p>
             )}
@@ -182,6 +223,11 @@ export function WordCardPanel({ isOpen, word, entry, lookupError, onRetry, activ
                 <p className="text-xs text-text-tertiary">
                   來自 {formatTimestamp(activeCue.start)} · {activeCue.speaker}
                 </p>
+              </div>
+            )}
+            {entry.mnemonic && (
+              <div className="pt-1">
+                <MnemonicHint text={entry.mnemonic} />
               </div>
             )}
           </div>
