@@ -19,6 +19,7 @@ export function PlayerProvider({ children }: { readonly children: ReactNode }) {
   const [duration, setDuration] = useState(0)
   const [playbackRate, setPlaybackRateState] = useState(1)
   const progressTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const animationFrameRef = useRef<number | null>(null)
   const lastSavedTimeRef = useRef<number>(0)
   const currentEpisodeIdRef = useRef<string | null>(null)
   const { lastPlayedEpisodeId, lastPlayedPosition, setLastPlayed } = useActivity()
@@ -54,40 +55,119 @@ export function PlayerProvider({ children }: { readonly children: ReactNode }) {
     }
   }, [persistProgress])
 
+  const stopSyncLoop = useCallback(() => {
+    if (animationFrameRef.current !== null) {
+      cancelAnimationFrame(animationFrameRef.current)
+      animationFrameRef.current = null
+    }
+  }, [])
+
+  const startSyncLoop = useCallback((el: HTMLMediaElement) => {
+    if (animationFrameRef.current !== null) return
+
+    const tick = () => {
+      if (videoRef.current !== el || el.paused || el.ended) {
+        animationFrameRef.current = null
+        return
+      }
+      setCurrentTime(el.currentTime)
+      animationFrameRef.current = requestAnimationFrame(tick)
+    }
+
+    animationFrameRef.current = requestAnimationFrame(tick)
+  }, [])
+
   const setVideoRef = useCallback((el: HTMLMediaElement | null) => {
-    if (videoRef.current && progressTimerRef.current) {
+    const previous = videoRef.current
+    if (previous) {
+      previous.ontimeupdate = null
+      previous.onplay = null
+      previous.onpause = null
+      previous.onended = null
+      previous.onloadedmetadata = null
+      previous.onloadstart = null
+      previous.onseeking = null
+      previous.onseeked = null
+    }
+    stopSyncLoop()
+    if (progressTimerRef.current) {
       clearTimeout(progressTimerRef.current)
       progressTimerRef.current = null
     }
+
     videoRef.current = el
-    if (el) {
-      el.ontimeupdate = () => {
-        const t = el.currentTime
-        setCurrentTime(t)
-        if (progressTimerRef.current) clearTimeout(progressTimerRef.current)
-        progressTimerRef.current = setTimeout(() => {
-          persistProgress(t, currentEpisodeIdRef.current)
-        }, PROGRESS_THROTTLE_MS)
-      }
-      el.onplay = () => setIsPlaying(true)
-      el.onpause = () => {
-        setIsPlaying(false)
-        persistProgress(el.currentTime, currentEpisodeIdRef.current, { force: true })
-      }
-      el.onloadedmetadata = () => setDuration(el.duration)
+    setCurrentTime(0)
+    setDuration(0)
+    setIsPlaying(false)
+    if (!el) return
+
+    const syncTime = () => {
+      const t = el.currentTime
+      setCurrentTime(t)
+      if (progressTimerRef.current) clearTimeout(progressTimerRef.current)
+      progressTimerRef.current = setTimeout(() => {
+        persistProgress(t, currentEpisodeIdRef.current)
+      }, PROGRESS_THROTTLE_MS)
     }
-  }, [persistProgress])
+
+    const resetMediaState = () => {
+      stopSyncLoop()
+      if (progressTimerRef.current) {
+        clearTimeout(progressTimerRef.current)
+        progressTimerRef.current = null
+      }
+      setCurrentTime(0)
+      setDuration(0)
+      setIsPlaying(false)
+    }
+
+    el.onloadstart = resetMediaState
+    el.ontimeupdate = syncTime
+    el.onseeking = syncTime
+    el.onseeked = syncTime
+    el.onplay = () => {
+      setIsPlaying(true)
+      startSyncLoop(el)
+    }
+    el.onpause = () => {
+      stopSyncLoop()
+      setIsPlaying(false)
+      syncTime()
+      persistProgress(el.currentTime, currentEpisodeIdRef.current, { force: true })
+    }
+    el.onended = () => {
+      stopSyncLoop()
+      setIsPlaying(false)
+      syncTime()
+      persistProgress(el.currentTime, currentEpisodeIdRef.current, { force: true })
+    }
+    el.onloadedmetadata = () => {
+      setDuration(Number.isFinite(el.duration) ? el.duration : 0)
+      syncTime()
+    }
+
+    if (el.readyState >= 1) {
+      setDuration(Number.isFinite(el.duration) ? el.duration : 0)
+      syncTime()
+    }
+  }, [persistProgress, startSyncLoop, stopSyncLoop])
 
   const seekTo = useCallback((time: number) => {
-    if (videoRef.current) {
-      videoRef.current.currentTime = time
-      persistProgress(time, currentEpisodeIdRef.current)
-      setCurrentTime(time)
-    }
+    const el = videoRef.current
+    if (!el || !Number.isFinite(time)) return
+
+    const max = Number.isFinite(el.duration) && el.duration > 0 ? el.duration : Infinity
+    const nextTime = Math.min(Math.max(0, time), max)
+    el.currentTime = nextTime
+    persistProgress(nextTime, currentEpisodeIdRef.current)
+    setCurrentTime(nextTime)
   }, [persistProgress])
 
   const play = useCallback(() => {
-    videoRef.current?.play()
+    const promise = videoRef.current?.play()
+    if (promise) {
+      void promise.catch(() => setIsPlaying(false))
+    }
   }, [])
 
   const pause = useCallback(() => {
@@ -102,6 +182,9 @@ export function PlayerProvider({ children }: { readonly children: ReactNode }) {
   }, [])
 
   const loadProgress = useCallback((episodeId: string) => {
+    if (currentEpisodeIdRef.current !== episodeId) {
+      lastSavedTimeRef.current = 0
+    }
     currentEpisodeIdRef.current = episodeId
     const saved = storageGet<SavedProgress>(LS_KEY_CURRENT_TIME)
     if (saved && saved.episodeId === episodeId && saved.currentTime > 0) {

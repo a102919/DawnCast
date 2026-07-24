@@ -213,3 +213,11 @@ SMTP/SendGrid/Resend/SES 欄位），也沒有排程觸發機制可掛實際 dis
 ### 標 obsolete 對象
 - [x] `fly.api.toml` / `fly.worker.toml`（在 backup/ 保留備查）
 - [x] `.claude/plans/buzzing-splashing-willow.md`（歸位 plan）→ 改存成「已併入 Zeabur 部署任務」註腳
+
+---
+
+## Podcast 詞卡暫停與單句循環（2026-07-25）
+
+- [x] 播放中點單字立即暫停，關閉詞卡時依原狀態恢復
+- [x] 手機與桌機播放列加入單句循環 toggle
+- [x] 補回歸測試並通過 frontend lint / typecheck / test

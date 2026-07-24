@@ -12,7 +12,6 @@
 
 from __future__ import annotations
 
-import contextlib
 import json
 import shutil
 import tempfile
@@ -301,16 +300,18 @@ def make_mock_workdir() -> Path:
     return Path(tempfile.mkdtemp(prefix="pod-mock-"))
 
 
-def safe_local_fallback(mp3_src: Path, slug: str, local_media_dir: str) -> None:
-    """對應 production _upload_artifacts 的本地 fallback 邏輯。"""
+def safe_local_fallback(mp3_src: Path, slug: str, local_media_dir: str) -> bool:
+    """把新產出的音檔寫入本地 fallback，回報這次是否真的寫成功。"""
     if not local_media_dir:
-        return
+        return False
     target = Path(local_media_dir)
     if not target.is_dir():
-        return
-    # production 也是 warn-and-continue；用 suppress 取代 try/except/pass
-    with contextlib.suppress(OSError):
+        return False
+    try:
         shutil.copy2(mp3_src, target / f"{slug}.mp3")
+    except OSError:
+        return False
+    return True
 
 
 # ── local preview dump（demo 印出最終 json）───────────────

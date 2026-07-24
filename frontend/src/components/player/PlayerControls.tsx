@@ -1,16 +1,19 @@
 import { useEffect, useCallback, useState, useRef } from 'react'
-import { Play, Pause, Volume2, VolumeX } from 'lucide-react'
+import { Play, Pause, Repeat1, Volume2, VolumeX } from 'lucide-react'
 import { usePlayer } from '../../state'
 import { formatTime } from '../../lib'
 import { IconButton } from '../primitives'
 
 interface PlayerControlsProps {
   readonly duration: number
+  readonly isCueLooping: boolean
+  readonly canLoopCue: boolean
+  readonly onCueLoopToggle: () => void
 }
 
 const RATES = [0.75, 1, 1.25, 1.5] as const
 
-export function PlayerControls({ duration }: PlayerControlsProps) {
+export function PlayerControls({ duration, isCueLooping, canLoopCue, onCueLoopToggle }: PlayerControlsProps) {
   const { currentTime, isPlaying, seekTo, play, pause, playbackRate, setPlaybackRate, videoRef } = usePlayer()
   const [isMuted, setIsMuted] = useState(false)
   const volumeRef = useRef(1)
@@ -98,6 +101,15 @@ export function PlayerControls({ duration }: PlayerControlsProps) {
         <div className="flex items-center gap-1">
           <IconButton label={isPlaying ? '暫停' : '播放'} onClick={isPlaying ? pause : play}>
             {isPlaying ? <Pause size={18} /> : <Play size={18} />}
+          </IconButton>
+          <IconButton
+            label={isCueLooping ? '關閉單句循環' : '開啟單句循環'}
+            onClick={onCueLoopToggle}
+            disabled={!canLoopCue}
+            aria-pressed={isCueLooping}
+            className={isCueLooping ? 'text-accent bg-accent/10' : ''}
+          >
+            <Repeat1 size={18} />
           </IconButton>
           <div className="flex items-center gap-1.5">
             <IconButton label={isMuted ? '取消靜音' : '靜音'} onClick={toggleMute}>

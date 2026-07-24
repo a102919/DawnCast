@@ -1,4 +1,4 @@
-import { RotateCcw, Play, Pause, ChevronRight, BookMarked, MessageCircle } from 'lucide-react'
+import { RotateCcw, Play, Pause, ChevronRight, Repeat1, BookMarked, MessageCircle } from 'lucide-react'
 import { IconButton } from '../primitives'
 import { usePlayer } from '../../state'
 import { formatTime } from '../../lib'
@@ -11,6 +11,10 @@ interface PlayerBottomBarProps {
   readonly duration: number
   readonly cues: readonly Cue[]
   readonly activeCueIdx: number
+  readonly isCueLooping: boolean
+  readonly canLoopCue: boolean
+  readonly onCueLoopToggle: () => void
+  readonly onNextCue: () => void
   readonly onCopyPrompt: () => void
   readonly onVocabOpen: () => void
 }
@@ -19,6 +23,10 @@ export function PlayerBottomBar({
   duration,
   cues,
   activeCueIdx,
+  isCueLooping,
+  canLoopCue,
+  onCueLoopToggle,
+  onNextCue,
   onCopyPrompt,
   onVocabOpen,
 }: PlayerBottomBarProps) {
@@ -30,11 +38,6 @@ export function PlayerBottomBar({
   }
 
   const handleRewind = () => seekTo(Math.max(0, currentTime - 10))
-
-  const handleNextCue = () => {
-    const next = cues[activeCueIdx + 1]
-    if (next) seekTo(next.start)
-  }
 
   const progress = duration > 0 ? (currentTime / duration) * 100 : 0
 
@@ -87,8 +90,18 @@ export function PlayerBottomBar({
           </button>
 
           <IconButton
+            label={isCueLooping ? '關閉單句循環' : '開啟單句循環'}
+            onClick={onCueLoopToggle}
+            disabled={!canLoopCue}
+            aria-pressed={isCueLooping}
+            className={isCueLooping ? 'text-accent bg-accent/10' : ''}
+          >
+            <Repeat1 size={18} />
+          </IconButton>
+
+          <IconButton
             label="下一句"
-            onClick={handleNextCue}
+            onClick={onNextCue}
             disabled={activeCueIdx < 0 || activeCueIdx >= cues.length - 1}
           >
             <ChevronRight size={18} />

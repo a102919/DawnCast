@@ -153,6 +153,7 @@ async def run_pod(
         "errors": [],
         "rate_limited": False,
         "storage_failed": False,
+        "local_fallback_written": False,
         "already_rendered": False,
     }
 

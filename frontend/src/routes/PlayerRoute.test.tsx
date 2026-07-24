@@ -17,6 +17,7 @@ import { act, type ReactNode } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { MemoryRouter, Routes, Route } from 'react-router-dom'
 import { PlayerRoute } from './PlayerRoute'
+import type { DictEntry } from '../api/types'
 import type { Episode } from '../types/episode'
 import type { MockEpisode } from '../lib'
 
@@ -34,11 +35,18 @@ function mockEpisodeFor(id: string): Episode {
   }
 }
 
+const MOCK_DICT_ENTRY: DictEntry = {
+  word: 'hello',
+  pos: ['int.'],
+  translation: '你好',
+  exampleEn: 'Hello there.',
+}
+
 // Mock api 模組：spyOn 真物件太繞，直接替換整個 export（跟 DailyOrderProvider.test.tsx 同手法）。
 const listEpisodes = vi.fn(async (): Promise<readonly MockEpisode[]> => MOCK_LIST)
 const getEpisode = vi.fn(async (id: string): Promise<Episode> => mockEpisodeFor(id))
 const getDeliveredEpisode = vi.fn(async (_date: string): Promise<Episode | null> => null)
-const lookupDict = vi.fn(async (_word: string) => null)
+const lookupDict = vi.fn(async (_word: string): Promise<DictEntry | null> => null)
 
 vi.mock('../api', () => ({
   get api() {
@@ -46,25 +54,32 @@ vi.mock('../api', () => ({
   },
 }))
 
+let playerCurrentTime = 0
+let playerIsPlaying = false
+let popupEnabled = false
+const seekTo = vi.fn()
+const play = vi.fn()
+const pause = vi.fn()
+
 // PlayerRoute 直接呼叫的 state hooks 全部換成靜態假值：這個測試只關心「URL 的
 // id 有沒有正確傳進 api.getEpisode」，不需要真的掛整棵 Provider tree。
 vi.mock('../state', () => ({
   usePlayer: () => ({
-    currentTime: 0,
-    isPlaying: false,
+    currentTime: playerCurrentTime,
+    isPlaying: playerIsPlaying,
     duration: 0,
     playbackRate: 1,
     videoRef: { current: null },
-    seekTo: vi.fn(),
+    seekTo,
     setVideoRef: vi.fn(),
-    play: vi.fn(),
-    pause: vi.fn(),
+    play,
+    pause,
     setPlaybackRate: vi.fn(),
     loadProgress: () => ({ currentTime: 0, exists: false }),
   }),
   useSettings: () => ({
     settings: {
-      popupEnabled: false,
+      popupEnabled,
       playbackRate: 1,
       theme: 'auto',
       preferredTopics: [],
@@ -128,17 +143,50 @@ async function renderAt(initialPath: string): Promise<{ root: Root; container: H
     await Promise.resolve()
     await Promise.resolve()
   })
-
   return { root, container }
 }
 
 const pendingRoots: Root[] = []
 
+async function rerenderAt(root: Root, initialPath: string): Promise<void> {
+  await act(async () => {
+    root.render(<Wrapper initialPath={initialPath}><PlayerRoute /></Wrapper>)
+    await Promise.resolve()
+  })
+}
+
+function getWord(container: HTMLElement): HTMLSpanElement {
+  const word = Array.from(container.querySelectorAll('span')).find(node => node.textContent === 'Hello')
+  if (!(word instanceof HTMLSpanElement)) throw new Error('找不到字幕單字')
+  return word
+}
+
+function getButton(container: HTMLElement, label: string): HTMLButtonElement {
+  const button = Array.from(container.querySelectorAll<HTMLButtonElement>('button'))
+    .find(el => el.getAttribute('aria-label') === label || el.textContent?.includes(label))
+  if (!button) throw new Error(`找不到按鈕：${label}`)
+  return button
+}
+
+async function click(element: HTMLElement): Promise<void> {
+  await act(async () => {
+    element.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    await Promise.resolve()
+  })
+}
+
 beforeEach(() => {
   listEpisodes.mockClear()
   getEpisode.mockClear()
   getDeliveredEpisode.mockClear()
-  lookupDict.mockClear()
+  lookupDict.mockReset()
+  lookupDict.mockResolvedValue(null)
+  seekTo.mockClear()
+  play.mockClear()
+  pause.mockClear()
+  playerCurrentTime = 0
+  playerIsPlaying = false
+  popupEnabled = false
 })
 
 afterEach(async () => {
@@ -169,18 +217,182 @@ describe('PlayerRoute：/player/:id 要播 URL 指定的集數', () => {
     expect(getEpisode).toHaveBeenCalledWith('ep-1')
   })
 
-  it('啟用詞卡關閉時，點字幕單字不會查詢字典', async () => {
+  it('啟用詞卡關閉時，點字幕單字不會暫停或查詢字典', async () => {
     const { root, container } = await renderAt('/player/ep-2')
     pendingRoots.push(root)
 
-    const word = Array.from(container.querySelectorAll('span')).find(node => node.textContent === 'Hello')
-    if (!word) throw new Error('找不到字幕單字')
+    await click(getWord(container))
+
+    expect(pause).not.toHaveBeenCalled()
+    expect(lookupDict).not.toHaveBeenCalled()
+  })
+})
+
+describe('PlayerRoute：點單字時的播放控制', () => {
+  it('播放中點字：點擊時就 pause，關閉後恢復 play', async () => {
+    popupEnabled = true
+    playerIsPlaying = true
+    let resolveLookup!: (entry: DictEntry | null) => void
+    lookupDict.mockImplementationOnce(() => new Promise<DictEntry | null>(r => { resolveLookup = r }))
+
+    const { root, container } = await renderAt('/player/ep-2')
+    pendingRoots.push(root)
+
+    await click(getWord(container))
+    // 必須在字典 Promise resolve 之前就暫停，使用者點字瞬間要 stop 音訊
+    expect(pause).toHaveBeenCalledTimes(1)
 
     await act(async () => {
-      word.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+      resolveLookup(MOCK_DICT_ENTRY)
       await Promise.resolve()
     })
+    await rerenderAt(root, '/player/ep-2')
 
-    expect(lookupDict).not.toHaveBeenCalled()
+    expect(lookupDict).toHaveBeenCalledWith('hello')
+
+    await click(getButton(container, '關閉詞卡'))
+    expect(play).toHaveBeenCalledTimes(1)
+  })
+
+  it('點字前已暫停：關閉詞卡後仍維持暫停', async () => {
+    popupEnabled = true
+    playerIsPlaying = false
+    lookupDict.mockResolvedValueOnce(MOCK_DICT_ENTRY)
+
+    const { root, container } = await renderAt('/player/ep-2')
+    pendingRoots.push(root)
+
+    await click(getWord(container))
+    expect(pause).not.toHaveBeenCalled()
+    expect(lookupDict).toHaveBeenCalledWith('hello')
+
+    await click(getButton(container, '關閉詞卡'))
+    expect(play).not.toHaveBeenCalled()
+  })
+
+  it('查詢失敗重試不覆寫播放快照：恢復路徑仍正確', async () => {
+    popupEnabled = true
+    playerIsPlaying = true
+    lookupDict.mockRejectedValueOnce(new Error('boom'))
+    lookupDict.mockResolvedValueOnce(MOCK_DICT_ENTRY)
+
+    const { root, container } = await renderAt('/player/ep-2')
+    pendingRoots.push(root)
+
+    await click(getWord(container))
+    expect(pause).toHaveBeenCalledTimes(1)
+
+    const retry = getButton(container, '重試')
+    await click(retry)
+    expect(lookupDict).toHaveBeenCalledTimes(2)
+
+    await click(getButton(container, '關閉詞卡'))
+    // 重試不應因為目前「未播放」就清掉恢復旗標
+    expect(play).toHaveBeenCalledTimes(1)
+  })
+
+  it('重聽這句：seek 正確且只 play 一次（不重複觸發）', async () => {
+    popupEnabled = true
+    playerIsPlaying = true
+    lookupDict.mockResolvedValueOnce(MOCK_DICT_ENTRY)
+
+    const { root, container } = await renderAt('/player/ep-2')
+    pendingRoots.push(root)
+
+    await click(getWord(container))
+    expect(pause).toHaveBeenCalledTimes(1)
+
+    await click(getButton(container, '重聽這句'))
+    expect(seekTo).toHaveBeenLastCalledWith(0)
+    expect(play).toHaveBeenCalledTimes(1)
+  })
+})
+
+describe('PlayerRoute：單句循環', () => {
+  it('開啟循環會從目前 cue 起點開始播放，關閉時不改時間也不額外 play/pause', async () => {
+    playerCurrentTime = 0.5
+    const { root, container } = await renderAt('/player/ep-2')
+    pendingRoots.push(root)
+
+    const toggle = getButton(container, '開啟單句循環')
+    expect(toggle.getAttribute('aria-pressed')).toBe('false')
+
+    await click(toggle)
+    expect(seekTo).toHaveBeenLastCalledWith(0)
+    expect(play).toHaveBeenCalledTimes(1)
+
+    await rerenderAt(root, '/player/ep-2')
+    const toggledOn = getButton(container, '關閉單句循環')
+    expect(toggledOn.getAttribute('aria-pressed')).toBe('true')
+
+    await click(toggledOn)
+    expect(seekTo).toHaveBeenCalledTimes(1)
+    expect(play).toHaveBeenCalledTimes(1)
+    expect(pause).not.toHaveBeenCalled()
+  })
+
+  it('循環中越過 cue end 會自動 seek 回起點並 play', async () => {
+    playerCurrentTime = 0.5
+    const { root, container } = await renderAt('/player/ep-2')
+    pendingRoots.push(root)
+
+    await click(getButton(container, '開啟單句循環'))
+    play.mockClear()
+    seekTo.mockClear()
+
+    playerCurrentTime = 1.5 // cues[0].end=1，跨越邊界
+    await rerenderAt(root, '/player/ep-2')
+
+    expect(seekTo).toHaveBeenLastCalledWith(0)
+    expect(play).toHaveBeenCalledTimes(1)
+  })
+
+  it('循環中開詞卡暫停：關閉後繼續循環', async () => {
+    popupEnabled = true
+    playerIsPlaying = true
+    playerCurrentTime = 0.5
+    lookupDict.mockResolvedValueOnce(MOCK_DICT_ENTRY)
+
+    const { root, container } = await renderAt('/player/ep-2')
+    pendingRoots.push(root)
+
+    await click(getButton(container, '開啟單句循環'))
+    expect(play).toHaveBeenCalledTimes(1)
+
+    await click(getWord(container))
+    expect(pause).toHaveBeenCalledTimes(1)
+
+    await click(getButton(container, '關閉詞卡'))
+    expect(play).toHaveBeenCalledTimes(2)
+
+    // loop 旗標仍存在，下一輪越過 end 還是會 seek 回 start
+    play.mockClear()
+    seekTo.mockClear()
+    playerCurrentTime = 1.5
+    await rerenderAt(root, '/player/ep-2')
+    expect(seekTo).toHaveBeenLastCalledWith(0)
+    expect(play).toHaveBeenCalledTimes(1)
+  })
+
+  it('循環中按下一句會更新 lock 目標，不會立即跳回舊句', async () => {
+    // 預設 fixture 只有一句，這個 case 改寫成 2 句
+    getEpisode.mockResolvedValueOnce({
+      id: 'ep-2',
+      title: 'Episode ep-2',
+      audioUrl: 'https://example.com/ep-2.mp3',
+      cues: [
+        { index: 0, speaker: 'Alex', text: 'Hello', zh: '你好', start: 0, end: 1 },
+        { index: 1, speaker: 'Sam', text: 'World', zh: '世界', start: 1, end: 2 },
+      ],
+    })
+    playerCurrentTime = 0.5
+    const { root, container } = await renderAt('/player/ep-2')
+    pendingRoots.push(root)
+
+    await click(getButton(container, '開啟單句循環'))
+    expect(seekTo).toHaveBeenLastCalledWith(0)
+
+    await click(getButton(container, '下一句'))
+    expect(seekTo).toHaveBeenLastCalledWith(1)
   })
 })

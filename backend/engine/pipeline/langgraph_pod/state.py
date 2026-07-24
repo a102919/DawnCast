@@ -70,5 +70,6 @@ class PodState(TypedDict, total=False):
     # ── control / 錯誤 ───────────────────────────────────────
     rate_limited: bool
     storage_failed: bool
+    local_fallback_written: bool
     rewrite_iterations: int
     errors: Annotated[list[str], _append]

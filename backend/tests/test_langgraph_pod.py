@@ -14,6 +14,7 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -25,7 +26,9 @@ from engine.pipeline.langgraph_pod.mock import (
     MockRenderer,
     get_mocks,
     make_mock_workdir,
+    safe_local_fallback,
 )
+from engine.pipeline.langgraph_pod.nodes import storage_decision
 from shared.config import get_settings
 from shared.errors import RateLimitError
 from shared.models import ScriptJSON
@@ -451,6 +454,31 @@ async def test_r2_failure_with_no_local_fallback_deletes_row() -> None:
     assert repo.deliveries == []
 
 
+def test_local_fallback_reports_write_result(tmp_path: Path) -> None:
+    source = tmp_path / "episode.mp3"
+    media_dir = tmp_path / "media"
+    source.write_bytes(b"new-audio")
+    media_dir.mkdir()
+
+    assert safe_local_fallback(source, "ep-1", str(media_dir)) is True
+    assert (media_dir / "ep-1.mp3").read_bytes() == b"new-audio"
+    assert safe_local_fallback(source, "ep-1", str(tmp_path / "missing")) is False
+
+
+def test_storage_decision_does_not_accept_stale_fallback_file() -> None:
+    config = {"configurable": {"settings": get_settings()}}
+    failed_state = {
+        "storage_failed": True,
+        "local_fallback_written": False,
+        "slug": "ep-1",
+    }
+
+    assert storage_decision(failed_state, config) == "dead_letter"
+    assert storage_decision(
+        {**failed_state, "local_fallback_written": True}, config
+    ) == "update_keys"
+
+
 # ── 6. rate-limit + 無 failover → degrade（raise RateLimitError）
 
 
@@ -784,4 +812,5 @@ def test_sources_block_reinforces_avoid_facts_next_to_extracted_facts_rule() -> 
 
     with_avoid = _sources_block(sources, ("old fact",))
     assert "old fact" in with_avoid
-    assert "extracted_facts" in with_avoid.split("old fact")[0][-200:]  # 緊鄰硬性規則，不是隨便塞在別處
+    # 緊鄰硬性規則，不是隨便塞在別處
+    assert "extracted_facts" in with_avoid.split("old fact")[0][-200:]

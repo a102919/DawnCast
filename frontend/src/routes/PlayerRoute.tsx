@@ -24,9 +24,10 @@ export function PlayerRoute() {
   const [selectedCue, setSelectedCue] = useState<Cue | null>(null)
   const [dictEntry, setDictEntry] = useState<DictEntry | null>(null)
   const [isWordCardOpen, setIsWordCardOpen] = useState(false)
+  const [loopCueIdx, setLoopCueIdx] = useState<number | null>(null)
   const [isVocabDrawerOpen, setIsVocabDrawerOpen] = useState(false)
   const [lookupError, setLookupError] = useState<string | null>(null)
-  const { currentTime, duration, seekTo, play, videoRef, loadProgress, setPlaybackRate } = usePlayer()
+  const { currentTime, isPlaying, duration, seekTo, play, pause, videoRef, loadProgress, setPlaybackRate } = usePlayer()
   const { settings } = useSettings()
   const { markPlayed } = useDailyOrder()
   const { addListenMinutes, addLookupCount, markListened } = useActivity()
@@ -35,10 +36,13 @@ export function PlayerRoute() {
   const hasMarkedListened = useRef(false)
   const hasMarkedDailyPlayed = useRef(false)
   const initialSeekAppliedRef = useRef(false)
+  const initialSeekTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const hasNotifiedDueRef = useRef(false)
+  const resumePlaybackAfterWordCardRef = useRef(false)
 
   const loadEpisode = useCallback(async () => {
     setFetchError(null)
+    setLoopCueIdx(null)
     try {
       // ?date= 連結：DailyRoute 帶日期過來，先查當天交付；找不到（尚未生成／不歸屬）
       // fallback 到 listEpisodes()[0]，避免擋使用者。
@@ -85,19 +89,32 @@ export function PlayerRoute() {
 
   useEffect(() => {
     if (!episode || initialSeekAppliedRef.current) return
-    const progress = loadProgress(episode.id)
+    const episodeId = episode.id
+    const expectedSrc = new URL(episode.audioUrl, window.location.href).href
+    const progress = loadProgress(episodeId)
     if (!progress.exists) return
+
+    let cancelled = false
     const trySeek = () => {
-      if (initialSeekAppliedRef.current) return
+      if (cancelled || initialSeekAppliedRef.current || episodeIdRef.current !== episodeId) return
       const v = videoRef.current
-      if (v && v.readyState >= 1) {
+      if (v && v.readyState >= 1 && v.currentSrc === expectedSrc) {
+        initialSeekTimerRef.current = null
         initialSeekAppliedRef.current = true
         seekTo(progress.currentTime)
-      } else {
-        setTimeout(trySeek, 100)
+        return
+      }
+      initialSeekTimerRef.current = setTimeout(trySeek, 100)
+    }
+
+    trySeek()
+    return () => {
+      cancelled = true
+      if (initialSeekTimerRef.current !== null) {
+        clearTimeout(initialSeekTimerRef.current)
+        initialSeekTimerRef.current = null
       }
     }
-    trySeek()
   }, [episode, loadProgress, seekTo, videoRef])
 
   useEffect(() => {
@@ -127,11 +144,15 @@ export function PlayerRoute() {
     [episode, currentTime],
   )
 
-  const handleWordClick = async (word: string, cue: Cue) => {
-    if (!settings.popupEnabled) return
-    setSelectedWord(word)
-    setSelectedCue(cue)
-    setIsWordCardOpen(true)
+  useEffect(() => {
+    if (!episode || loopCueIdx === null) return
+    const cue = episode.cues[loopCueIdx]
+    if (!cue || (currentTime >= cue.start && currentTime < cue.end)) return
+    seekTo(cue.start)
+    play()
+  }, [currentTime, episode, loopCueIdx, play, seekTo])
+
+  const lookupWord = async (word: string) => {
     setDictEntry(null)
     setLookupError(null)
     try {
@@ -144,15 +165,65 @@ export function PlayerRoute() {
     }
   }
 
+  const handleWordClick = async (word: string, cue: Cue) => {
+    if (!settings.popupEnabled) return
+    resumePlaybackAfterWordCardRef.current = isPlaying
+    if (isPlaying) pause()
+    setSelectedWord(word)
+    setSelectedCue(cue)
+    setIsWordCardOpen(true)
+    await lookupWord(word)
+  }
+
+  const closeWordCard = useCallback(() => {
+    const shouldResume = resumePlaybackAfterWordCardRef.current
+    resumePlaybackAfterWordCardRef.current = false
+    setIsWordCardOpen(false)
+    if (shouldResume) play()
+  }, [play])
+
+  const handleReplayCue = () => {
+    if (!episode || !selectedCue) return
+    const cueIdx = episode.cues.indexOf(selectedCue)
+    if (loopCueIdx !== null && cueIdx >= 0) setLoopCueIdx(cueIdx)
+    seekTo(selectedCue.start)
+    resumePlaybackAfterWordCardRef.current = true
+    closeWordCard()
+  }
+
   const handleCueClick = useCallback((cue: Cue) => {
+    if (loopCueIdx !== null && episode) {
+      const cueIdx = episode.cues.indexOf(cue)
+      if (cueIdx >= 0) setLoopCueIdx(cueIdx)
+    }
     seekTo(cue.start)
     play()
-  }, [seekTo, play])
+  }, [episode, loopCueIdx, seekTo, play])
+
+  const handleCueLoopToggle = useCallback(() => {
+    if (loopCueIdx !== null) {
+      setLoopCueIdx(null)
+      return
+    }
+    if (!episode || activeCueIdx < 0) return
+    const cue = episode.cues[activeCueIdx]
+    if (!cue) return
+    setLoopCueIdx(activeCueIdx)
+    seekTo(cue.start)
+    play()
+  }, [activeCueIdx, episode, loopCueIdx, play, seekTo])
+
+  const handleNextCue = useCallback(() => {
+    if (!episode) return
+    const nextCueIdx = activeCueIdx + 1
+    const nextCue = episode.cues[nextCueIdx]
+    if (!nextCue) return
+    if (loopCueIdx !== null) setLoopCueIdx(nextCueIdx)
+    seekTo(nextCue.start)
+  }, [activeCueIdx, episode, loopCueIdx, seekTo])
 
   const handleLookupRetry = () => {
-    if (selectedWord && selectedCue) {
-      void handleWordClick(selectedWord, selectedCue)
-    }
+    if (selectedWord) void lookupWord(selectedWord)
   }
 
   const handleEpisodeEnded = useCallback(() => {
@@ -198,6 +269,10 @@ export function PlayerRoute() {
   }
 
   const selectedCueIdx = selectedCue ? episode.cues.indexOf(selectedCue) : -1
+  const isCueLooping = loopCueIdx !== null
+  const canLoopCue = isCueLooping || activeCueIdx >= 0
+  const cueDuration = episode.cues[episode.cues.length - 1]?.end ?? 0
+  const playerDuration = duration > 0 ? duration : cueDuration
 
   return (
     <div className="bg-bg-canvas h-[calc(100dvh-56px-env(safe-area-inset-top,0px))] overflow-hidden text-text-primary flex flex-col">
@@ -218,7 +293,12 @@ export function PlayerRoute() {
 
       {/* 控制列（桌面） */}
       <footer className="hidden lg:block fixed bottom-0 left-0 right-0 z-30 px-8 pb-6 pt-4 bg-bg-primary border-t border-border">
-        <PlayerControls duration={episode.cues[episode.cues.length - 1]?.end ?? 0} />
+        <PlayerControls
+          duration={playerDuration}
+          isCueLooping={isCueLooping}
+          canLoopCue={canLoopCue}
+          onCueLoopToggle={handleCueLoopToggle}
+        />
         <div className="flex items-center justify-center gap-4 mt-3">
           <button
             onClick={() => void handleCopyPrompt()}
@@ -239,9 +319,13 @@ export function PlayerRoute() {
 
       {/* mobile bottom bar */}
       <PlayerBottomBar
-        duration={episode.cues[episode.cues.length - 1]?.end ?? 0}
+        duration={playerDuration}
         cues={episode.cues}
         activeCueIdx={activeCueIdx}
+        isCueLooping={isCueLooping}
+        canLoopCue={canLoopCue}
+        onCueLoopToggle={handleCueLoopToggle}
+        onNextCue={handleNextCue}
         onCopyPrompt={() => void handleCopyPrompt()}
         onVocabOpen={() => setIsVocabDrawerOpen(true)}
       />
@@ -256,13 +340,8 @@ export function PlayerRoute() {
         activeCue={selectedCue}
         episodeId={episode.id}
         activeCueIdx={selectedCueIdx}
-        onClose={() => setIsWordCardOpen(false)}
-        onReplayCue={() => {
-          if (!selectedCue) return
-          seekTo(selectedCue.start)
-          play()
-          setIsWordCardOpen(false)
-        }}
+        onClose={closeWordCard}
+        onReplayCue={handleReplayCue}
       />
 
       {/* 單字本側拉面板 */}

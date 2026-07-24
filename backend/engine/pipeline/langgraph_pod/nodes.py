@@ -22,7 +22,6 @@ import logging
 import re
 import shutil
 import uuid
-from pathlib import Path
 from typing import Any, Literal, TypedDict, cast
 
 from langchain_core.messages import HumanMessage, SystemMessage
@@ -1552,25 +1551,21 @@ async def render_episode_node(state: PodState, config: RunnableConfig) -> dict[s
 def storage_decision(
     state: PodState, config: RunnableConfig
 ) -> Literal["update_keys", "dead_letter"]:
-    """upload_artifacts 後分流：本地 fallback 也沒救 → dead_letter_node → END。
+    """upload_artifacts 後分流：本輪 fallback 寫入失敗 → dead_letter_node → END。
 
-    條件：storage_failed AND 沒有本機 mp3 fallback → 不能留半完成 row
-    （播放頁會 404），也不能 raise（會觸發 worker pgmq vt 重投 → render
-    整個重做）。改成 graceful END：decision 走 dead_letter_node 做
-    DELETE + 寫 errors，worker 視為完成，read_ct 不累積。
+    條件：storage_failed AND 本輪 fallback 寫入失敗 → 不能留半完成 row
+    （播放頁不能拿同 slug 舊檔冒充新音檔），也不能 raise（會觸發 worker
+    pgmq vt 重投 → render 整個重做）。改成 graceful END：decision 走
+    dead_letter_node 做 DELETE + 寫 errors，worker 視為完成，read_ct 不累積。
 
-    其他情況（r2 OK / r2 失敗但本地 fallback 成功）→ 走 update_episode_keys
-    + insert_deliveries，前端可從本地路徑或 R2 取音檔。
+    其他情況（r2 OK / r2 失敗但本輪 fallback 寫入成功）→ 走
+    update_episode_keys + insert_deliveries，前端可從本地路徑或 R2 取音檔。
     """
     if not state.get("storage_failed"):
         return "update_keys"
-    settings = _ctx(config).get("settings")
-    media_dir = getattr(settings, "local_media_dir", None)
-    slug = state.get("slug")
-    if media_dir and slug:
-        local_mp3 = Path(media_dir, f"{slug}.mp3")
-        if local_mp3.is_file():
-            return "update_keys"
+    # 不能把同 slug 的舊檔當成這次 render 成功；只有本輪 copy 成功才可落庫。
+    if state.get("local_fallback_written"):
+        return "update_keys"
     return "dead_letter"
 
 
@@ -1638,13 +1633,13 @@ async def upload_artifacts_node(state: PodState, config: RunnableConfig) -> dict
 
     # 本地 fallback
     media_dir = settings.local_media_dir
+    local_fallback_written = False
     if media_dir and art.mp3_path.exists():
-        try:
-            from .mock import safe_local_fallback  # noqa: PLC0415
+        from .mock import safe_local_fallback  # noqa: PLC0415
 
-            safe_local_fallback(art.mp3_path, slug, media_dir)
-        except OSError as exc:
-            logger.warning("寫本地 fallback 失敗 %s: %s", slug, exc)
+        local_fallback_written = safe_local_fallback(art.mp3_path, slug, media_dir)
+        if not local_fallback_written:
+            logger.warning("寫本地 fallback 失敗 slug=%s", slug)
 
     # render_episode_node 用 make_job_workdir()（不會自動清）產出這些檔案，
     # 讀完（R2 上傳 + 本地 fallback 都做完）就是清掉的時機。
@@ -1655,6 +1650,7 @@ async def upload_artifacts_node(state: PodState, config: RunnableConfig) -> dict
         "audio_key": audio_key,
         "srt_key": srt_key,
         "storage_failed": storage_failed,
+        "local_fallback_written": local_fallback_written,
     }
 
 
@@ -1664,21 +1660,17 @@ async def upload_artifacts_node(state: PodState, config: RunnableConfig) -> dict
 async def update_episode_keys_node(state: PodState, config: RunnableConfig) -> dict[str, Any]:
     ctx = _ctx(config)
     repo = ctx["repo"]
-    settings: Settings = ctx["settings"]
     art: EpisodeArtifacts = state["artifacts"]
     script: ScriptJSON = state["script"]
     # extracted_facts 現在是 SourcedFact 物件（非純字串），jsonb 落庫前先轉 dict。
     facts_payload = [f.model_dump(by_alias=False) for f in script.extracted_facts]
 
-    # ponytail：媒體落地保護。R2 失敗 + 本機 fallback 也沒檔 → 不能留 row，
-    # 否則播放頁會 404（DB row 有 script_json、無 audio）— DELETE 該 row 並 raise，
-    # 讓 _process 走 retry / dead-letter，不留沒聲音的殭屍集數。
+    # ponytail：媒體落地保護。R2 失敗 + 本輪本機 fallback 也沒寫成功 → 不能留 row，
+    # 否則同 slug 的舊檔會被誤當成新音檔，字幕與聲音就會錯集。
     slug = state["slug"]
     storage_failed = bool(state.get("storage_failed"))
-    media_dir = settings.local_media_dir
-    local_mp3 = Path(media_dir, f"{slug}.mp3") if media_dir else None
-    no_local = local_mp3 is None or not local_mp3.is_file()
-    if storage_failed and no_local:
+    local_fallback_written = bool(state.get("local_fallback_written"))
+    if storage_failed and not local_fallback_written:
         episode_id = state["episode_id"]
         idem_key = state["idempotency_key"]
         logger.warning(
