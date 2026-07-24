@@ -32,12 +32,28 @@ class FakeRepo:
 
     Phase 4：簽名加 length_tier keyword-only；介面與 production repo 對齊。
     真實判斷式（分 tier）單獨在新測試 test_reuse_distinguishes_by_length_tier 驗證。
+
+    L1/L2/L3 擴充：加 is_free 參數（公開／私人候選切換）、L3 guard（has_prior_delivery）、
+    L2 guard（has_specified_request）。介面與 production repo 對齊。
     """
 
-    def __init__(self, reusable: str | None) -> None:
+    def __init__(
+        self,
+        reusable: str | None,
+        *,
+        private_reusable: str | None = None,
+        has_prior_delivery: bool = False,
+        has_specified_request: bool = False,
+    ) -> None:
         self._reusable = reusable
+        self._private_reusable = private_reusable
+        self._has_prior_delivery = has_prior_delivery
+        self._has_specified_request = has_specified_request
         # 記下每次查詢收到的 length_tier，方便新測試斷言「介面真的傳到」。
         self.find_calls: list[tuple[str, str, str]] = []
+        self.is_free_calls: list[bool] = []
+        self.delivery_check_calls: list[tuple[str, str]] = []
+        self.specified_check_calls: list[tuple[str, str]] = []
         self.deliveries: list[tuple[str, str, str]] = []
         # 角度輪替 / avoid_facts 用：測試可預先塞舊集 meta。
         self.prior_meta: list[dict[str, Any]] = []
@@ -49,9 +65,19 @@ class FakeRepo:
         *,
         length_tier: str = "medium",
         cefr: str = "B1",
+        is_free: bool = True,
     ) -> str | None:
         self.find_calls.append((big_topic, user_id, length_tier))
-        return self._reusable
+        self.is_free_calls.append(is_free)
+        return self._reusable if is_free else self._private_reusable
+
+    async def has_delivered_episode_for_topic(self, user_id: str, big_topic: str) -> bool:
+        self.delivery_check_calls.append((user_id, big_topic))
+        return self._has_prior_delivery
+
+    async def has_specified_topic_request(self, user_id: str, big_topic: str) -> bool:
+        self.specified_check_calls.append((user_id, big_topic))
+        return self._has_specified_request
 
     async def list_prior_episode_meta(
         self, user_id: str, big_topic: str, *, limit: int = 5
@@ -87,8 +113,10 @@ class _TieredFakeRepo(FakeRepo):
         *,
         length_tier: str = "medium",
         cefr: str = "B1",
+        is_free: bool = True,
     ) -> str | None:
         self.find_calls.append((big_topic, user_id, length_tier))
+        self.is_free_calls.append(is_free)
         if length_tier == "short":
             return self._short_id
         if length_tier == "long":
@@ -172,7 +200,8 @@ async def test_reuse_rotates_angle_and_collects_avoid_facts(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """未命中 + 不指定 angle：依交付史選未用過的角度，並把舊 facts 塞進 body。"""
-    repo = FakeRepo(reusable=None)
+    # L3 強制生成路徑：caller 對該 big_topic 已有任一交付史 → 跳過 L1/L2 走生成。
+    repo = FakeRepo(reusable=None, has_prior_delivery=True)
     repo.prior_meta = [
         {"angle": "定義", "extracted_facts": [{"claim": "fact-1", "source_ids": []}]},
         {"angle": "人物故事", "extracted_facts": ["fact-2"]},  # 舊格式純字串也要吃
@@ -185,6 +214,7 @@ async def test_reuse_rotates_angle_and_collects_avoid_facts(
         user_id="u1", big_topic="ai", deliver_date="2026-07-21", cefr="A2"
     )
     assert result is None
+    assert repo.is_free_calls == []  # L3 觸發 → 不進 L1/L2
     _, body = q.sent[0]
     # 定義 / 人物故事 已用過 → 下一個是「常見誤解」。
     assert body["angle"] == "常見誤解"
@@ -196,7 +226,8 @@ async def test_reuse_angle_cycles_beyond_window(monkeypatch: pytest.MonkeyPatch)
     """交付史窗口（5 集）塞滿 → 選窗口外那個角度，輪替自然循環不卡死。"""
     from shared.models import ANGLES
 
-    repo = FakeRepo(reusable=None)
+    # L3 強制生成路徑：caller 已有同主題交付史 → 跳過 L1/L2 走生成。
+    repo = FakeRepo(reusable=None, has_prior_delivery=True)
     # FakeRepo 依 limit=5 只回前 5 筆 → 第 6 個角度（對比）在窗口外 → 被選中。
     repo.prior_meta = [{"angle": a, "extracted_facts": []} for a, _ in ANGLES]
     q = FakeQueue()
@@ -206,6 +237,115 @@ async def test_reuse_angle_cycles_beyond_window(monkeypatch: pytest.MonkeyPatch)
     await reuse.resolve_for_user(user_id="u1", big_topic="ai", deliver_date="2026-07-21")
     _, body = q.sent[0]
     assert body["angle"] == ANGLES[5][0]
+
+
+# ── 2b. L1/L2/L3 私人重用分支 ─────────────────────────────────────
+
+
+async def test_private_reuse_hit_only_delivers(monkeypatch: pytest.MonkeyPatch) -> None:
+    """L1 miss → L2 hit：未指定過該主題時可重用私人集。"""
+    repo = FakeRepo(reusable=None, private_reusable="ep-private")
+    q = FakeQueue()
+    monkeypatch.setattr(reuse, "repo", repo)
+    monkeypatch.setattr(reuse, "queue", q)
+
+    result = await reuse.resolve_for_user(user_id="u1", big_topic="ai", deliver_date="2026-07-21")
+    assert result == "ep-private"
+    assert repo.deliveries == [("u1", "ep-private", "2026-07-21")]
+    # 查詢順序：L3 guard → L1 (is_free=True) miss → specified 查 (False) → L2 (is_free=False) hit
+    assert repo.is_free_calls == [True, False]
+    assert repo.delivery_check_calls == [("u1", "ai")]
+    assert repo.specified_check_calls == [("u1", "ai")]
+    assert q.sent == []  # 命中不排生成
+
+
+async def test_private_reuse_own_prior_request_skips_reuse(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """L1 miss + caller 自己曾指定過該主題 → 跳過 L2，走 L3/L4 生成。"""
+    repo = FakeRepo(
+        reusable=None,
+        private_reusable="ep-private",
+        has_specified_request=True,
+    )
+    q = FakeQueue()
+    monkeypatch.setattr(reuse, "repo", repo)
+    monkeypatch.setattr(reuse, "queue", q)
+
+    result = await reuse.resolve_for_user(user_id="u1", big_topic="ai", deliver_date="2026-07-21")
+    assert result is None
+    # L3 guard 沒命中（沒 prior delivery）→ 走 L1 miss → 查 specified=true → 不查 L2
+    assert repo.is_free_calls == [True]
+    assert repo.specified_check_calls == [("u1", "ai")]
+    assert repo.deliveries == []
+    assert len(q.sent) == 1
+    assert q.sent[0][0] == "generate"
+
+
+async def test_private_reuse_own_prior_delivery_forces_regenerate(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """L3 觸發：caller 對該 big_topic 有任一交付史 → 即使 L1 命中也跳過，強制新生成。"""
+    repo = FakeRepo(
+        reusable="ep-public",
+        private_reusable="ep-private",
+        has_prior_delivery=True,
+    )
+    q = FakeQueue()
+    monkeypatch.setattr(reuse, "repo", repo)
+    monkeypatch.setattr(reuse, "queue", q)
+
+    result = await reuse.resolve_for_user(user_id="u1", big_topic="ai", deliver_date="2026-07-21")
+    assert result is None
+    # L3 guard True → 連 L1 都不查
+    assert repo.is_free_calls == []
+    assert repo.deliveries == []  # 不重用 → 不交付
+    assert len(q.sent) == 1
+    assert q.sent[0][0] == "generate"
+
+
+async def test_private_reuse_public_hit_when_no_prior(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """L1 命中且沒有 prior delivery：只查 L1、不查 specified、不查 L2。"""
+    repo = FakeRepo(
+        reusable="ep-public",
+        private_reusable="ep-private",
+        has_prior_delivery=False,
+    )
+    q = FakeQueue()
+    monkeypatch.setattr(reuse, "repo", repo)
+    monkeypatch.setattr(reuse, "queue", q)
+
+    result = await reuse.resolve_for_user(user_id="u1", big_topic="ai", deliver_date="2026-07-21")
+    assert result == "ep-public"
+    assert repo.deliveries == [("u1", "ep-public", "2026-07-21")]
+    # L1 命中後直接交付，不進 L2 鏈
+    assert repo.is_free_calls == [True]
+    assert repo.specified_check_calls == []  # specified 查都沒進
+    assert q.sent == []
+
+
+async def test_private_reuse_skip_if_already_delivered(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """L3 涵蓋「同集已交付給我」：caller 已拿過這集 → 不重用、不重複交付，強制生成。"""
+    # 即使 candidate 就是同一集，仍跳過 L1/L2。
+    repo = FakeRepo(
+        reusable="ep-public",
+        private_reusable="ep-public",  # 同集
+        has_prior_delivery=True,
+    )
+    q = FakeQueue()
+    monkeypatch.setattr(reuse, "repo", repo)
+    monkeypatch.setattr(reuse, "queue", q)
+
+    result = await reuse.resolve_for_user(user_id="u1", big_topic="ai", deliver_date="2026-07-21")
+    assert result is None
+    assert repo.is_free_calls == []  # L3 蓋掉 → 不查
+    assert repo.deliveries == []  # 不重複交付
+    assert len(q.sent) == 1
+    assert q.sent[0][0] == "generate"
 
 
 # ── 3. generate_job 串接 ───────────────────────────────────────────
@@ -411,10 +551,7 @@ async def test_generate_job_passes_idempotency_key(monkeypatch: pytest.MonkeyPat
     }
     await generate_job.run_generate_job(body, **mocks)
     # length_tier / topic_type 都未指定時分別預設 medium / evergreen。
-    assert (
-        repo_spy.inserted["idempotency_key"]
-        == "2026-06-23:科技:定義:medium:evergreen"
-    )
+    assert repo_spy.inserted["idempotency_key"] == "2026-06-23:科技:定義:medium:evergreen"
 
 
 async def test_generate_job_idempotency_key_includes_topic_type(

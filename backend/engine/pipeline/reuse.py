@@ -1,8 +1,14 @@
-"""重用決策：命中既有集就交付，未命中才排生成（PRD §4.5）。
+"""重用決策：先做 L3 同主題交付史 guard，沒有歷史才依序重用 L1 公開 → L2 私人，
+未命中則排新生成（PRD §4.5）。
 
-核心是 repo.find_reusable_episode 的單一 anti-join——「過期集不選、已交付集不選、
-CEFR 不符不選」全收斂進一條 WHERE，這層只負責「命中 → insert_delivery /
-未命中 → enqueue generate」兩條路。沒有第三種特殊情況。
+L1/L2 都用 repo.find_reusable_episode 的同一條 SQL（用 is_free 切換）；只在 caller
+沒有該 big_topic 的任一交付史時才進入重用區，避免「同一 user 同主題拿到兩個版本」。
+
+  L1 公開重用：is_free=true，給「從未拿過該主題」的人。
+  L2 私人重用：is_free=false，僅在 caller 從未「自己指定過」該主題時才看，
+              否則會把 caller 過去的私人集拿給自己（隱私＋重複）。
+  L3 強制生成：caller 對該 big_topic 已有任一交付史 → 跳過 L1/L2 → 走生成尾段。
+  L4 都沒有：L1/L2 都 miss → 走生成尾段。
 
 未命中時的生成參數由該 user 同主題的「已交付史」決定：
   * angle：輪替 ANGLES taxonomy 中還沒用過的角度（都用過就按次數取模循環）。
@@ -69,9 +75,30 @@ async def resolve_for_user(
     source：topic_requests.source（'specified'/'fallback'），決定新集的 is_free
             （見 nodes.upsert_episode_node）。
     """
-    episode_id = await repo.find_reusable_episode(
-        big_topic, user_id, length_tier=length_tier, cefr=cefr
-    )
+    has_prior_delivery = await repo.has_delivered_episode_for_topic(user_id, big_topic)
+
+    episode_id: str | None = None
+    if not has_prior_delivery:
+        # L1：公開集
+        episode_id = await repo.find_reusable_episode(
+            big_topic,
+            user_id,
+            length_tier=length_tier,
+            cefr=cefr,
+            is_free=True,
+        )
+        # L2：L1 未命中，且 caller 從未指定過該主題，才看私人集
+        if episode_id is None:
+            has_specified = await repo.has_specified_topic_request(user_id, big_topic)
+            if not has_specified:
+                episode_id = await repo.find_reusable_episode(
+                    big_topic,
+                    user_id,
+                    length_tier=length_tier,
+                    cefr=cefr,
+                    is_free=False,
+                )
+
     if episode_id is not None:
         await repo.insert_delivery(user_id, episode_id, deliver_date)
         return episode_id

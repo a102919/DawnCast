@@ -275,6 +275,7 @@ async def find_reusable_episode(
     *,
     length_tier: str = "medium",
     cefr: str = "B1",
+    is_free: bool = True,
 ) -> str | None:
     """重用核心查詢——單一 anti-join，禁特例分支（PRD §4.5）。
 
@@ -285,8 +286,9 @@ async def find_reusable_episode(
     但兩者若同時過濾會把「同 big_topic 不同 entry_mode」的兩條邏輯拆成四種組合，
     且 idempotency_key 已含 topic_type，重用不會撞——見 nodes.upsert_episode_node）。
     CEFR 過濾：A2 使用者不能拿到 B2 集，語言難度是內容契約的一部分。
-    is_free 過濾：只重用公開集。專屬集（is_free=false）字面若跟別人主題撞題，
-    不能被跨 user 重用命中，否則會把該使用者的專屬內容洩漏給非指定對象。
+
+    is_free：精確選擇公開（True）／私人（False）候選集。私人重用由 caller（resolve_for_user
+    的 L2）顯式 opt-in；candidate 級 anti-join 仍保留，保護直接呼叫 repo 或 L1/L2 race。
     """
     async with connection() as conn, conn.cursor(row_factory=dict_row) as cur:
         await cur.execute(
@@ -296,7 +298,7 @@ async def find_reusable_episode(
             where e.big_topic = %(big_topic)s
               and e.length_tier = %(length_tier)s
               and e.cefr_level = %(cefr)s
-              and e.is_free = true
+              and e.is_free = %(is_free)s
               and (e.expires_at is null or now() < e.expires_at)
               and not exists (
                   select 1 from public.deliveries d
@@ -310,10 +312,58 @@ async def find_reusable_episode(
                 "user_id": user_id,
                 "length_tier": length_tier,
                 "cefr": cefr,
+                "is_free": is_free,
             },
         )
         row = await cur.fetchone()
     return str(row["id"]) if row else None
+
+
+async def has_delivered_episode_for_topic(user_id: str, big_topic: str) -> bool:
+    """是否曾交付該 user 任一相同 big_topic 的集數（公開/私人 都算）。
+
+    給 resolve_for_user 的 L3 guard 用——「同 user 同主題已有任一集 → 跳過重用，強制新生成」。
+    不過濾 length_tier / cefr_level：任一歷史都算，避免「同人同主題拿兩個版本」。
+    """
+    async with connection() as conn, conn.cursor(row_factory=dict_row) as cur:
+        await cur.execute(
+            """
+            select exists (
+                select 1
+                from public.deliveries d
+                join public.episodes e on e.id = d.episode_id
+                where d.user_id = %(user_id)s
+                  and e.big_topic = %(big_topic)s
+            ) as has_delivered
+            """,
+            {"user_id": user_id, "big_topic": big_topic},
+        )
+        row = await cur.fetchone()
+    return bool(row and row["has_delivered"])
+
+
+async def has_specified_topic_request(user_id: str, big_topic: str) -> bool:
+    """是否曾以 specified request 提過相同 raw_topic（fallback 不算）。
+
+    給 resolve_for_user 的 L2 條件用——「caller 過去自己指定過該主題 → 跳過私人重用，
+    否則會拿到自己過去的私人集」。`source='specified'` 過濾是必要的：nightly 投影的
+    fallback row 來自 onboarding_big_topic，不該視為「曾指定過」。
+    """
+    async with connection() as conn, conn.cursor(row_factory=dict_row) as cur:
+        await cur.execute(
+            """
+            select exists (
+                select 1
+                from public.topic_requests tr
+                where tr.user_id = %(user_id)s
+                  and tr.raw_topic = %(big_topic)s
+                  and tr.source = 'specified'
+            ) as has_specified
+            """,
+            {"user_id": user_id, "big_topic": big_topic},
+        )
+        row = await cur.fetchone()
+    return bool(row and row["has_specified"])
 
 
 async def list_prior_episode_meta(
