@@ -36,9 +36,7 @@ export type VocabItem = {
 
 export type Settings = {
   popupEnabled: boolean
-  popupDontShowAgain: boolean
   playbackRate: number
-  fontSize: 'sm' | 'md' | 'lg'
   theme: 'light' | 'dark' | 'auto'
   readonly preferredTopics: readonly string[]
   /** 出餐時間 'HH:MM'，限定 6 個 chips 之一；下單時預設帶入 */
@@ -123,7 +121,6 @@ export interface Api {
   searchVocab(query: string): Promise<VocabItem[]>
   getSettings(): Promise<Settings>
   updateSettings(patch: Partial<Settings>): Promise<Settings>
-  resetPopupPreferences(): Promise<void>
   clearVocab(): Promise<void>
   updateVocab(id: string, patch: Partial<Pick<VocabItem, 'nextReview' | 'interval' | 'ease'>>): Promise<void>
   // 收藏的 podcast episode

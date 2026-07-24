@@ -57,9 +57,7 @@ const DEFAULT_ACTIVITY: Activity = {
 
 const DEFAULT_SETTINGS: Settings = {
   popupEnabled: true,
-  popupDontShowAgain: false,
   playbackRate: 1,
-  fontSize: 'md',
   theme: 'auto',
   preferredTopics: [],
   defaultDeliveryTime: '07:00',
@@ -278,12 +276,6 @@ export const mockApi: Api = {
     const updated: Settings = { ...current, ...patch }
     writeSettings(updated)
     return updated
-  },
-
-  async resetPopupPreferences() {
-    const current = readSettings()
-    const updated: Settings = { ...current, popupEnabled: true, popupDontShowAgain: false }
-    writeSettings(updated)
   },
 
   async clearVocab() {

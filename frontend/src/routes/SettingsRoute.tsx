@@ -24,7 +24,7 @@ function isTopicChoice(s: string): s is Exclude<TopicKey, 'all'> {
 }
 
 export function SettingsRoute() {
-  const { settings, updateSettings, resetPopupPreferences } = useSettings()
+  const { settings, updateSettings } = useSettings()
   const { clearVocab, items } = useVocab()
   const { signOut, user } = useAuth()
   const navigate = useNavigate()
@@ -32,12 +32,6 @@ export function SettingsRoute() {
   const [confirmDeleteAccount, setConfirmDeleteAccount] = useState(false)
   const [isDeletingAccount, setIsDeletingAccount] = useState(false)
   const [deleteError, setDeleteError] = useState<string | null>(null)
-
-  const FONT_SIZES = [
-    { value: 'sm' as const, label: '小' },
-    { value: 'md' as const, label: '中' },
-    { value: 'lg' as const, label: '大' },
-  ]
 
   const RATES = [0.75, 1, 1.25, 1.5] as const
 
@@ -132,25 +126,13 @@ export function SettingsRoute() {
               onChange={v => updateSettings({ popupEnabled: v })}
             />
           </SettingRow>
-
-          <SettingRow
-            label="重置詞卡偏好"
-            description="清除已忽略的詞卡提示"
-          >
-            <button
-              onClick={resetPopupPreferences}
-              className="text-sm text-accent hover:underline cursor-pointer px-3 py-2 -mr-3 rounded min-h-[44px]"
-            >
-              重置
-            </button>
-          </SettingRow>
         </SettingSection>
 
         {/* 播放與出餐設定 */}
         <SettingSection title="播放與出餐">
           <SettingRow
             label="預設語速"
-            description="調整影片播放速度"
+            description="調整節目的預設播放速度"
           >
             <div className="flex gap-1.5">
               {RATES.map(rate => (
@@ -184,32 +166,12 @@ export function SettingsRoute() {
           </div>
         </SettingSection>
 
-        {/* 顯示設定 */}
-        <SettingSection title="顯示">
-          <SettingRow
-            label="字幕字體大小"
-            description="調整字幕區塊的字體大小"
-          >
-            <div className="flex gap-1.5">
-              {FONT_SIZES.map(({ value, label }) => (
-                <Chip
-                  key={value}
-                  active={settings.fontSize === value}
-                  onClick={() => updateSettings({ fontSize: value })}
-                >
-                  {label}
-                </Chip>
-              ))}
-            </div>
-          </SettingRow>
-        </SettingSection>
-
         {/* 學習偏好 */}
         <SettingSection title="學習偏好">
           <div className="px-4 py-4">
             <div className="text-sm font-medium text-text-primary">英文難度</div>
             <p className="text-xs text-text-secondary mt-0.5 mb-3">
-              影響每日 podcast 的詞彙難度、句型與語速，隔天生成的集數開始生效
+              影響下一次生成節目的詞彙難度、句型與語速
             </p>
             <div className="flex gap-1.5 flex-wrap">
               {CEFR_OPTIONS.map(({ value, label, hint }) => (
@@ -228,7 +190,7 @@ export function SettingsRoute() {
           <div className="px-4 py-4">
             <div className="text-sm font-medium text-text-primary">主題偏好</div>
             <p className="text-xs text-text-secondary mt-0.5 mb-3">
-              選擇你有興趣的主題,首頁會優先推薦相關集數
+              選擇你有興趣的主題，首頁會優先推薦相關集數
             </p>
             <div className="flex gap-1.5 flex-wrap">
               {TOPIC_CHOICES.map(key => (

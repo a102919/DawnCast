@@ -26,17 +26,23 @@ const MOCK_LIST: readonly MockEpisode[] = [
 ]
 
 function mockEpisodeFor(id: string): Episode {
-  return { id, title: `Episode ${id}`, audioUrl: `https://example.com/${id}.mp3`, cues: [] }
+  return {
+    id,
+    title: `Episode ${id}`,
+    audioUrl: `https://example.com/${id}.mp3`,
+    cues: [{ index: 0, speaker: 'Alex', text: 'Hello', zh: '你好', start: 0, end: 1 }],
+  }
 }
 
 // Mock api 模組：spyOn 真物件太繞，直接替換整個 export（跟 DailyOrderProvider.test.tsx 同手法）。
 const listEpisodes = vi.fn(async (): Promise<readonly MockEpisode[]> => MOCK_LIST)
 const getEpisode = vi.fn(async (id: string): Promise<Episode> => mockEpisodeFor(id))
 const getDeliveredEpisode = vi.fn(async (_date: string): Promise<Episode | null> => null)
+const lookupDict = vi.fn(async (_word: string) => null)
 
 vi.mock('../api', () => ({
   get api() {
-    return { listEpisodes, getEpisode, getDeliveredEpisode }
+    return { listEpisodes, getEpisode, getDeliveredEpisode, lookupDict }
   },
 }))
 
@@ -58,16 +64,14 @@ vi.mock('../state', () => ({
   }),
   useSettings: () => ({
     settings: {
-      popupEnabled: true,
-      popupDontShowAgain: false,
+      popupEnabled: false,
       playbackRate: 1,
-      fontSize: 'md',
       theme: 'auto',
       preferredTopics: [],
       defaultDeliveryTime: '07:00',
+      cefrLevel: 'B1',
     },
     updateSettings: vi.fn(),
-    resetPopupPreferences: vi.fn(),
   }),
   useDailyOrder: () => ({
     todayDate: '2026-07-17',
@@ -134,6 +138,7 @@ beforeEach(() => {
   listEpisodes.mockClear()
   getEpisode.mockClear()
   getDeliveredEpisode.mockClear()
+  lookupDict.mockClear()
 })
 
 afterEach(async () => {
@@ -162,5 +167,20 @@ describe('PlayerRoute：/player/:id 要播 URL 指定的集數', () => {
 
     expect(listEpisodes).toHaveBeenCalledTimes(1)
     expect(getEpisode).toHaveBeenCalledWith('ep-1')
+  })
+
+  it('啟用詞卡關閉時，點字幕單字不會查詢字典', async () => {
+    const { root, container } = await renderAt('/player/ep-2')
+    pendingRoots.push(root)
+
+    const word = Array.from(container.querySelectorAll('span')).find(node => node.textContent === 'Hello')
+    if (!word) throw new Error('找不到字幕單字')
+
+    await act(async () => {
+      word.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+      await Promise.resolve()
+    })
+
+    expect(lookupDict).not.toHaveBeenCalled()
   })
 })

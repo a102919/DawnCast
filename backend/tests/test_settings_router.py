@@ -1,9 +1,8 @@
-"""Settings router 測試（T9）：getSettings / updateSettings / resetPopupPreferences。
+"""Settings router 測試（T9）：getSettings / updateSettings。
 
 驗證重點：
-  (a) 無 JWT → 401（三個 endpoint 全驗）
-  (b) happy path：無列回 Settings() 預設值；有列回列值；PATCH 套用部分更新；
-      reset-popup 強制把 popup 欄位壓回 (true, false)
+  (a) 無 JWT → 401（兩個 endpoint 全驗）
+  (b) happy path：無列回 Settings() 預設值；有列回列值；PATCH 套用部分更新
   (c) 授權收斂：A 的 token 只看到 A 的設定，拿不到 B 的；若 PATCH 路由漏
       where user_id = %s 也只會寫入自己的 user_id，不會覆蓋到別人
 
@@ -30,18 +29,14 @@ USER_B = "22222222-2222-2222-2222-222222222222"
 SETTINGS_BY_USER: dict[str, dict[str, Any] | None] = {
     USER_A: {
         "popup_enabled": True,
-        "popup_dont_show_again": False,
         "playback_rate": 1.0,
-        "font_size": "md",
         "theme": "auto",
         "preferred_topics": ["tech"],
         "default_delivery_time": "07:00",
     },
     USER_B: {
         "popup_enabled": False,
-        "popup_dont_show_again": True,
         "playback_rate": 1.5,
-        "font_size": "lg",
         "theme": "dark",
         "preferred_topics": ["news"],
         "default_delivery_time": "21:30",
@@ -58,18 +53,14 @@ def _reset_state() -> None:
     CEFR_BY_USER[USER_B] = "B1"
     SETTINGS_BY_USER[USER_A] = {
         "popup_enabled": True,
-        "popup_dont_show_again": False,
         "playback_rate": 1.0,
-        "font_size": "md",
         "theme": "auto",
         "preferred_topics": ["tech"],
         "default_delivery_time": "07:00",
     }
     SETTINGS_BY_USER[USER_B] = {
         "popup_enabled": False,
-        "popup_dont_show_again": True,
         "playback_rate": 1.5,
-        "font_size": "lg",
         "theme": "dark",
         "preferred_topics": ["news"],
         "default_delivery_time": "21:30",
@@ -106,54 +97,27 @@ class FakeCursor:
             self._rows = []
             return
 
-        # upsert（PATCH）：15 個 params，patch 為 None 時沿用既有值
+        # PATCH upsert（11 個 params）：patch 為 None 時沿用既有值。
+        # params 排列：(user_id, popup_enabled, playback_rate, theme,
+        # topics_json, default_delivery_time, *同樣 5 個再給 ON CONFLICT*)
         if "insert into public.user_settings" in s:
-            # reset-popup（1 個 param，SQL 內含 literal '= true' / '= false'）：
-            # 把 popup 欄位硬壓回 (True, False)
-            if "popup_enabled = true, popup_dont_show_again = false" in s:
-                user_id = params[0]
-                existing = SETTINGS_BY_USER.get(user_id) or {}
-                SETTINGS_BY_USER[user_id] = {
-                    "popup_enabled": True,
-                    "popup_dont_show_again": False,
-                    "playback_rate": existing.get("playback_rate", 1.0),
-                    "font_size": existing.get("font_size", "md"),
-                    "theme": existing.get("theme", "auto"),
-                    "preferred_topics": existing.get("preferred_topics", []),
-                    "default_delivery_time": existing.get(
-                        "default_delivery_time", "07:00"
-                    ),
-                }
-                self._rows = []
-                return
-
-            # PATCH upsert（15 個 params）：patch 為 None 時沿用既有值。
-            # params 排列：(user_id, popup_enabled, popup_dont_show_again,
-            # playback_rate, font_size, theme, topics_json,
-            # default_delivery_time, *同樣 7 個再給 ON CONFLICT*)
             user_id = params[0]
             existing = SETTINGS_BY_USER.get(user_id) or {}
             merged: dict[str, Any] = {
                 "popup_enabled": params[1]
                 if params[1] is not None
                 else existing.get("popup_enabled", True),
-                "popup_dont_show_again": params[2]
+                "playback_rate": params[2]
                 if params[2] is not None
-                else existing.get("popup_dont_show_again", False),
-                "playback_rate": params[3]
-                if params[3] is not None
                 else existing.get("playback_rate", 1.0),
-                "font_size": params[4]
-                if params[4] is not None
-                else existing.get("font_size", "md"),
-                "theme": params[5]
-                if params[5] is not None
+                "theme": params[3]
+                if params[3] is not None
                 else existing.get("theme", "auto"),
-                "preferred_topics": json.loads(params[6])
-                if params[6] is not None
+                "preferred_topics": json.loads(params[4])
+                if params[4] is not None
                 else existing.get("preferred_topics", []),
-                "default_delivery_time": params[7]
-                if params[7] is not None
+                "default_delivery_time": params[5]
+                if params[5] is not None
                 else existing.get("default_delivery_time", "07:00"),
             }
             SETTINGS_BY_USER[user_id] = merged
@@ -210,7 +174,7 @@ def _auth(user_id: str) -> dict[str, str]:
     return {"Authorization": f"Bearer {_token(user_id)}"}
 
 
-# ── (a) 無 JWT → 401（三 endpoint）─────────────────────────────
+# ── (a) 無 JWT → 401（兩個 endpoint）───────────────────────────
 
 
 def test_get_settings_no_jwt_returns_401(client: TestClient) -> None:
@@ -223,12 +187,6 @@ def test_get_settings_no_jwt_returns_401(client: TestClient) -> None:
 
 def test_patch_settings_no_jwt_returns_401(client: TestClient) -> None:
     res = client.patch("/settings", json={"playbackRate": 1.5})
-    assert res.status_code == 401
-    assert res.json()["error"]["code"] == "unauthorized"
-
-
-def test_reset_popup_no_jwt_returns_401(client: TestClient) -> None:
-    res = client.post("/settings/reset-popup")
     assert res.status_code == 401
     assert res.json()["error"]["code"] == "unauthorized"
 
@@ -253,9 +211,7 @@ def test_get_settings_returns_defaults_when_no_row(client: TestClient) -> None:
     data = res.json()["data"]
     # 對齊 Settings() 預設值（CamelModel alias 序列化為 camelCase）
     assert data["popupEnabled"] is True
-    assert data["popupDontShowAgain"] is False
     assert data["playbackRate"] == 1.0
-    assert data["fontSize"] == "md"
     assert data["theme"] == "auto"
     assert data["preferredTopics"] == []
     assert data["defaultDeliveryTime"] == "07:00"
@@ -278,20 +234,6 @@ def test_patch_settings_partial_update_only_touches_given_fields(
     assert data["defaultDeliveryTime"] == "07:00"
     assert data["preferredTopics"] == ["tech"]
     assert data["popupEnabled"] is True
-
-
-def test_reset_popup_sets_enabled_true_and_dont_show_false(
-    client: TestClient,
-) -> None:
-    res = client.post("/settings/reset-popup", headers=_auth(USER_B))
-    assert res.status_code == 200
-    assert res.json()["ok"] is True
-    row = SETTINGS_BY_USER[USER_B]
-    assert row is not None
-    assert row["popup_enabled"] is True
-    assert row["popup_dont_show_again"] is False
-    # 其他欄位保持不動（reset-popup 只動兩個 bool）
-    assert row["playback_rate"] == 1.5
 
 
 # ── (c) 授權收斂：A 拿不到 B 的設定 ────────────────────────────

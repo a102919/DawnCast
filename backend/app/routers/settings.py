@@ -1,10 +1,11 @@
-"""設定 router：getSettings / updateSettings / resetPopupPreferences。
+"""設定 router：getSettings / updateSettings。
 
 無列回預設（trigger 通常已補列，仍防呆）。upsert 只動有給的欄位。
 """
 
 from __future__ import annotations
 
+import json
 from typing import Any
 
 from fastapi import APIRouter, Depends
@@ -22,8 +23,7 @@ router = APIRouter(prefix="/settings", tags=["settings"])
 # 從 users 出發 left join：user_settings 無列時 settings 欄位全 NULL，
 # 由 _row_to_settings 丟掉 None 讓 model 預設值補——「無列」不再是特殊情況。
 _SELECT = """
-  select s.popup_enabled, s.popup_dont_show_again, s.playback_rate,
-         s.font_size, s.theme, s.preferred_topics,
+  select s.popup_enabled, s.playback_rate, s.theme, s.preferred_topics,
          to_char(s.default_delivery_time, 'HH24:MI') as default_delivery_time,
          u.cefr_target as cefr_level
   from public.users u
@@ -52,41 +52,32 @@ async def update_settings_ep(
 ) -> ApiResponse[Settings]:
     """upsert：以預設列為底，coalesce 套用 patch 有給的欄位。"""
     async with connection() as conn, conn.cursor(row_factory=dict_row) as cur:
-        import json
-
         topics_json = None if body.preferred_topics is None else json.dumps(body.preferred_topics)
         await cur.execute(
             """
             insert into public.user_settings
-              (user_id, popup_enabled, popup_dont_show_again, playback_rate,
-               font_size, theme, preferred_topics, default_delivery_time)
+              (user_id, popup_enabled, playback_rate, theme,
+               preferred_topics, default_delivery_time)
             values (%s,
-                    coalesce(%s, true), coalesce(%s, false), coalesce(%s, 1),
-                    coalesce(%s, 'md'), coalesce(%s, 'auto'),
-                    coalesce(%s::jsonb, '[]'::jsonb), coalesce(%s, '07:00'))
+                    coalesce(%s, true), coalesce(%s, 1), coalesce(%s, 'auto'),
+                    coalesce(%s::jsonb, '[]'::jsonb), coalesce(%s::time, '07:00'))
             on conflict (user_id) do update set
               popup_enabled         = coalesce(%s, user_settings.popup_enabled),
-              popup_dont_show_again = coalesce(%s, user_settings.popup_dont_show_again),
               playback_rate         = coalesce(%s, user_settings.playback_rate),
-              font_size             = coalesce(%s, user_settings.font_size),
               theme                 = coalesce(%s, user_settings.theme),
               preferred_topics      = coalesce(%s::jsonb, user_settings.preferred_topics),
-              default_delivery_time = coalesce(%s, user_settings.default_delivery_time),
+              default_delivery_time = coalesce(%s::time, user_settings.default_delivery_time),
               updated_at            = now()
             """,
             (
                 user_id,
                 body.popup_enabled,
-                body.popup_dont_show_again,
                 body.playback_rate,
-                body.font_size,
                 body.theme,
                 topics_json,
                 body.default_delivery_time,
                 body.popup_enabled,
-                body.popup_dont_show_again,
                 body.playback_rate,
-                body.font_size,
                 body.theme,
                 topics_json,
                 body.default_delivery_time,
@@ -101,21 +92,3 @@ async def update_settings_ep(
         row = await cur.fetchone()
         await conn.commit()
     return ok(_row_to_settings(row))
-
-
-@router.post("/reset-popup", response_model=ApiResponse[None])
-async def reset_popup_preferences(
-    user_id: str = Depends(get_current_user),
-) -> ApiResponse[None]:
-    async with connection() as conn, conn.cursor(row_factory=dict_row) as cur:
-        await cur.execute(
-            """
-            insert into public.user_settings (user_id, popup_enabled, popup_dont_show_again)
-            values (%s, true, false)
-            on conflict (user_id) do update set
-              popup_enabled = true, popup_dont_show_again = false, updated_at = now()
-            """,
-            (user_id,),
-        )
-        await conn.commit()
-    return ok(None)

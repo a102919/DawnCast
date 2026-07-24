@@ -55,9 +55,7 @@ class VocabItem(CamelModel):
 
 class Settings(CamelModel):
     popup_enabled: bool = True
-    popup_dont_show_again: bool = False
     playback_rate: float = 1.0
-    font_size: Literal["sm", "md", "lg"] = "md"
     theme: Literal["light", "dark", "auto"] = "auto"
     preferred_topics: list[str] = Field(default_factory=list)
     default_delivery_time: str = "07:00"  # 'HH:MM'

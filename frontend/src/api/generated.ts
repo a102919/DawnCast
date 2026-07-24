@@ -87,23 +87,6 @@ export interface paths {
         patch: operations["update_settings_ep_settings_patch"];
         trace?: never;
     };
-    "/settings/reset-popup": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /** Reset Popup Preferences */
-        post: operations["reset_popup_preferences_settings_reset_popup_post"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
     "/favorites": {
         parameters: {
             query?: never;
@@ -1080,21 +1063,10 @@ export interface components {
              */
             popupEnabled: boolean;
             /**
-             * Popupdontshowagain
-             * @default false
-             */
-            popupDontShowAgain: boolean;
-            /**
              * Playbackrate
              * @default 1
              */
             playbackRate: number;
-            /**
-             * Fontsize
-             * @default md
-             * @enum {string}
-             */
-            fontSize: "sm" | "md" | "lg";
             /**
              * Theme
              * @default auto
@@ -1122,12 +1094,8 @@ export interface components {
         UpdateSettingsBody: {
             /** Popupenabled */
             popupEnabled?: boolean | null;
-            /** Popupdontshowagain */
-            popupDontShowAgain?: boolean | null;
             /** Playbackrate */
             playbackRate?: number | null;
-            /** Fontsize */
-            fontSize?: ("sm" | "md" | "lg") | null;
             /** Theme */
             theme?: ("light" | "dark" | "auto") | null;
             /** Preferredtopics */
@@ -1466,37 +1434,6 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ApiResponse_Settings_"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    reset_popup_preferences_settings_reset_popup_post: {
-        parameters: {
-            query?: never;
-            header?: {
-                authorization?: string | null;
-            };
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ApiResponse_NoneType_"];
                 };
             };
             /** @description Validation Error */

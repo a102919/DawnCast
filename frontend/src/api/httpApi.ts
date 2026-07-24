@@ -154,9 +154,7 @@ const VocabListSchema = z.array(VocabItemSchema)
 
 const SettingsSchema = z.object({
   popupEnabled: z.boolean(),
-  popupDontShowAgain: z.boolean(),
   playbackRate: z.number(),
-  fontSize: z.enum(['sm', 'md', 'lg']),
   theme: z.enum(['light', 'dark', 'auto']),
   preferredTopics: z.array(z.string()),
   defaultDeliveryTime: z.string(),
@@ -284,10 +282,6 @@ export const httpApi: Api = {
 
   async updateSettings(patch) {
     return request<Settings>('/settings', { method: 'PATCH', body: patch, schema: SettingsSchema })
-  },
-
-  async resetPopupPreferences() {
-    await request<null>('/settings/reset-popup', { method: 'POST', schema: null })
   },
 
   async clearVocab() {

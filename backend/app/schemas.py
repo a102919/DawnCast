@@ -44,9 +44,7 @@ class UpdateSettingsBody(CamelModel):
     """updateSettings(patch: Partial<Settings>)。全 optional，只 upsert 有給的欄位。"""
 
     popup_enabled: bool | None = None
-    popup_dont_show_again: bool | None = None
     playback_rate: float | None = None
-    font_size: Literal["sm", "md", "lg"] | None = None
     theme: Literal["light", "dark", "auto"] | None = None
     preferred_topics: list[str] | None = None
     default_delivery_time: str | None = None

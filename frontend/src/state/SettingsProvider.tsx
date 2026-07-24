@@ -4,9 +4,7 @@ import { SettingsContext, type SettingsContextValue } from './settingsContextVal
 
 const DEFAULT_SETTINGS: Settings = {
   popupEnabled: true,
-  popupDontShowAgain: false,
   playbackRate: 1,
-  fontSize: 'md',
   theme: 'auto',
   preferredTopics: [],
   defaultDeliveryTime: '07:00',
@@ -37,12 +35,7 @@ export function SettingsProvider({ children }: { readonly children: ReactNode })
     setSettings(updated)
   }, [])
 
-  const resetPopupPreferences = useCallback(async () => {
-    await api.resetPopupPreferences()
-    setSettings(prev => ({ ...prev, popupEnabled: true, popupDontShowAgain: false }))
-  }, [])
-
-  const value: SettingsContextValue = { settings, updateSettings, resetPopupPreferences }
+  const value: SettingsContextValue = { settings, updateSettings }
 
   return (
     <SettingsContext.Provider value={value}>

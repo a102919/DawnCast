@@ -125,6 +125,7 @@ export function PlayerRoute() {
   )
 
   const handleWordClick = async (word: string, cue: Cue) => {
+    if (!settings.popupEnabled) return
     setSelectedWord(word)
     setSelectedCue(cue)
     setIsWordCardOpen(true)
