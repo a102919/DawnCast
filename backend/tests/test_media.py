@@ -75,6 +75,43 @@ def test_build_timeline_chapter邊界用長停頓() -> None:
     assert [(c.start, c.end) for c in cues] == [(0.0, 2.0), (2.7, 5.7)]
 
 
+def test_build_timeline_target_duration縮放對齊尾端() -> None:
+    """target_duration 提供且偏差 ≥ 0.1% → cues 等比例縮放，cues[-1].end 對齊該值。"""
+    segs = [
+        _seg(0, "Alex", "hi", "嗨", 2.0),
+        _seg(1, "Sarah", "world", "世界", 3.0),
+    ]
+    # 原始 cues[-1].end = 2.0 + 0.3 + 3.0 = 5.3；scale = 5.198 / 5.3 = 0.98075
+    cues = build_timeline(segs, pause_sec=0.3, target_duration=5.198)
+    assert abs(cues[-1].end - 5.198) < 0.01
+    assert abs(cues[0].end - 1.962) < 0.01
+    assert abs(cues[1].start - 2.256) < 0.01
+    # 段間靜音仍存在（相對位置保留）
+    assert cues[1].start > cues[0].end
+    assert abs(cues[1].start - cues[0].end - 0.3 * 0.98075) < 0.01
+
+
+def test_build_timeline_target_duration差小於門檻不scale() -> None:
+    """target_duration 跟現有 end 差 < 0.1% → 不 scale，避免浮點誤差累積。"""
+    segs = [
+        _seg(0, "Alex", "hi", "嗨", 2.0),
+        _seg(1, "Sarah", "world", "世界", 3.0),
+    ]
+    cues = build_timeline(segs, pause_sec=0.3, target_duration=5.302)
+    # 5.302 / 5.3 = 1.000377 → 偏差 0.0377% < 0.1% → 不動
+    assert [(c.start, c.end) for c in cues] == [(0.0, 2.0), (2.3, 5.3)]
+
+
+def test_build_timeline_target_duration_None向後相容() -> None:
+    """target_duration=None → 走原本 cursor 邏輯，跟舊版行為完全一致。"""
+    segs = [
+        _seg(0, "Alex", "hi", "嗨", 2.0),
+        _seg(1, "Sarah", "world", "世界", 3.0),
+    ]
+    cues = build_timeline(segs, pause_sec=0.3)
+    assert [(c.start, c.end) for c in cues] == [(0.0, 2.0), (2.3, 5.3)]
+
+
 def test_write_srt_格式_en上zh下逗號時戳() -> None:
     cues = [Cue(index=1, speaker="Alex", text="Hi there", zh="嗨", start=0.0, end=7.464)]
     srt = write_srt(cues)

@@ -56,7 +56,7 @@ async def render_episode(
     segs = await synth_script(script, workdir, cefr=cefr)
 
     mp3_path = workdir / "episode.mp3"
-    concat_segments(
+    mp3_duration = concat_segments(
         segs,
         mp3_path,
         pause_sec=settings.pause_sec,
@@ -64,7 +64,12 @@ async def render_episode(
         long_pause_sec=settings.long_pause_sec,
     )
 
-    cues = build_timeline(segs, settings.pause_sec, long_pause_sec=settings.long_pause_sec)
+    cues = build_timeline(
+        segs,
+        settings.pause_sec,
+        long_pause_sec=settings.long_pause_sec,
+        target_duration=mp3_duration,
+    )
     srt = write_srt(cues)
     vtt = write_vtt(cues)
 

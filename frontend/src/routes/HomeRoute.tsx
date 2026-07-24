@@ -1,74 +1,51 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { AnimatePresence, motion } from 'framer-motion'
-import { Play, Captions, MousePointerClick, BookOpen, Headphones, Brain, Star, SearchX } from 'lucide-react'
-import type { Episode } from '../types/episode'
-import { Button } from '../components/primitives/Button'
+import { Play, Brain, SearchX } from 'lucide-react'
 import { Chip } from '../components/primitives/Chip'
 import { SectionLabel } from '../components/primitives/SectionLabel'
-import { StatCard } from '../components/primitives/StatCard'
 import { ErrorBanner } from '../components/primitives/ErrorBanner'
-import { useActivity, useSettings, useVocab } from '../state'
+import { useVocab } from '../state'
 import { EpisodeRow } from '../components/shared/EpisodeRow'
 import { api } from '../api'
-import { TOPIC_LABELS, CEFR_COLOR } from '../lib'
+import { TOPIC_LABELS } from '../lib'
 import type { TopicKey, MockEpisode } from '../lib'
-import { storageGet } from '../lib/storage'
-
-const FEATURES = [
-  {
-    Icon: Captions,
-    title: '雙語字幕同步',
-    desc: '英文與中文字幕逐句高亮，跟著語速吸收語感',
-  },
-  {
-    Icon: MousePointerClick,
-    title: '點擊查單字',
-    desc: '點任何字幕單字，立即查看音標、詞性、中文釋義',
-  },
-  {
-    Icon: BookOpen,
-    title: '個人單字本',
-    desc: '收錄陌生單字，隨時翻閱複習，持續累積詞彙量',
-  },
-] as const
 
 export function HomeRoute() {
-  // 集數庫從 API 拿 DB 真資料；首次渲染空陣列 + skeleton（useEffect 跑完就有資料）。
   const [episodes, setEpisodes] = useState<readonly MockEpisode[]>([])
-  const [episode, setEpisode] = useState<Episode | null>(null)
+  // 每集時長（秒），從 cues 末段推算；單集 fetch 失敗時留空 → 卡片顯示「—」
+  const [durations, setDurations] = useState<ReadonlyMap<string, number>>(new Map())
   const [fetchError, setFetchError] = useState<string | null>(null)
   const [retryKey, setRetryKey] = useState(0)
   const [topicFilter, setTopicFilter] = useState<TopicKey>('all')
-  const { settings } = useSettings()
-  const preferredTopicKey = settings.preferredTopics.join(',')
-  // eslint-disable-next-line react-hooks/exhaustive-deps -- preferredTopicKey 是穩定的 join 字串，array 每次渲染都是新 reference
-  const preferredTopics = useMemo(() => settings.preferredTopics, [preferredTopicKey])
-  const { listenedEpisodeIds } = useActivity()
   const { items: vocabItems } = useVocab()
   const today = new Date().toISOString().slice(0, 10)
   const dueCount = vocabItems.filter(v => !v.nextReview || v.nextReview <= today).length
 
-  const WEEKLY_COUNT = 2
-  const weeklyEps = episodes.slice(0, WEEKLY_COUNT)
-  const weeklyProgress = weeklyEps.filter(ep => listenedEpisodeIds.has(ep.id)).length
+  // 給「繼續學習」按鈕帶位用：新到首集，沒有就 fallback 留空（按鈕仍渲染但網址無效）
+  const continueTargetId = episodes[0]?.id ?? null
 
   useEffect(() => {
     let cancelled = false
 
     const load = async () => {
       setFetchError(null)
-      setEpisode(null)
       try {
         const list = await api.listEpisodes()
         if (cancelled) return
         setEpisodes(list)
-        const featured = list.find(ep => preferredTopics.includes(ep.topic)) ?? list[0]
-        if (featured) {
-          const data = await api.getEpisode(featured.id)
-          if (cancelled) return
-          setEpisode(data)
+        // 一次抓所有集數的 cues 推算時長；單集失敗不影響整體
+        const results = await Promise.all(
+          list.map(ep => api.getEpisode(ep.id).catch(() => null)),
+        )
+        if (cancelled) return
+        const durMap = new Map<string, number>()
+        for (const full of results) {
+          if (!full) continue
+          const lastCue = full.cues.at(-1)
+          if (lastCue) durMap.set(full.id, lastCue.end)
         }
+        setDurations(durMap)
       } catch {
         if (!cancelled) setFetchError('節目資料載入失敗，請重試')
       }
@@ -78,116 +55,48 @@ export function HomeRoute() {
     return () => {
       cancelled = true
     }
-  }, [retryKey, preferredTopics])
+  }, [retryKey])
 
   const filteredEpisodes = topicFilter === 'all'
     ? episodes
     : episodes.filter(ep => ep.topic === topicFilter)
 
-  const latestEpisode = episodes[0]
-  const recommendedEpisode = episodes.find(ep => preferredTopics.includes(ep.topic)) ?? latestEpisode
-  const recommendedTitle = recommendedEpisode && episode?.id === recommendedEpisode.id
-    ? episode.title
-    : null
-
-  // P0-1：繼續收聽入口——讀 LS 取得最後播放的集數 ID 與時間
-  const lastPlayed = (() => {
-    const episodeId = storageGet<string>('dawncast:player:lastEpisodeId')
-    if (!episodeId) return null
-    // LS 可能殘留「已壞掉」的舊 episode（mp3 不在了）→ 用 episodes 列表驗證還在線，
-    // 不在線就 fallback 到最新一集，避免按鈕把使用者帶進 404。
-    if (episodes.length > 0 && !episodes.some(ep => ep.id === episodeId)) return null
-    const saved = storageGet<{ episodeId: string; currentTime: number }>('dawncast:player:currentTime')
-    if (!saved || saved.episodeId !== episodeId || saved.currentTime <= 0) return null
-    const mm = Math.floor(saved.currentTime / 60)
-    const ss = Math.floor(saved.currentTime % 60)
-    return { episodeId, formattedTime: `${mm}:${String(ss).padStart(2, '0')}` }
-  })()
-
   return (
-    <div className="max-w-3xl mx-auto px-4 pt-5 pb-4 space-y-8">
+    <div className="max-w-3xl mx-auto px-4 pt-5 pb-4 space-y-6">
 
-      {/* ── Hero ── */}
-      <section className="text-center space-y-4 pt-2">
-        <div className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-accent/10 text-accent text-xs font-medium">
-          <Star size={12} fill="currentColor" />
-          全功能免費開放
-        </div>
-        <h1 className="text-display lg:text-4xl tracking-display leading-display font-bold text-text-primary">
-          繼續你的學習之旅
-        </h1>
-        <div className="flex flex-col sm:flex-row items-center justify-center gap-3 pt-2">
-          <Link to={`/player${lastPlayed ? `/${lastPlayed.episodeId}` : latestEpisode ? `/${latestEpisode.id}` : ''}`}>
-            <Button variant="primary" size="lg">
-              <Play size={16} fill="currentColor" />
-              繼續學習
-            </Button>
-          </Link>
-          <Link to="/flashcards">
-            <Button variant="secondary" size="lg">
-              <Brain size={16} />
-              閃卡複習{dueCount > 0 ? `（${dueCount}）` : ''}
-            </Button>
-          </Link>
-        </div>
-        {lastPlayed && (
-          <div className="pt-3">
-            <Link
-              to={`/player/${lastPlayed.episodeId}`}
-              className="inline-flex items-center gap-1.5 text-xs text-text-tertiary hover:text-accent transition-colors duration-fast"
+      {/* ── 學習入口 ── */}
+      <div className="grid grid-cols-2 gap-3">
+        <Link to={`/player/${continueTargetId ?? ''}`}>
+          <button
+            type="button"
+            className="w-full h-14 rounded-lg bg-accent text-white font-medium flex items-center justify-center gap-2 hover:bg-accent-hover active:scale-[0.98] transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-1"
+          >
+            <Play size={16} fill="currentColor" />
+            <span>繼續學習</span>
+          </button>
+        </Link>
+        <Link to="/flashcards" className="relative">
+          <button
+            type="button"
+            className="w-full h-14 rounded-lg bg-bg-secondary border border-border text-text-primary font-medium flex items-center justify-center gap-2 hover:bg-border active:scale-[0.98] transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-1"
+          >
+            <Brain size={16} />
+            <span>閃卡複習</span>
+          </button>
+          {dueCount > 0 && (
+            <span
+              aria-label={`待複習 ${dueCount} 張`}
+              className="absolute -top-1.5 -right-1.5 min-w-[20px] h-5 px-1.5 rounded-full bg-accent text-white text-[10px] font-semibold flex items-center justify-center ring-2 ring-bg-primary"
             >
-              <Play size={11} fill="currentColor" />
-              繼續收聽最後播放（{lastPlayed.formattedTime}）
-            </Link>
-          </div>
-        )}
-      </section>
-
-      {/* ── 今日推薦 ── */}
-      {recommendedEpisode && (
-      <section className="space-y-3">
-        <div className="flex items-center justify-between">
-          <SectionLabel>今日推薦</SectionLabel>
-          <span className={`text-[10px] font-semibold px-1.5 py-0.5 rounded ${CEFR_COLOR[recommendedEpisode.cefrLevel]}`}>
-            {recommendedEpisode.cefrLevel}
-          </span>
-        </div>
-        {fetchError !== null && (
-          <ErrorBanner variant="inline" message={fetchError} onRetry={() => setRetryKey(k => k + 1)} />
-        )}
-        <EpisodeRow ep={recommendedEpisode} variant="hero" title={recommendedTitle} />
-      </section>
-      )}
-
-      {/* ── 本週進度 ── */}
-      <section className="space-y-2">
-        <div className="flex items-center justify-between text-xs text-text-tertiary">
-          <span className="font-medium">本週進度</span>
-          <span className={weeklyProgress >= WEEKLY_COUNT ? 'text-success font-medium' : ''}>
-            {weeklyProgress}/{WEEKLY_COUNT} 集
-          </span>
-        </div>
-        <div className="h-2 bg-bg-secondary rounded-full overflow-hidden">
-          <div
-            className="h-full bg-accent rounded-full transition-all duration-700 ease-apple"
-            style={{ width: `${(weeklyProgress / WEEKLY_COUNT) * 100}%` }}
-          />
-        </div>
-        {weeklyProgress >= WEEKLY_COUNT && (
-          <p className="text-xs text-success font-medium">本週完整學習達成！</p>
-        )}
-      </section>
-
-      {/* ── 學習統計 ── */}
-      <section className="grid grid-cols-3 gap-3">
-        <StatCard icon={Headphones} label="已聽集數" value={listenedEpisodeIds.size} unit="集" />
-        <StatCard icon={BookOpen} label="單字庫" value={vocabItems.length} unit="個" />
-        <StatCard icon={Brain} label="今日待複習" value={dueCount} unit="張" />
-      </section>
+              {dueCount}
+            </span>
+          )}
+        </Link>
+      </div>
 
       {/* ── 集數庫 ── */}
       <section className="space-y-4">
-        <SectionLabel>所有集數</SectionLabel>
+        <SectionLabel>選擇 podcast 開始學習</SectionLabel>
         <div className="flex gap-1.5 flex-wrap">
           {(Object.keys(TOPIC_LABELS) as TopicKey[]).map(key => (
             <Chip
@@ -199,6 +108,9 @@ export function HomeRoute() {
             </Chip>
           ))}
         </div>
+        {fetchError !== null && (
+          <ErrorBanner variant="inline" message={fetchError} onRetry={() => setRetryKey(k => k + 1)} />
+        )}
         <AnimatePresence mode="popLayout" initial={false}>
           {filteredEpisodes.length === 0 ? (
             <motion.div
@@ -222,31 +134,13 @@ export function HomeRoute() {
                     animate={{ opacity: 1, scale: 1, transition: { duration: 0.22, ease: [0.2, 0.8, 0.2, 1] } }}
                     exit={{ opacity: 0, scale: 0.96, transition: { duration: 0.18, ease: [0.2, 0.8, 0.2, 1] } }}
                   >
-                    <EpisodeRow ep={ep} variant="card" />
+                    <EpisodeRow ep={ep} variant="card" duration={durations.get(ep.id)} />
                   </motion.div>
                 ))}
               </AnimatePresence>
             </motion.div>
           )}
         </AnimatePresence>
-      </section>
-
-      {/* ── 功能亮點 ── */}
-      <section className="space-y-4">
-        <SectionLabel>不只是聆聽，真正學進去</SectionLabel>
-        <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-          {FEATURES.map(({ Icon, title, desc }) => (
-            <div key={title} className="flex items-start gap-3 sm:block sm:space-y-2 p-4 rounded-lg border border-border bg-bg-secondary">
-              <div className="w-8 h-8 rounded-md bg-accent/10 flex items-center justify-center text-accent shrink-0">
-                <Icon size={18} />
-              </div>
-              <div>
-                <div className="font-medium text-text-primary text-sm">{title}</div>
-                <div className="text-xs text-text-secondary leading-relaxed mt-0.5 sm:mt-0">{desc}</div>
-              </div>
-            </div>
-          ))}
-        </div>
       </section>
 
     </div>

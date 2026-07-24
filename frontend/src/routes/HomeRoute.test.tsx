@@ -34,7 +34,6 @@ vi.mock('../api', () => ({
 }))
 
 vi.mock('../state', () => ({
-  useSettings: () => ({ settings: { preferredTopics: ['business'] } }),
   useActivity: () => ({ listenedEpisodeIds: new Set<string>() }),
   useVocab: () => ({ items: [] }),
   useFavorites: () => ({ favorites: new Set<string>(), toggle: toggleFavorite }),
@@ -63,9 +62,9 @@ async function renderRoute(): Promise<{ root: Root; container: HTMLDivElement }>
 
 function getEpisodeLibrary(container: HTMLDivElement): HTMLElement {
   const section = Array.from(container.querySelectorAll('section')).find(node =>
-    node.textContent?.includes('所有集數'),
+    node.textContent?.includes('選擇 podcast 開始學習'),
   )
-  if (!section) throw new Error('找不到所有集數區塊')
+  if (!section) throw new Error('找不到集數庫區塊')
   return section
 }
 
@@ -118,18 +117,3 @@ describe('HomeRoute 主題篩選', () => {
   })
 })
 
-describe('HomeRoute 主題偏好推薦', () => {
-  it('偏好主題會決定今日推薦，但不改變集數庫順序', async () => {
-    const { root, container } = await renderRoute()
-    pendingRoots.push(root)
-
-    const heroSection = Array.from(container.querySelectorAll('section')).find(node =>
-      node.textContent?.includes('今日推薦'),
-    )
-    if (!heroSection) throw new Error('找不到今日推薦區塊')
-
-    expect(heroSection.textContent).toContain('Market Signals')
-    expect(getEpisode).toHaveBeenCalledWith('business-1')
-    expect(getEpisode).not.toHaveBeenCalledWith('tech-1')
-  })
-})

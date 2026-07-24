@@ -1,24 +1,23 @@
 import { Link } from 'react-router-dom'
-import { Mic, Star, CheckCircle2, Heart, Play } from 'lucide-react'
-import { CEFR_COLOR, TOPIC_LABELS, formatDateZhTW } from '../../lib'
+import { Clock, Star, CheckCircle2, Heart, Play } from 'lucide-react'
+import { CEFR_COLOR, TOPIC_LABELS, formatDateZhTW, formatTime } from '../../lib'
 import type { MockEpisode } from '../../lib'
 import { useActivity, useFavorites } from '../../state'
 import { EpisodeCover } from './EpisodeCover'
 
 interface EpisodeRowProps {
   readonly ep: MockEpisode
-  readonly variant: 'card' | 'hero' | 'compact'
-  /** hero 限定：完整 Episode 載入後的真實標題；null 顯示 skeleton，省略則直接用 ep.title */
-  readonly title?: string | null
+  readonly variant: 'card' | 'compact'
+  /** 從 cues 末段推算的集數時長（秒）；card 顯示用 */
+  readonly duration?: number
 }
 
-export function EpisodeRow({ ep, variant, title }: EpisodeRowProps) {
-  if (variant === 'hero') return <HeroRow ep={ep} title={title} />
+export function EpisodeRow({ ep, variant, duration }: EpisodeRowProps) {
   if (variant === 'compact') return <CompactRow ep={ep} />
-  return <CardRow ep={ep} />
+  return <CardRow ep={ep} duration={duration} />
 }
 
-function CardRow({ ep }: { readonly ep: MockEpisode }) {
+function CardRow({ ep, duration }: { readonly ep: MockEpisode; readonly duration?: number }) {
   const { listenedEpisodeIds } = useActivity()
   const isListened = listenedEpisodeIds.has(ep.id)
   const { favorites, toggle } = useFavorites()
@@ -76,56 +75,10 @@ function CardRow({ ep }: { readonly ep: MockEpisode }) {
           </div>
         </div>
         <div className="mt-2 flex items-center gap-2 text-xs text-text-tertiary">
-          <Mic size={11} />
-          <span>Alex &amp; Sarah</span>
-          <span>·</span>
-          <span>3 分鐘</span>
+          <Clock size={11} />
+          <span>{duration ? formatTime(duration) : '—'}</span>
           <span>·</span>
           <span>{formatDateZhTW(ep.publishedAt)}</span>
-        </div>
-      </div>
-    </Link>
-  )
-}
-
-function HeroRow({ ep, title }: { readonly ep: MockEpisode; readonly title?: string | null }) {
-  const isLoading = title === null
-  return (
-    <Link to={`/player/${ep.id}`} className="block">
-      <div className="p-5 rounded-xl ring-1 ring-accent/20 material-thin hover:bg-bg-secondary/40 shadow-md active:scale-[0.99] transition-[background-color,transform] duration-fast group">
-        <div className="flex items-center gap-4">
-          <div className="relative shrink-0">
-            <EpisodeCover episodeId={ep.id} size="lg" />
-            <div className="absolute -bottom-1.5 -right-1.5 w-9 h-9 rounded-full bg-accent shadow-sm flex items-center justify-center text-white group-hover:scale-105 transition-transform duration-fast">
-              <Play size={16} fill="currentColor" />
-            </div>
-          </div>
-          <div className="min-w-0 space-y-1">
-            <div className="flex items-center gap-2 text-xs text-text-secondary">
-              <span>E{ep.episode}</span>
-              <span>·</span>
-              <span>{TOPIC_LABELS[ep.topic]}</span>
-              <span>·</span>
-              <span>3 分鐘</span>
-            </div>
-            {isLoading ? (
-              <>
-                <div className="h-6 w-48 rounded bg-bg-secondary animate-pulse" />
-                <div className="h-4 w-36 rounded bg-bg-secondary animate-pulse" />
-              </>
-            ) : (
-              <>
-                <div className="font-semibold text-text-primary text-lg leading-tight">
-                  {title ?? ep.title}
-                </div>
-                <div className="text-sm text-text-secondary">{ep.titleZh}</div>
-              </>
-            )}
-            <div className="flex items-center gap-1.5 text-xs text-text-tertiary mt-1">
-              <Mic size={11} />
-              <span>Alex &amp; Sarah · {formatDateZhTW(ep.publishedAt)}</span>
-            </div>
-          </div>
         </div>
       </div>
     </Link>

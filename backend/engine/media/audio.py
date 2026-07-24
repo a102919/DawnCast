@@ -3,6 +3,11 @@
 搬 POC concat 邏輯：過 wav 統一取樣率（mp3 concat demuxer 對不同來源不可靠）、
 行間插 pause_sec 靜音、用絕對路徑寫 concat list → libmp3lame 128k。
 臨時 wav 寫在傳入的 workdir，結束清掉。
+
+回傳最終 mp3 物理時長（秒）：trim 後 mp3 decode → WAV → libmp3lame 重編碼
+會引入 LAME frame alignment overhead（每段 ~50ms），ffprobe 量出來的實際時長
+跟 sum(seg.duration + pauses) 不一致；caller 拿去當 build_timeline 的 target_duration
+做等比例縮放對齊尾端，避免字幕時間軸飄出音檔 1-2 秒。
 """
 
 from __future__ import annotations
@@ -13,7 +18,7 @@ from pathlib import Path
 
 from shared.errors import TTSError
 
-from .tts import SynthSegment
+from .tts import SynthSegment, _probe_duration
 
 
 def _run(cmd: list[str], *, what: str) -> None:
@@ -31,8 +36,11 @@ def concat_segments(
     pause_sec: float,
     sample_rate: int,
     long_pause_sec: float | None = None,
-) -> None:
+) -> float:
     """把 segs 的音檔依序串接成 out_mp3，行與行之間插入靜音。
+
+    回傳最終 mp3 的物理時長（秒，ffprobe format=duration）；caller 拿去當
+    build_timeline 的 target_duration 對齊字幕時間軸（見模組 docstring）。
 
     long_pause_sec 給 chapter/話題轉換邊界用（下一行 pause_before=True 時，
     這一行「之後」的停頓拉長）；缺省時退化成現有均一 pause_sec 行為。
@@ -146,3 +154,8 @@ def concat_segments(
         silence_long.unlink(missing_ok=True)
     list_file.unlink(missing_ok=True)
     wav_dir.rmdir()
+
+    # 6) 量測最終 mp3 物理時長回傳（libmp3lame 重編碼會加 frame alignment
+    #    overhead，每段約 +50ms 累積，前端 audio.currentTime 對齊到 mp3 frame，
+    #    cues 必須以這個時長為 ground truth 等比縮放）
+    return _probe_duration(out_mp3)

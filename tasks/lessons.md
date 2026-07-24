@@ -162,3 +162,61 @@ curl 直接打 8000 帶 `/api/episodes` 是 200（用 prefix 加完的版本）�
 - **「後端 wire schema」跟「mock fixture schema」是兩個不同的驗證目標，不要共用同一份 zod schema**：前者要跟後端 model 的每個欄位對齊（含前端用不到但後端會送的欄位）；後者只要滿足前端 domain 型別實際會用到的欄位。硬共用會逼 mock fixture 塞不相關欄位，或（更危險）逼 mock fixture 驗證失敗。
 - **改完 schema 一定要各模式各跑一次**：`VITE_USE_MOCK=true npm run dev` 跟 `VITE_USE_MOCK=false npm run dev`（接真後端）都要手動點開 PlayerRoute，兩條路徑分開驗證，不能只驗其中一條就當作全部過了。
 - **OpenAPI `required` 只代表「input 驗證要不要求」，不等於「response 保證有值」**：Pydantic 欄位有 `default`（非 `default_factory`）時，openapi-typescript 會標成非 optional（`defaultNonNullable` 行為），但 `default_factory`（list/dict 等 mutable default）欄位仍標 optional。直接把 `components['schemas']['X']` 拿來取代手寫 app 型別，會讓這類欄位對下游消費者變成噪音式 optional——這種情況改用 `satisfies` 釘住 zod schema 就好，不要動 app 層手寫型別。
+
+## 2026-07-25 — Podcast 聲音/字幕錯位 root cause：TTS duration 不等於最終 mp3 物理 duration
+
+**情境**：prod the_strokes_f385785e 量測結果
+- cues[-1].end = 245.904 s
+- mp3 物理 duration (ffprobe) = 243.923 s
+- 差 = +1.981 s
+- 平均每段系統性 +50.8 ms（39 段累積 ~1.98 s）
+- 最後一條 cue 在 mp3 結束前 1.98s 就開始，最後一條文字實際上沒聲音
+
+**根因**：`backend/engine/media/subtitles.py:build_timeline` 用 `cursor += seg.duration + pause_sec` 算每條 cue 的時間軸；`seg.duration` 來自 TTS 模型輸出的 token rate × 字數估算，**沒有任何機制回灌最終 mp3 物理 duration**。
+
+- TTS 算 duration 用的是 waveform duration，正常化後 silence 已被 trim
+- 但「正常化後的 WAV」不是「最終 LAME 編碼的 mp3」——後者有 ~46ms encoder delay + LAME padding frame 累積
+- 還有 piper TTS 段頭 leading silence 沒被 pre-trim
+- `audio.concat_segments` 用「WAV 物理 duration」串接，但 `build_timeline` 用「seg.duration」算 cue，**兩邊用不同事實來源**
+
+**規則**：
+- **時間軸與實際音檔是同一條事實**：寫 `build_timeline` 跟 `audio.concat_segments` 時，要讓「串接後的真實 mp3 duration」是 cue 計算的 single source of truth，不是「TTS 估算的 duration」
+- **修正方向**（尚未實作）：
+  1. 跑完 `audio.concat_segments` 後量 mp3 物理 duration
+  2. 算「scale factor」= mp3_dur / sum(seg.duration + pause)
+  3. 把 scale factor 套回所有 cue 的 start/end（等比例縮放），或
+  4. 重新跑 `build_timeline`，這次用「每段 mp3 解碼後的真實 duration」（不再用 TTS 估算）
+- **不要做的事**：寫 magic offset / fudge factor（每段 +50.8ms）蓋掉問題——每個 segment 的實際偏差不同（piper 段頭 + LAME delay + padding），單一常數會把別的集數調壞
+- **控制列 duration 用 `audio.duration`，不是 `cues[-1].end`**：`PlayerRoute.tsx:215` 用 cueDuration fallback，但 `usePlayer().duration` 才是 mp3 真實長度；現在 fallback 路徑會讓控制列多顯示 2 秒
+- **驗證方法**：每次 render 完跑 ffprobe 校驗 `mp3_dur vs cues[-1].end`，差 > 0.1s 直接 fail（寫進 `tests/test_media.py`）
+
+**為什麼之前沒抓到**：
+- plan 階段假設「LAME encoder delay 沒扣」但沒量化
+- `tests/test_media.py` 只驗證「cues 順序、單調、總長接近」，沒驗證「cues 總長 == mp3 物理長度」
+- 沒有 prod 量測 pipeline，每次 prod 渲染的偏差是「自然漂移」，沒人發現
+
+**驗證已用資料**：
+- `/tmp/dc_diag/strokes.json` (完整 cues)
+- `/tmp/dc_diag/strokes.mp3` (完整 mp3, 3.9 MB)
+- `/tmp/dc_diag/strokes_silence.txt` (silencedetect -25dB/0.2s)
+- `/tmp/dc_diag/strokes_silence_05.txt` (silencedetect -30dB/0.5s)
+- 結論：silencedetect 算法本身不準（段內靜音會誤切），量 mp3 物理 duration 才是單一真相
+
+### 2026-07-25（續）— 解法落地：concat_segments 回傳 mp3 物理時長，build_timeline 等比例縮放對齊
+
+**實作 diff**（四個檔案，未動 API 契約）：
+- `backend/engine/media/audio.py`: `concat_segments` signature 從 `-> None` 改 `-> float`，encode 完成後呼叫既有 `tts._probe_duration` 量最終 mp3 回傳
+- `backend/engine/media/subtitles.py`: `build_timeline` 加 keyword-only `target_duration: float | None = None`；新 helper `_align_to_duration` 在偏差 ≥ 0.1% 時把整段 cues 等比例縮放（`cue.model_copy(update={...})` 不可變更新）
+- `backend/engine/media/__init__.py:render_episode`: 把 `concat_segments` 的 return 接到 `build_timeline(..., target_duration=mp3_duration)`
+- `backend/tests/test_media.py`: 加三條測試守住 — 縮放對齊、差 < 0.1% 不動、`target_duration=None` 向後相容
+
+**為什麼 scale 是「修源頭」不是 magic offset**：`target_duration` 來自最終 mp3 ffprobe 量到的物理時長（音檔事實），不是 hardcode `+50ms × segments`。每集自動量測自動對齊；後續若 encoder overhead 變了（換 ffmpeg 版本），行為自動跟著變。
+
+**為什麼 scale 不是 per-segment probe**：silencedetect 對 39 段實測過於嘈雜（會把句中自然停頓誤判為段邊界，產生 122 段 speech segments 對 39 cues）。scale 對每段相對位移 < 0.05s（實測 scale = 0.992），聽感無感；能用 1 行 scale 解的事不要去寫 audio segmentation。
+
+**測試結果**：`uv run poe lint` ✓、`uv run poe type-check` ✓（62 files no issues）、`uv run poe test` ✓（259 passed, 1 skipped — baseline SRT 缺檔）。
+
+**未修的東西（標 follow-up）**：
+- prod 26 集已存在的錯位 cues — 動 prod DB 風險高、且使用者要等新流程在 prod 跑穩才能放心 backfill。解法是對既有集跑一次性 scale backfill script（從 R2 下載 mp3 → ffprobe → scale 寫回 `script_json.cues`），等使用者下 ticket 再做。
+- 前端 `PlayerRoute.tsx:275` 已經是 `duration > 0 ? duration : cueDuration` fallback（優先 audio.duration），不用改前端。
+- mock fixture `frontend/public/data/episode.json` 指向 mp4 是獨立 mock mode bug，跟正式 R2 mp3 流程無關。
