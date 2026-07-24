@@ -24,6 +24,7 @@ output/
 # tool state / caches (regenerable, not source)
 .codegraph/
 .claude-flow/
+.wrangler/
 *.sqlite3
 
 # session workflow scratch（含指向個人絕對路徑的 symlink，不可攜）
