@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { AnimatePresence, motion } from 'framer-motion'
 import { Play, Captions, MousePointerClick, BookOpen, Headphones, Brain, Star, SearchX } from 'lucide-react'
@@ -8,7 +8,7 @@ import { Chip } from '../components/primitives/Chip'
 import { SectionLabel } from '../components/primitives/SectionLabel'
 import { StatCard } from '../components/primitives/StatCard'
 import { ErrorBanner } from '../components/primitives/ErrorBanner'
-import { useActivity, useVocab } from '../state'
+import { useActivity, useSettings, useVocab } from '../state'
 import { EpisodeRow } from '../components/shared/EpisodeRow'
 import { api } from '../api'
 import { TOPIC_LABELS, CEFR_COLOR } from '../lib'
@@ -40,6 +40,10 @@ export function HomeRoute() {
   const [fetchError, setFetchError] = useState<string | null>(null)
   const [retryKey, setRetryKey] = useState(0)
   const [topicFilter, setTopicFilter] = useState<TopicKey>('all')
+  const { settings } = useSettings()
+  const preferredTopicKey = settings.preferredTopics.join(',')
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- preferredTopicKey 是穩定的 join 字串，array 每次渲染都是新 reference
+  const preferredTopics = useMemo(() => settings.preferredTopics, [preferredTopicKey])
   const { listenedEpisodeIds } = useActivity()
   const { items: vocabItems } = useVocab()
   const today = new Date().toISOString().slice(0, 10)
@@ -50,29 +54,41 @@ export function HomeRoute() {
   const weeklyProgress = weeklyEps.filter(ep => listenedEpisodeIds.has(ep.id)).length
 
   useEffect(() => {
+    let cancelled = false
+
     const load = async () => {
       setFetchError(null)
       setEpisode(null)
       try {
         const list = await api.listEpisodes()
+        if (cancelled) return
         setEpisodes(list)
-        const featured = list[0]
+        const featured = list.find(ep => preferredTopics.includes(ep.topic)) ?? list[0]
         if (featured) {
           const data = await api.getEpisode(featured.id)
+          if (cancelled) return
           setEpisode(data)
         }
       } catch {
-        setFetchError('節目資料載入失敗，請重試')
+        if (!cancelled) setFetchError('節目資料載入失敗，請重試')
       }
     }
     void load()
-  }, [retryKey])
+
+    return () => {
+      cancelled = true
+    }
+  }, [retryKey, preferredTopics])
 
   const filteredEpisodes = topicFilter === 'all'
     ? episodes
     : episodes.filter(ep => ep.topic === topicFilter)
 
   const latestEpisode = episodes[0]
+  const recommendedEpisode = episodes.find(ep => preferredTopics.includes(ep.topic)) ?? latestEpisode
+  const recommendedTitle = recommendedEpisode && episode?.id === recommendedEpisode.id
+    ? episode.title
+    : null
 
   // P0-1：繼續收聽入口——讀 LS 取得最後播放的集數 ID 與時間
   const lastPlayed = (() => {
@@ -128,18 +144,18 @@ export function HomeRoute() {
       </section>
 
       {/* ── 今日推薦 ── */}
-      {latestEpisode && (
+      {recommendedEpisode && (
       <section className="space-y-3">
         <div className="flex items-center justify-between">
           <SectionLabel>今日推薦</SectionLabel>
-          <span className={`text-[10px] font-semibold px-1.5 py-0.5 rounded ${CEFR_COLOR[latestEpisode.cefrLevel]}`}>
-            {latestEpisode.cefrLevel}
+          <span className={`text-[10px] font-semibold px-1.5 py-0.5 rounded ${CEFR_COLOR[recommendedEpisode.cefrLevel]}`}>
+            {recommendedEpisode.cefrLevel}
           </span>
         </div>
         {fetchError !== null && (
           <ErrorBanner variant="inline" message={fetchError} onRetry={() => setRetryKey(k => k + 1)} />
         )}
-        <EpisodeRow ep={latestEpisode} variant="hero" title={episode?.title ?? null} />
+        <EpisodeRow ep={recommendedEpisode} variant="hero" title={recommendedTitle} />
       </section>
       )}
 
