@@ -192,6 +192,14 @@ class AdminTokenUsageResponse(CamelModel):
     items: list[AdminTokenUsageItem] = Field(default_factory=list)
 
 
+class AdminEpsGenerateResponse(CamelModel):
+    """Admin 單集生成已排入 pgmq 的確認資訊。202 僅表示已入列，不代表音檔已完成。"""
+
+    idempotency_key: str
+    msg_id: int
+    status: Literal["queued"] = "queued"
+
+
 # ── 帳號自我管理（T4）──────────────────────────────────────────
 
 

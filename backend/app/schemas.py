@@ -10,7 +10,7 @@ from typing import Literal
 
 from pydantic import Field
 
-from shared.models import CamelModel, EntryMode, LengthTier
+from shared.models import CamelModel, EntryMode, LengthTier, TopicType
 
 
 class AddVocabBody(CamelModel):
@@ -105,3 +105,26 @@ class MarkPlayedBody(CamelModel):
     """markOrderPlayed(date, playedAt) 的 body 部分（date 走 path）。"""
 
     played_at: str = Field(min_length=1)
+
+
+class AdminEpsGenerateBody(CamelModel):
+    """admin 直接排入單集生成；繞過 daily_order / control orchestration。
+
+    落庫時 is_free=True（公開，登入即可見）由 source="fallback" 自動推導，
+    呼叫端不用傳。
+    """
+
+    topic: str = Field(min_length=1)
+    angle: Literal[
+        "定義",
+        "人物故事",
+        "常見誤解",
+        "應用場景",
+        "歷史",
+        "對比",
+    ] = "定義"
+    topic_type: TopicType = "evergreen"
+    length_tier: LengthTier = "medium"
+    cefr: Literal["A2", "B1", "B2"] = "B1"
+    user_ids: list[str] = Field(default_factory=list)
+    deliver_date: str | None = None

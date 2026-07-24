@@ -383,6 +383,30 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/admin/eps/generate": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Generate Admin Episode
+         * @description 直接排入單集生成；202 僅表示已入列，音檔完成需輪詢 /admin/episodes。
+         *
+         *     落庫時 source="fallback" → upsert_episode_node 自動設 is_free=True。
+         *     user_ids 留空 → 沒有 deliveries，但 is_free=True → 任何登入者首頁看得到；
+         *     帶 user_ids → 仍 is_free=True，但額外建立 deliveries 給指定使用者。
+         */
+        post: operations["generate_admin_episode_admin_eps_generate_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/jobs/orders/{date}/generate": {
         parameters: {
             query?: never;
@@ -590,6 +614,61 @@ export interface components {
             hasAudio: boolean;
         };
         /**
+         * AdminEpsGenerateBody
+         * @description admin 直接排入單集生成；繞過 daily_order / control orchestration。
+         *
+         *     落庫時 is_free=True（公開，登入即可見）由 source="fallback" 自動推導，
+         *     呼叫端不用傳。
+         */
+        AdminEpsGenerateBody: {
+            /** Topic */
+            topic: string;
+            /**
+             * Angle
+             * @default 定義
+             * @enum {string}
+             */
+            angle: "定義" | "人物故事" | "常見誤解" | "應用場景" | "歷史" | "對比";
+            /**
+             * Topictype
+             * @default evergreen
+             * @enum {string}
+             */
+            topicType: "news" | "product" | "evergreen" | "skill";
+            /**
+             * Lengthtier
+             * @default medium
+             * @enum {string}
+             */
+            lengthTier: "short" | "medium" | "long";
+            /**
+             * Cefr
+             * @default B1
+             * @enum {string}
+             */
+            cefr: "A2" | "B1" | "B2";
+            /** Userids */
+            userIds?: string[];
+            /** Deliverdate */
+            deliverDate?: string | null;
+        };
+        /**
+         * AdminEpsGenerateResponse
+         * @description Admin 單集生成已排入 pgmq 的確認資訊。202 僅表示已入列，不代表音檔已完成。
+         */
+        AdminEpsGenerateResponse: {
+            /** Idempotencykey */
+            idempotencyKey: string;
+            /** Msgid */
+            msgId: number;
+            /**
+             * Status
+             * @default queued
+             * @constant
+             */
+            status: "queued";
+        };
+        /**
          * AdminJobQueue
          * @description 單一 pgmq 佇列的度量（pgmq.metrics_all() 逐列對映）。
          *
@@ -658,6 +737,13 @@ export interface components {
             /** Ok */
             ok: boolean;
             data?: components["schemas"]["Activity"] | null;
+            error?: components["schemas"]["ErrorBody"] | null;
+        };
+        /** ApiResponse[AdminEpsGenerateResponse] */
+        ApiResponse_AdminEpsGenerateResponse_: {
+            /** Ok */
+            ok: boolean;
+            data?: components["schemas"]["AdminEpsGenerateResponse"] | null;
             error?: components["schemas"]["ErrorBody"] | null;
         };
         /** ApiResponse[AdminTokenUsageResponse] */
@@ -2098,6 +2184,41 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ApiResponse_AdminTokenUsageResponse_"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    generate_admin_episode_admin_eps_generate_post: {
+        parameters: {
+            query?: never;
+            header?: {
+                "X-Admin-Token"?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AdminEpsGenerateBody"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiResponse_AdminEpsGenerateResponse_"];
                 };
             };
             /** @description Validation Error */

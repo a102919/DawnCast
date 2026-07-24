@@ -150,9 +150,27 @@ async def fake_connection() -> AsyncIterator[FakeConnection]:
     yield FakeConnection()
 
 
+SENT_MESSAGES: list[tuple[str, dict[str, Any]]] = []
+QUEUE_MSG_ID = 4242
+
+
+async def spy_queue_send(queue_name: str, body: dict[str, Any]) -> int:
+    SENT_MESSAGES.append((queue_name, dict(body)))
+    return QUEUE_MSG_ID
+
+
+def _today_in_app_tz() -> str:
+    from datetime import datetime as _dt
+    from zoneinfo import ZoneInfo as _ZI
+
+    return _dt.now(_ZI("Asia/Taipei")).date().isoformat()
+
+
 @pytest.fixture(autouse=True)
 def patch_admin_db(monkeypatch: pytest.MonkeyPatch) -> None:
+    SENT_MESSAGES.clear()
     monkeypatch.setattr(admin_router, "connection", fake_connection)
+    monkeypatch.setattr(admin_router.queue, "send", spy_queue_send)
     # 獨立於全域 get_settings() 的 lru_cache 單例，避免污染其他測試檔。
     monkeypatch.setattr(
         admin_router,
@@ -275,3 +293,107 @@ def test_admin_token_unset_denies_even_empty_header(
 
     res_empty_header = client.get("/admin/episodes", headers=_admin_headers(""))
     assert res_empty_header.status_code == 401
+
+
+# ── /admin/eps/generate ────────────────────────────────────────────
+
+
+def test_eps_generate_minimal_body_enqueues_generate_queue(client: TestClient) -> None:
+    res = client.post(
+        "/admin/eps/generate",
+        json={"topic": "AI"},
+        headers=_admin_headers(ADMIN_TOKEN),
+    )
+    assert res.status_code == 202
+    today = _today_in_app_tz()
+    assert res.json() == {
+        "ok": True,
+        "data": {
+            "idempotencyKey": f"{today}:AI:定義:medium:evergreen",
+            "msgId": QUEUE_MSG_ID,
+            "status": "queued",
+        },
+        "error": None,
+    }
+    assert [
+        (
+            "generate",
+            {
+                "big_topic": "AI",
+                "angle": "定義",
+                "cluster_id": None,
+                "deliver_date": today,
+                "user_ids": [],
+                "length_tier": "medium",
+                "cefr": "B1",
+                "source": "fallback",
+                "topic_type": "evergreen",
+            },
+        )
+    ] == SENT_MESSAGES
+
+
+def test_eps_generate_with_all_options_enqueues_full_payload(client: TestClient) -> None:
+    res = client.post(
+        "/admin/eps/generate",
+        json={
+            "topic": "太空探索",
+            "angle": "對比",
+            "topicType": "news",
+            "lengthTier": "long",
+            "cefr": "B2",
+            "userIds": ["user-a", "user-b"],
+            "deliverDate": "2026-08-01",
+        },
+        headers=_admin_headers(ADMIN_TOKEN),
+    )
+    assert res.status_code == 202
+    assert res.json()["data"]["idempotencyKey"] == "2026-08-01:太空探索:對比:long:news"
+    assert SENT_MESSAGES == [
+        (
+            "generate",
+            {
+                "big_topic": "太空探索",
+                "angle": "對比",
+                "cluster_id": None,
+                "deliver_date": "2026-08-01",
+                "user_ids": ["user-a", "user-b"],
+                "length_tier": "long",
+                "cefr": "B2",
+                "source": "fallback",
+                "topic_type": "news",
+            },
+        )
+    ]
+
+
+def test_eps_generate_without_auth_returns_401(client: TestClient) -> None:
+    res = client.post("/admin/eps/generate", json={"topic": "AI"})
+    assert res.status_code == 401
+    assert res.json()["ok"] is False
+    assert res.json()["error"]["code"] == "unauthorized"
+    assert SENT_MESSAGES == []
+
+
+def test_eps_generate_invalid_angle_returns_400(client: TestClient) -> None:
+    res = client.post(
+        "/admin/eps/generate",
+        json={"topic": "AI", "angle": "不存在的角度"},
+        headers=_admin_headers(ADMIN_TOKEN),
+    )
+    # 全站 validation handler 回 400，見 app/main.py
+    assert res.status_code == 400
+    assert res.json()["ok"] is False
+    assert res.json()["error"]["code"] == "validation_error"
+    assert SENT_MESSAGES == []
+
+
+def test_eps_generate_invalid_topic_type_returns_400(client: TestClient) -> None:
+    res = client.post(
+        "/admin/eps/generate",
+        json={"topic": "AI", "topicType": "invalid"},
+        headers=_admin_headers(ADMIN_TOKEN),
+    )
+    assert res.status_code == 400
+    assert res.json()["error"]["code"] == "validation_error"
+    assert SENT_MESSAGES == []

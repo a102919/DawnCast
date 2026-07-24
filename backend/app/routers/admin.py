@@ -8,16 +8,30 @@ YAGNI：目前只有單一管理員需求，不建 admin_users 表；之後若�
 
 from __future__ import annotations
 
+import logging
 import secrets
+from datetime import datetime
+from typing import Any
+from zoneinfo import ZoneInfo
 
-from fastapi import APIRouter, Depends, Header
+from fastapi import APIRouter, Depends, Header, status
 from psycopg.rows import dict_row
 
 from app.response import ApiResponse, ok
+from app.schemas import AdminEpsGenerateBody
 from shared.config import get_settings
+from shared.db import queue
 from shared.db.pool import connection
 from shared.errors import AuthError
-from shared.models import AdminEpisode, AdminJobQueue, AdminTokenUsageItem, AdminTokenUsageResponse
+from shared.models import (
+    AdminEpisode,
+    AdminEpsGenerateResponse,
+    AdminJobQueue,
+    AdminTokenUsageItem,
+    AdminTokenUsageResponse,
+)
+
+logger = logging.getLogger(__name__)
 
 
 def require_admin_token(
@@ -110,3 +124,60 @@ async def get_admin_token_usage() -> ApiResponse[AdminTokenUsageResponse]:
         items=[AdminTokenUsageItem.model_validate(r) for r in items],
     )
     return ok(response)
+
+
+@router.post(
+    "/eps/generate",
+    status_code=status.HTTP_202_ACCEPTED,
+    response_model=ApiResponse[AdminEpsGenerateResponse],
+)
+async def generate_admin_episode(
+    body: AdminEpsGenerateBody,
+) -> ApiResponse[AdminEpsGenerateResponse]:
+    """直接排入單集生成；202 僅表示已入列，音檔完成需輪詢 /admin/episodes。
+
+    落庫時 source="fallback" → upsert_episode_node 自動設 is_free=True。
+    user_ids 留空 → 沒有 deliveries，但 is_free=True → 任何登入者首頁看得到；
+    帶 user_ids → 仍 is_free=True，但額外建立 deliveries 給指定使用者。
+    """
+    deliver_date = body.deliver_date
+    if deliver_date is None:
+        tz = ZoneInfo(get_settings().app_timezone)
+        deliver_date = datetime.now(tz).date().isoformat()
+
+    cluster_id: str | None = None
+    queue_body: dict[str, Any] = {
+        "big_topic": body.topic,
+        "angle": body.angle,
+        "cluster_id": cluster_id,
+        "deliver_date": deliver_date,
+        "user_ids": list(body.user_ids),
+        "length_tier": body.length_tier,
+        "cefr": body.cefr,
+        "source": "fallback",  # → upsert_episode_node 推導 is_free=True
+        "topic_type": body.topic_type,
+    }
+
+    # 與 nodes.upsert_episode_node + worker._compensate_generate_failure 同公式
+    idem_key = (
+        f"{cluster_id or f'{deliver_date}:{body.topic}:{body.angle}'}"
+        f":{body.length_tier}:{body.topic_type}"
+    )
+
+    try:
+        msg_id = await queue.send("generate", queue_body)
+    except Exception:
+        logger.exception(
+            "admin 單集生成 enqueue 失敗（topic=%s, deliver_date=%s）",
+            body.topic,
+            deliver_date,
+        )
+        raise  # 走全站 unhandled_handler → 500 internal_error
+
+    return ok(
+        AdminEpsGenerateResponse(
+            idempotency_key=idem_key,
+            msg_id=msg_id,
+            status="queued",
+        )
+    )
