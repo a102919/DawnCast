@@ -48,7 +48,7 @@ export function VocabEntryCard({ item, onSeek, onRemove, variant = 'page' }: Voc
     return () => { cancelled = true }
   }, [item.word])
 
-  // 卡片點擊開啟的詞卡（WordCardPanel）沿用逐字稿頁的同一元件，需要一個 Cue 形狀的來源句
+  // 卡片點擊開啟的詞卡（WordCardPanel）沿用播放頁的同一元件，需要一個 Cue 形狀的來源句
   const cueForPanel: Cue = {
     index: item.sourceLineNo,
     speaker: '',
@@ -153,7 +153,7 @@ export function VocabEntryCard({ item, onSeek, onRemove, variant = 'page' }: Voc
         </div>
       </motion.div>
 
-      {/* 詞卡：與逐字稿頁點單字彈出的 WordCardPanel 共用同一元件 */}
+      {/* 詞卡：與播放頁點單字彈出的 WordCardPanel 共用同一元件 */}
       <WordCardPanel
         isOpen={isPanelOpen}
         word={item.word}

@@ -1,19 +1,19 @@
 import { useState, useEffect, useMemo, useCallback, useRef } from 'react'
 import { useParams } from 'react-router-dom'
-import { Sparkles, BookMarked, FileText } from 'lucide-react'
+import { Sparkles, BookMarked, MessageCircle } from 'lucide-react'
+import { toast } from 'sonner'
 import { ErrorBanner } from '../components/primitives/ErrorBanner'
 import { AudioPlayer } from '../components/player/AudioPlayer'
 import { PlayerControls } from '../components/player/PlayerControls'
 import { LyricsView } from '../components/lyrics/LyricsView'
 import { PlayerBottomBar } from '../components/player/PlayerBottomBar'
-import { MobileTranscriptSheet } from '../components/transcript/MobileTranscriptSheet'
 import { WordCardPanel } from '../components/wordcard/WordCardPanel'
 import { VocabDrawer } from '../components/vocab/VocabDrawer'
 import type { Episode, Cue } from '../types/episode'
 import type { DictEntry } from '../api/types'
 import { api } from '../api'
-import { usePlayer, useDailyOrder, useSettings, useActivity } from '../state'
-import { findActiveCueIndex } from '../lib'
+import { usePlayer, useDailyOrder, useSettings, useActivity, useVocab } from '../state'
+import { findActiveCueIndex, buildConversationPrompt } from '../lib'
 
 export function PlayerRoute() {
   const { id } = useParams<{ id: string }>()
@@ -23,13 +23,13 @@ export function PlayerRoute() {
   const [selectedCue, setSelectedCue] = useState<Cue | null>(null)
   const [dictEntry, setDictEntry] = useState<DictEntry | null>(null)
   const [isWordCardOpen, setIsWordCardOpen] = useState(false)
-  const [isTranscriptOpen, setIsTranscriptOpen] = useState(false)
   const [isVocabDrawerOpen, setIsVocabDrawerOpen] = useState(false)
   const [lookupError, setLookupError] = useState<string | null>(null)
   const { currentTime, duration, seekTo, play, videoRef, loadProgress, setPlaybackRate } = usePlayer()
   const { settings } = useSettings()
   const { markPlayed } = useDailyOrder()
   const { addListenMinutes, addLookupCount, markListened } = useActivity()
+  const { items: vocabItems } = useVocab()
   const episodeIdRef = useRef<string | null>(null)
   const hasMarkedListened = useRef(false)
   const hasMarkedDailyPlayed = useRef(false)
@@ -152,6 +152,23 @@ export function PlayerRoute() {
     }
   }
 
+  const handleCopyPrompt = async () => {
+    if (!episode) return
+    const prompt = buildConversationPrompt({
+      episodeTitle: episode.title,
+      cues: episode.cues,
+      cefrLevel: settings.cefrLevel,
+      vocab: vocabItems.filter(v => v.sourceEpisodeId === episode.id),
+    })
+    try {
+      await navigator.clipboard.writeText(prompt)
+      toast.success('已複製！貼到 Gemini 或 ChatGPT 語音對話就能開始練習')
+    } catch (err) {
+      console.error(err)
+      toast.error('複製失敗，請重試')
+    }
+  }
+
   if (fetchError !== null) {
     return (
       <ErrorBanner message={fetchError} onRetry={() => void loadEpisode()} retryLabel="重新載入" className="h-64" />
@@ -191,11 +208,11 @@ export function PlayerRoute() {
         <PlayerControls duration={episode.cues[episode.cues.length - 1]?.end ?? 0} />
         <div className="flex items-center justify-center gap-4 mt-3">
           <button
-            onClick={() => setIsTranscriptOpen(true)}
+            onClick={() => void handleCopyPrompt()}
             className="flex items-center gap-1.5 text-xs text-text-secondary hover:text-text-primary transition-colors"
           >
-            <FileText size={14} />
-            逐字稿
+            <MessageCircle size={14} />
+            複製對話練習 Prompt
           </button>
           <button
             onClick={() => setIsVocabDrawerOpen(true)}
@@ -212,7 +229,7 @@ export function PlayerRoute() {
         duration={episode.cues[episode.cues.length - 1]?.end ?? 0}
         cues={episode.cues}
         activeCueIdx={activeCueIdx}
-        onTranscriptOpen={() => setIsTranscriptOpen(true)}
+        onCopyPrompt={() => void handleCopyPrompt()}
         onVocabOpen={() => setIsVocabDrawerOpen(true)}
       />
 
@@ -233,15 +250,6 @@ export function PlayerRoute() {
           play()
           setIsWordCardOpen(false)
         }}
-      />
-
-      {/* Mobile 逐字稿底部 Sheet（沿用既有元件，傳 cues 給逐句列表） */}
-      <MobileTranscriptSheet
-        isOpen={isTranscriptOpen}
-        cues={episode.cues}
-        activeCueIdx={activeCueIdx}
-        onWordClick={handleWordClick}
-        onClose={() => setIsTranscriptOpen(false)}
       />
 
       {/* 單字本側拉面板 */}

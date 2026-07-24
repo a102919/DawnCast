@@ -6,3 +6,4 @@ export { formatTimestamp, formatPos, formatExchange, formatDateZhTW } from './fo
 export { TOPIC_LABELS, CEFR_COLOR, type TopicKey, type CefrLevel, type MockEpisode } from './episode'
 export { springs, reducedMotionSprings, useSprings, type SpringName } from './motion'
 export { getCoverArt, coverArtBackground, COVER_GRAIN_URL, type CoverArt } from './coverArt'
+export { buildConversationPrompt } from './conversationPrompt'

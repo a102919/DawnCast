@@ -564,3 +564,21 @@ def test_build_pod_messages_cefr_and_avoid_facts() -> None:
     mono = _build_pod_messages(cefr="B1", avoid_facts=(), format="monologue", **common)
     assert "Nova" in mono[0]["content"]
     assert "Sarah: Mmm." not in mono[0]["content"]  # dialogue few-shot 不混進 monologue
+
+
+def test_sources_block_reinforces_avoid_facts_next_to_extracted_facts_rule() -> None:
+    """同一批 SOURCES 常在同主題重生時被重新查到；avoid_facts 只掛在 BAN_LIST
+    （開場鉤子等文風規則旁）擋不住 extracted_facts 重複引用舊事實，必須也出現在
+    「extracted_facts 只能引用 SOURCES」規則旁邊才有效——這裡直接驗證那段文字。
+    """
+    from engine.pipeline.langgraph_pod.nodes import _sources_block
+    from shared.models import SourceSnippet
+
+    sources = [SourceSnippet(id="s1", title="t", url="https://x", text="真實內容")]
+
+    without_avoid = _sources_block(sources, ())
+    assert "old fact" not in without_avoid
+
+    with_avoid = _sources_block(sources, ("old fact",))
+    assert "old fact" in with_avoid
+    assert "extracted_facts" in with_avoid.split("old fact")[0][-200:]  # 緊鄰硬性規則，不是隨便塞在別處

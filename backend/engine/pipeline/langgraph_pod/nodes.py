@@ -258,8 +258,13 @@ def _structure_block(length_tier: str) -> str:
     )
 
 
-def _sources_block(sources: list[SourceSnippet]) -> str:
-    """把抓到的真實資料編號注入 prompt；空 sources 時退化成純 LLM 生成（沿用現況行為）。"""
+def _sources_block(sources: list[SourceSnippet], avoid_facts: tuple[str, ...] = ()) -> str:
+    """把抓到的真實資料編號注入 prompt；空 sources 時退化成純 LLM 生成（沿用現況行為）。
+
+    avoid_facts 同一份 SOURCES 常在同主題重生時被重新查到（搜尋查詢沒變），
+    LLM 只看到「別用陳腔濫調開場」的泛用 BAN_LIST 很容易忽略事實層級的重複——
+    在 extracted_facts 硬性規則旁邊直接重申 avoid_facts，才是真正擋下重複宣稱的地方。
+    """
     if not sources:
         return ""
     lines = ["\n# SOURCES（真實資料，extracted_facts 只能引用這裡列出的內容）"]
@@ -271,6 +276,12 @@ def _sources_block(sources: list[SourceSnippet]) -> str:
         "的 SOURCES；沒有對應來源支持的內容不要放進 extracted_facts。"
         "對話裡的個人風格、比喻、玩笑、banter 不受此限——只有事實宣稱被查核，不是整份稿子。"
     )
+    if avoid_facts:
+        lines.append(
+            "\n以下事實舊集已經講過，即使 SOURCES 裡還查得到也不可以再放進 extracted_facts"
+            "（換句話說改寫、同語意也算重複）；SOURCES 裡挑別的內容，真的沒有替代事實就少列一條："
+        )
+        lines.extend(f"- {f}" for f in avoid_facts)
     return "\n".join(lines)
 
 
@@ -348,7 +359,7 @@ def _build_pod_messages(
         f"{_BAN_LIST.format(avoid_block=avoid_block)}"
         f"{_structure_block(length_tier)}\n\n"
         f"{few_shots}"
-        f"{_sources_block(sources or [])}\n\n"
+        f"{_sources_block(sources or [], avoid_facts)}\n\n"
         "JSON SCHEMA (must match exactly):\n"
         '{"topic": str, "topic_zh": str, '
         '"category": "tech"|"business"|"culture"|"science", '

@@ -1,4 +1,4 @@
-import { RotateCcw, Play, Pause, ChevronRight, BookMarked, FileText } from 'lucide-react'
+import { RotateCcw, Play, Pause, ChevronRight, BookMarked, MessageCircle } from 'lucide-react'
 import { IconButton } from '../primitives'
 import { usePlayer } from '../../state'
 import { formatTime } from '../../lib'
@@ -11,7 +11,7 @@ interface PlayerBottomBarProps {
   readonly duration: number
   readonly cues: readonly Cue[]
   readonly activeCueIdx: number
-  readonly onTranscriptOpen: () => void
+  readonly onCopyPrompt: () => void
   readonly onVocabOpen: () => void
 }
 
@@ -19,7 +19,7 @@ export function PlayerBottomBar({
   duration,
   cues,
   activeCueIdx,
-  onTranscriptOpen,
+  onCopyPrompt,
   onVocabOpen,
 }: PlayerBottomBarProps) {
   const { currentTime, isPlaying, seekTo, play, pause, playbackRate, setPlaybackRate } = usePlayer()
@@ -111,8 +111,8 @@ export function PlayerBottomBar({
           <IconButton label="我的單字本" onClick={onVocabOpen}>
             <BookMarked size={20} />
           </IconButton>
-          <IconButton label="逐字稿" onClick={onTranscriptOpen}>
-            <FileText size={20} />
+          <IconButton label="複製英文對話練習 Prompt" onClick={onCopyPrompt}>
+            <MessageCircle size={20} />
           </IconButton>
         </div>
       </div>
