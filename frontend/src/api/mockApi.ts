@@ -1,5 +1,5 @@
 import { z } from 'zod'
-import type { AccountInfo, Activity, ActivityPatch, Api, DailyOrder, DictEntry, Settings, VocabItem } from './types'
+import type { AccountInfo, Activity, ActivityPatch, AdminEpsGenerateInput, AdminEpsGenerateResponse, Api, DailyOrder, DictEntry, Settings, VocabItem } from './types'
 import type { Episode } from '../types/episode'
 import { CueSchema } from './httpApi'
 import type { MockEpisode } from '../lib/episode'
@@ -404,5 +404,10 @@ export const mockApi: Api = {
       if (key && key.startsWith('dawncast:')) keysToRemove.push(key)
     }
     for (const k of keysToRemove) localStorage.removeItem(k)
+  },
+
+  // Admin trigger：mock 模式無真 worker，回丟擲讓 UI 提示「請切真實後端」。
+  async triggerAdminGenerate(_input: AdminEpsGenerateInput): Promise<AdminEpsGenerateResponse> {
+    throw new Error('mock 模式不支援管理員觸發，請將 VITE_USE_MOCK 設為 false')
   },
 }

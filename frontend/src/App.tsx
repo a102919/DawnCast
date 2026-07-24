@@ -4,7 +4,7 @@ import { Toaster } from 'sonner'
 import { useEffect } from 'react'
 import { AuthProvider, ActivityProvider, PlayerProvider, VocabProvider, SettingsProvider, FavoritesProvider, DailyOrderProvider, useAuth } from './state'
 import { TopBar, BottomNav } from './components/layout'
-import { HomeRoute, PlayerRoute, VocabRoute, FavoritesRoute, SettingsRoute, ProgressRoute, FlashcardRoute, DailyRoute, LoginRoute } from './routes'
+import { HomeRoute, PlayerRoute, VocabRoute, FavoritesRoute, SettingsRoute, ProgressRoute, FlashcardRoute, DailyRoute, LoginRoute, AdminRoute } from './routes'
 import { useSprings } from './lib/motion'
 
 // 進入 PlayerRoute 用「往上推入」的位移感（呼應 Home 精選卡→播放頁的層級深入），
@@ -48,6 +48,7 @@ function AnimatedRoutes() {
           <Route path="/progress" element={<ProgressRoute />} />
           <Route path="/flashcards" element={<FlashcardRoute />} />
           <Route path="/login" element={<LoginRoute />} />
+          <Route path="/admin" element={<AdminRoute />} />
         </Routes>
       </motion.div>
     </AnimatePresence>

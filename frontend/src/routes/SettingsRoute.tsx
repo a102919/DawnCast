@@ -5,7 +5,7 @@ import { useSettings, useVocab, useAuth } from '../state'
 import { api, AppError } from '../api'
 import { supabase } from '../lib/supabaseClient'
 import { Toggle, Chip, SectionLabel } from '../components/primitives'
-import { AlertTriangle } from 'lucide-react'
+import { AlertTriangle, ShieldCheck } from 'lucide-react'
 import { TOPIC_LABELS } from '../lib'
 import type { TopicKey } from '../lib'
 import { DELIVERY_TIME_OPTIONS } from '../lib/dailyOrderDate'
@@ -260,6 +260,18 @@ export function SettingsRoute() {
             沿用 confirmClear 的 AnimatePresence 二次確認模式，避免引入新互動元件。 */}
         <SettingSection title="帳號">
           <div>
+            <SettingRow
+              label="管理後台"
+              description="主動觸發單集公開 podcast 生成"
+            >
+              <Link
+                to="/admin"
+                className="text-sm text-accent hover:underline cursor-pointer px-3 py-2 -mr-3 rounded min-h-[44px] inline-flex items-center gap-1.5"
+              >
+                <ShieldCheck size={14} />
+                進入
+              </Link>
+            </SettingRow>
             {user ? (
               <SettingRow label="登入狀態" description={user.email}>
                 <button

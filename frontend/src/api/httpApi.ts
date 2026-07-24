@@ -2,6 +2,8 @@ import { z } from 'zod'
 import type {
   AccountInfo,
   Activity,
+  AdminEpsGenerateInput,
+  AdminEpsGenerateResponse,
   Api,
   DailyOrder,
   DailyOrderStatus,
@@ -39,6 +41,24 @@ const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL ?? '').replace(/\/$/, ''
 // getLastOrderDate / setLastOrderDate 屬純 UI 狀態，留在 localStorage（後端聖約外）。
 const LAST_ORDER_DATE_KEY = 'dawncast:lastOrderDate'
 
+// Admin token：與一般 user JWT 完全獨立的認證（後端 router 用常數時間比對）。
+// 不放 env（會隨 build 散佈到 client bundle，公開站暴露 admin 風險），
+// 不放程式碼（單一 admin 也不需要 build-time injection），改在 AdminRoute UI 貼上、
+// 存 localStorage。見 AdminRoute.tsx / docs/lessons.md。
+const ADMIN_TOKEN_KEY = 'dawncast:adminToken'
+
+export function getAdminToken(): string | null {
+  return localStorage.getItem(ADMIN_TOKEN_KEY)
+}
+
+export function setAdminToken(token: string): void {
+  localStorage.setItem(ADMIN_TOKEN_KEY, token)
+}
+
+export function clearAdminToken(): void {
+  localStorage.removeItem(ADMIN_TOKEN_KEY)
+}
+
 // ─── Envelope 解包 ─────────────────────────────────────────────────────────
 
 const ErrorEnvelopeSchema = z.object({
@@ -59,12 +79,15 @@ type RequestOptions = {
   readonly schema: z.ZodType | null
   /** true 時 404/data===null 回 null 而非丟錯（lookupDict / getDailyOrder 用） */
   readonly nullable?: boolean
+  /** 額外 header（admin token 等）；與既有 Authorization 並存 */
+  readonly extraHeaders?: Readonly<Record<string, string>>
 }
 
 async function request<T>(path: string, opts: RequestOptions): Promise<T> {
   const token = await getAccessToken()
   const headers: Record<string, string> = { 'Content-Type': 'application/json' }
   if (token) headers.Authorization = `Bearer ${token}`
+  if (opts.extraHeaders) Object.assign(headers, opts.extraHeaders)
 
   const controller = new AbortController()
   const timeout = setTimeout(() => controller.abort(), 30_000)
@@ -252,6 +275,14 @@ const AccountInfoSchema = z.object({
   createdAt: z.string(),
 }) satisfies z.ZodType<AccountInfo> & z.ZodType<components['schemas']['AccountInfo']>
 
+// 後端 AdminEpsGenerateResponse 欄位為 camelCase（CamelModel + to_camel），
+// 直接用 generated components 對齊，避免手寫 schema 與後端漂移。
+const AdminEpsGenerateResponseSchema = z.object({
+  idempotencyKey: z.string(),
+  msgId: z.number(),
+  status: z.literal('queued'),
+}) satisfies z.ZodType<AdminEpsGenerateResponse> & z.ZodType<components['schemas']['AdminEpsGenerateResponse']>
+
 // ─── 實作 ─────────────────────────────────────────────────────────────────
 
 export const httpApi: Api = {
@@ -414,6 +445,22 @@ export const httpApi: Api = {
 
   async deleteAccount() {
     await request<null>('/me', { method: 'DELETE', schema: null })
+  },
+
+  async triggerAdminGenerate(input: AdminEpsGenerateInput) {
+    // 沒 token 早點丟錯（fail-closed），不要送出去被後端回 401 才發現。
+    const token = getAdminToken()
+    if (!token) {
+      throw new AppError('missing_admin_token', '尚未設定管理員權杖，請先在管理後台貼上')
+    }
+    return request<AdminEpsGenerateResponse>('/admin/eps/generate', {
+      method: 'POST',
+      body: input,
+      schema: AdminEpsGenerateResponseSchema,
+      // 後端 ADMIN_TOKEN 是 secrets.compare_digest，header 大小寫不敏感但統一用
+      // 官方慣例 X-Admin-Token 對齊 curl / 文件範例。
+      extraHeaders: { 'X-Admin-Token': token },
+    })
   },
 }
 

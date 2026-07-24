@@ -120,6 +120,27 @@ export type AccountInfo = {
   readonly createdAt: string
 }
 
+/** Admin 主動觸發單集生成（公開 podcast）的 request body。
+ *  鏡像後端 backend/app/schemas.py AdminEpsGenerateBody（CamelModel，camelCase）。
+ *  後端 source 寫死 "fallback" → upsert_episode_node 自動推導 is_free=True，
+ *  任何登入使用者首頁可見；user_ids 留空即純公開。 */
+export type AdminEpsGenerateInput = {
+  readonly topic: string
+  readonly angle?: '定義' | '人物故事' | '常見誤解' | '應用場景' | '歷史' | '對比'
+  readonly topicType?: 'news' | 'product' | 'evergreen' | 'skill'
+  readonly lengthTier?: 'short' | 'medium' | 'long'
+  readonly cefr?: 'A2' | 'B1' | 'B2'
+  readonly userIds?: readonly string[]
+  readonly deliverDate?: string | null
+}
+
+/** 202 response：已入 pgmq.generate 的確認。完成需另 query /admin/episodes。 */
+export type AdminEpsGenerateResponse = {
+  readonly idempotencyKey: string
+  readonly msgId: number
+  readonly status: 'queued'
+}
+
 export interface Api {
   lookupDict(word: string): Promise<DictEntry | null>
   addVocab(item: Omit<VocabItem, 'id' | 'createdAt'>): Promise<VocabItem>
@@ -157,4 +178,7 @@ export interface Api {
   // 帳號自我管理（T4）：查詢 / 刪除本人帳號
   getMe(): Promise<AccountInfo>
   deleteAccount(): Promise<void>
+  // Admin 主動觸發單集公開 podcast 生成（X-Admin-Token 認證，非 Supabase JWT）。
+  // httpApi 內部會從 localStorage 讀 admin token；mock 模式 noop 回丟擲。
+  triggerAdminGenerate(input: AdminEpsGenerateInput): Promise<AdminEpsGenerateResponse>
 }
