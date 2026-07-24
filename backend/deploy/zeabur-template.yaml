@@ -206,7 +206,7 @@ spec:
           API_BASE_URL:
             default: https://api.minimax.io/anthropic
           API_MODEL:
-            default: MiniMax-M2.5
+            default: MiniMax-M3
           R2_ACCOUNT_ID:
             default: ""
           R2_ACCESS_KEY_ID:
@@ -323,7 +323,7 @@ spec:
           API_BASE_URL:
             default: https://api.minimax.io/anthropic
           API_MODEL:
-            default: MiniMax-M2.5
+            default: MiniMax-M3
           R2_ACCOUNT_ID:
             default: ""
           R2_ACCESS_KEY_ID:

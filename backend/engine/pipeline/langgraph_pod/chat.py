@@ -186,9 +186,12 @@ class MiniMaxChatModel(BaseChatModel):
             "max_tokens": self.max_tokens,
             "system": system,
             "messages": conversation,
-            # 顯式啟用 extended thinking 並鎖住 reasoning 預算，
-            # 否則 LLM 把整個 max_tokens 吃掉就不吐 text 區塊。
-            "thinking": {"type": "enabled", "budget_tokens": self.thinking_budget_tokens},
+            # ponytail: M2.7 對 Anthropic thinking 欄位相容但 behavior 異常——
+            # 收到 thinking=enabled 後跑完 reasoning 不進 text generation phase，
+            # response 只有 thinking 區塊，_extract_text 撈不到 text 就 EngineError。
+            # M2.7 本身是 reasoning model，不啟用 thinking 也會自然 reasoning。
+            # 升級 M3 時若 thinking 行為對齊 Claude，再把這行加回：
+            #   "thinking": {"type": "enabled", "budget_tokens": self.thinking_budget_tokens}
         }
         data = await self._post_with_retry(payload)
         raw_text = self._extract_text(data)

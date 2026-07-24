@@ -80,7 +80,7 @@ services:
       DEV_USER_ID: ${DEV_USER_ID:-00000000-0000-0000-0000-000000000001}
       API_KEY: ${MINIMAX_API_KEY:-}
       API_BASE_URL: ${API_BASE_URL:-https://api.minimax.io/anthropic}
-      API_MODEL: ${API_MODEL:-MiniMax-M2.5}
+      API_MODEL: ${API_MODEL:-MiniMax-M3}
       R2_ACCOUNT_ID: ${R2_ACCOUNT_ID:-}
       R2_ACCESS_KEY_ID: ${R2_ACCESS_KEY_ID:-}
       R2_SECRET_ACCESS_KEY: ${R2_SECRET_ACCESS_KEY:-}
@@ -117,7 +117,7 @@ services:
       FAILOVER_MODE: degrade
       API_KEY: ${MINIMAX_API_KEY:-}
       API_BASE_URL: ${API_BASE_URL:-https://api.minimax.io/anthropic}
-      API_MODEL: ${API_MODEL:-MiniMax-M2.5}
+      API_MODEL: ${API_MODEL:-MiniMax-M3}
       R2_ACCOUNT_ID: ${R2_ACCOUNT_ID:-}
       R2_ACCESS_KEY_ID: ${R2_ACCESS_KEY_ID:-}
       R2_SECRET_ACCESS_KEY: ${R2_SECRET_ACCESS_KEY:-}

@@ -59,7 +59,7 @@ URI_ALLOW_LIST=["https://<your-domain>","https://<api-subdomain>.<your-domain>/a
 #   POSTGRES_PASSWORD
 #   MINIMAX_API_KEY
 #   API_BASE_URL=https://api.minimax.io/anthropic
-#   API_MODEL=MiniMax-M2.5
+#   API_MODEL=MiniMax-M3
 #   R2_ACCOUNT_ID
 #   R2_ACCESS_KEY_ID
 #   R2_SECRET_ACCESS_KEY

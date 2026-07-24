@@ -226,7 +226,7 @@ GENERATION_ENGINE=api_key
 FAILOVER_MODE=degrade
 API_KEY=<MiniMax token>
 API_BASE_URL=https://api.minimax.io/anthropic
-API_MODEL=MiniMax-M2.5
+API_MODEL=MiniMax-M3
 
 R2_ACCOUNT_ID=<Cloudflare account id>
 R2_ACCESS_KEY_ID=<R2 access key>

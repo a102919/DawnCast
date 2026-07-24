@@ -103,15 +103,15 @@ class Settings(BaseSettings):
     generation_engine: EngineName = "api_key"
     failover_mode: FailoverMode = "degrade"
 
-    # api_key fallback（MiniMax M2.5 / Anthropic 按量）
+    # api_key fallback（MiniMax M3 / Anthropic 按量）
     api_base_url: str = "https://api.minimax.io/anthropic"
     api_key: str = ""
-    api_model: str = "MiniMax-M2.5"
+    api_model: str = "MiniMax-M3"
 
     # minimax 主引擎（OpenClaw 訂閱 token；Anthropic 相容 endpoint）
     minimax_anthropic_base_url: str = "https://api.minimax.io/anthropic"
     minimax_auth_token: str = ""
-    minimax_model: str = "MiniMax-M2.5"
+    minimax_model: str = "MiniMax-M3"
 
     # ── MiniMax speech TTS（同一顆訂閱 token；已實測 t2a_v2 可用）──────
     # token 未設或呼叫失敗時整份腳本 fallback 到 edge-tts（見 media/tts.py）。
