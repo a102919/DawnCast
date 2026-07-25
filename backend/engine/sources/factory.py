@@ -11,10 +11,20 @@
 
 from __future__ import annotations
 
+from typing import cast
+
 from shared.config import Settings, get_settings
 
 from .base import CombinedProvider, SourceProvider
 from .news import GdeltProvider
+from .providers import (
+    CrossrefProvider,
+    FREDProvider,
+    GoogleFactCheckProvider,
+    InternetArchiveProvider,
+    OpenAlexProvider,
+    WorldBankProvider,
+)
 from .search import TavilyProvider
 from .wiki import WikipediaProvider
 
@@ -29,4 +39,26 @@ def make_source_provider(
         return TavilyProvider(cfg)
     if topic_type == "evergreen":
         return CombinedProvider([WikipediaProvider(cfg), TavilyProvider(cfg)])
-    return None
+    providers = {
+        "openalex": OpenAlexProvider,
+        "crossref": CrossrefProvider,
+        "world_bank": WorldBankProvider,
+        "fred": FREDProvider,
+        "fact_check": GoogleFactCheckProvider,
+        "internet_archive": InternetArchiveProvider,
+    }
+    cls = providers.get(topic_type)
+    return cast(SourceProvider, cls(cfg)) if cls else None
+
+
+__all__ = [
+    "make_source_provider",
+    "SourceProvider",
+    "CombinedProvider",
+    "OpenAlexProvider",
+    "CrossrefProvider",
+    "WorldBankProvider",
+    "FREDProvider",
+    "GoogleFactCheckProvider",
+    "InternetArchiveProvider",
+]

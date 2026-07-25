@@ -4,7 +4,6 @@ API 契約（camelCase，鏡像前端 types.ts）在 sibling 的 api.py；兩者
 統一 re-export，呼叫端一律 `from shared.models import X`，不直接 import 子模組。
 """
 
-
 from __future__ import annotations
 
 import re
@@ -69,6 +68,7 @@ class SourceSnippet(BaseModel):
     url: str
     text: str = Field(min_length=1)
     published_at: str | None = None
+    source: str | None = None
 
 
 class SourcedFact(BaseModel):
@@ -116,9 +116,7 @@ class ScriptOutline(BaseModel):
                 if w.casefold() not in target_set:
                     bad.append(w)
         if bad:
-            raise ValueError(
-                f"大綱 segments 有 vocab_words 不在 target_vocab 裡：{bad}"
-            )
+            raise ValueError(f"大綱 segments 有 vocab_words 不在 target_vocab 裡：{bad}")
         return self
 
 
@@ -187,9 +185,7 @@ class ScriptJSON(BaseModel):
                 missing.append(v.word)
 
         if missing:
-            raise ValueError(
-                f"target_vocab 有字沒真的出現在腳本裡（含詞形變化都沒有）: {missing}"
-            )
+            raise ValueError(f"target_vocab 有字沒真的出現在腳本裡（含詞形變化都沒有）: {missing}")
         return self
 
 

@@ -199,8 +199,18 @@ class Settings(BaseSettings):
     # Wikimedia API 政策要求可識別的 User-Agent（含聯絡方式），見
     # https://foundation.wikimedia.org/wiki/Policy:Wikimedia_Foundation_User-Agent_Policy
     wikipedia_user_agent: str = "DawnCast/1.0 (https://dawncast.app; contact: ops@dawncast.app)"
-    source_fetch_timeout: float = 10.0
+    source_fetch_timeout: float = 30.0
     source_max_snippets: int = 5
+    openalex_base_url: str = "https://api.openalex.org"
+    openalex_email: str = ""
+    crossref_base_url: str = "https://api.crossref.org"
+    world_bank_base_url: str = "https://api.worldbank.org/v2"
+    world_bank_indicator: str = "NY.GDP.MKTP.CD"
+    fred_base_url: str = "https://api.stlouisfed.org/fred"
+    fred_api_key: str = ""
+    fact_check_base_url: str = "https://factchecktools.googleapis.com"
+    google_fact_check_api_key: str = ""
+    internet_archive_base_url: str = "https://archive.org"
 
     def assert_secure(self) -> None:
         """上線防呆：prod 環境下拒絕不安全設定，啟動即 fail（fail closed）。
