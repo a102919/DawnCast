@@ -98,6 +98,18 @@ class Cue(CamelModel):
     end: float
 
 
+class SourceReference(CamelModel):
+    """對前端暴露的來源引用：只帶 id / title / url，不暴露 text / published_at。
+
+    URL 由 router 端過濾：只接受 http/https 開頭；javascript: / data: / file: 等
+    危險 scheme 會被丟棄，避免 XSS / SSRF 風險進入前端渲染。
+    """
+
+    id: str
+    title: str
+    url: str
+
+
 class Episode(CamelModel):
     """前端播放頁需要的集數內容。audioUrl 由服務層產簽章 URL 後填入。"""
 
@@ -109,6 +121,9 @@ class Episode(CamelModel):
     is_free: bool = False
     audio_url: str | None = None
     cues: list[Cue] = Field(default_factory=list)
+    # 來源引用：來自 DB episodes.sources（jsonb），router 過濾 http/https URL 後填入。
+    # 沒來源（未 grounded 或無 provider）的集數預設空 list（不是 None，前端易處理）。
+    references: list[SourceReference] = Field(default_factory=list)
 
 
 class Activity(CamelModel):

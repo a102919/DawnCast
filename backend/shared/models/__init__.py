@@ -21,6 +21,7 @@ from shared.models.api import (
     Episode,
     EpisodeListItem,
     Settings,
+    SourceReference,
     VocabItem,
 )
 from shared.models.engine import (
@@ -67,6 +68,7 @@ __all__ = [
     "ScriptLine",
     "ScriptOutline",
     "Settings",
+    "SourceReference",
     "SourceSnippet",
     "SourcedFact",
     "Speaker",

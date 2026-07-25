@@ -814,3 +814,119 @@ def test_sources_block_reinforces_avoid_facts_next_to_extracted_facts_rule() -> 
     assert "old fact" in with_avoid
     # 緊鄰硬性規則，不是隨便塞在別處
     assert "extracted_facts" in with_avoid.split("old fact")[0][-200:]
+
+
+# ── 13. sources 持久化：MockRepo.upsert_episode / update_episode_keys ──
+
+
+async def test_mock_repo_persists_sources_at_upsert() -> None:
+    """upsert_episode(sources=[...]) 落進 _EpisodeRow.sources，可由 get_episode 取出。"""
+    from engine.pipeline.langgraph_pod.mock import MockRepo
+    from shared.models import SourceSnippet
+
+    repo = MockRepo()
+    sources_payload = [
+        SourceSnippet(id="s1", title="Quantum", url="https://q.example", text="raw body"),
+        SourceSnippet(id="s2", title="Qubit", url="https://q.example/2", text="raw 2"),
+    ]
+    eid, _ = await repo.upsert_episode(
+        idempotency_key="idem-1",
+        slug="ep-quantum",
+        title="Quantum",
+        topic="science",
+        big_topic="科技",
+        angle="定義",
+        topic_type="evergreen",
+        sources=[s.model_dump() for s in sources_payload],
+    )
+
+    row = repo.get_episode(eid)
+    assert row is not None
+    # 鏡像 DB 行為：落原文（含 text），text 由 router 對外輸出時過濾掉。
+    assert [s["id"] for s in row.sources] == ["s1", "s2"]
+    assert row.sources[0]["text"] == "raw body"
+
+
+async def test_mock_repo_upsert_default_sources_empty_list() -> None:
+    """不帶 sources 參數 → row.sources 是空 list（鏡真 DB 預設 '[]'::jsonb）。"""
+    from engine.pipeline.langgraph_pod.mock import MockRepo
+
+    repo = MockRepo()
+    eid, _ = await repo.upsert_episode(
+        idempotency_key="idem-2",
+        slug="ep-x",
+        title="X",
+        topic="tech",
+        big_topic="科技",
+        angle="定義",
+        topic_type="evergreen",
+    )
+
+    row = repo.get_episode(eid)
+    assert row is not None
+    assert row.sources == []
+
+
+async def test_mock_repo_update_episode_keys_sources_overrides_when_provided() -> None:
+    """update_episode_keys(sources=[...]) → 覆寫既有 row.sources。"""
+    from engine.pipeline.langgraph_pod.mock import MockRepo
+
+    repo = MockRepo()
+    eid, _ = await repo.upsert_episode(
+        idempotency_key="idem-3",
+        slug="ep-y",
+        title="Y",
+        topic="tech",
+        big_topic="科技",
+        angle="定義",
+        topic_type="evergreen",
+        sources=[{"id": "old", "title": "old", "url": "https://old", "text": "x"}],
+    )
+
+    new_sources = [
+        {"id": "new1", "title": "n1", "url": "https://new1", "text": "a"},
+        {"id": "new2", "title": "n2", "url": "https://new2", "text": "b"},
+    ]
+    await repo.update_episode_keys(
+        eid,
+        audio_key=None,
+        srt_key=None,
+        script_json={"topic": "Y"},
+        cues=[],
+        sources=new_sources,
+    )
+
+    row = repo.get_episode(eid)
+    assert row is not None
+    assert [s["id"] for s in row.sources] == ["new1", "new2"]
+
+
+async def test_mock_repo_update_episode_keys_sources_none_preserves_existing() -> None:
+    """update_episode_keys(sources=None) → 不動既有 row.sources（鏡真 repo 的 coalesce）。"""
+    from engine.pipeline.langgraph_pod.mock import MockRepo
+
+    repo = MockRepo()
+    original = [{"id": "kept", "title": "k", "url": "https://k", "text": "ok"}]
+    eid, _ = await repo.upsert_episode(
+        idempotency_key="idem-4",
+        slug="ep-z",
+        title="Z",
+        topic="tech",
+        big_topic="科技",
+        angle="定義",
+        topic_type="evergreen",
+        sources=original,
+    )
+
+    await repo.update_episode_keys(
+        eid,
+        audio_key=None,
+        srt_key=None,
+        script_json={"topic": "Z"},
+        cues=[],
+        # 故意不傳 sources → 既有應保留
+    )
+
+    row = repo.get_episode(eid)
+    assert row is not None
+    assert row.sources == original

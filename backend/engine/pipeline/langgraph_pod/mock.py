@@ -51,6 +51,9 @@ class _EpisodeRow:
     cues: list[dict[str, Any]] | None = None
     extracted_facts: list[dict[str, Any]] | None = None
     target_vocab: list[dict[str, Any]] | None = None
+    # retrieve_sources_node 抓到的真實資料片段；鏡像 repo.sources jsonb。
+    # 內部存 SourceSnippet 序列化後的 dict list（含 text），對外過濾由 router 處理。
+    sources: list[dict[str, Any]] = field(default_factory=list)
 
 
 @dataclass
@@ -97,6 +100,7 @@ class MockRepo:
         input_tokens: int = 0,
         output_tokens: int = 0,
         is_free: bool = True,
+        sources: list[dict[str, Any]] | None = None,
     ) -> tuple[str, bool]:
         if self.fail_upsert:
             raise RuntimeError("mock: upsert_episode forced failure")
@@ -122,6 +126,7 @@ class MockRepo:
             input_tokens=input_tokens,
             output_tokens=output_tokens,
             is_free=is_free,
+            sources=[dict(s) for s in (sources or [])],
         )
         self.by_idem[idempotency_key] = eid
         return eid, False
@@ -136,6 +141,7 @@ class MockRepo:
         cues: list[Any],
         extracted_facts: list[dict[str, Any]] | None = None,
         target_vocab: list[dict[str, Any]] | None = None,
+        sources: list[dict[str, Any]] | None = None,
     ) -> None:
         row = self.episodes.get(episode_id)
         if row is None:
@@ -146,6 +152,9 @@ class MockRepo:
         row.cues = [c.model_dump() if hasattr(c, "model_dump") else c for c in cues]
         row.extracted_facts = extracted_facts
         row.target_vocab = target_vocab
+        # 鏡像 repo：None 保留既有值；非 None 才覆寫。
+        if sources is not None:
+            row.sources = [dict(s) for s in sources]
 
     async def insert_delivery(self, user_id: str, episode_id: str, deliver_date: str) -> bool:
         # 模擬 ON CONFLICT DO NOTHING

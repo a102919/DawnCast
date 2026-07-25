@@ -9,6 +9,7 @@ from __future__ import annotations
 import logging
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse
 
 from fastapi import APIRouter, Depends
 from psycopg.rows import dict_row
@@ -18,7 +19,7 @@ from app.response import ApiResponse, ok
 from shared.config import get_settings
 from shared.db.pool import connection
 from shared.errors import ForbiddenError, NotFoundError
-from shared.models import Cue, Episode, EpisodeListItem
+from shared.models import Cue, Episode, EpisodeListItem, SourceReference
 from shared.storage import r2
 
 logger = logging.getLogger(__name__)
@@ -39,6 +40,10 @@ _LIST_META = """
   coalesce(to_char(published_at, 'YYYY-MM-DD'), '') as published_at
 """
 
+# 允許的 URL scheme：只放行 http / https，避免 javascript: / data: / file: 等
+# 偽 protocol 進到前端（XSS / SSRF 風險）。scheme 比對前先 strip + lower。
+_ALLOWED_URL_SCHEMES = frozenset({"http", "https"})
+
 
 def _cues(script_json: Any) -> list[Cue]:
     """script_json 可能是 {cues:[...]} 或直接 [...]，皆容錯。"""
@@ -48,6 +53,49 @@ def _cues(script_json: Any) -> list[Cue]:
     if not isinstance(raw, list):
         return []
     return [Cue.model_validate(c) for c in raw]
+
+
+def _safe_url(url: Any) -> str | None:
+    """只放行 http(s) 開頭的 URL，回 strip 後的字串；其餘回 None。
+
+    空字串、非字串、缺 scheme、ValueError 一律視為不安全。回傳 strip 後字串讓
+    caller 直接用，不必再做 None 檢查（type narrowing）。
+    """
+    if not isinstance(url, str) or not url:
+        return None
+    try:
+        scheme = urlparse(url.strip()).scheme.lower()
+    except ValueError:
+        return None
+    if scheme not in _ALLOWED_URL_SCHEMES:
+        return None
+    return url.strip()
+
+
+def _references_from_sources(sources: Any) -> list[SourceReference]:
+    """把 DB 落庫的 sources jsonb 轉成對外 SourceReference list。
+
+    只挑 id / title / url 三欄（不暴露 text / published_at），並以 URL scheme
+    白名單過濾。落庫殘留的 schema 漂移（缺欄位、非 dict）一律略過該筆，單筆髒
+    不污染整集。
+    """
+    if not sources or not isinstance(sources, list):
+        return []
+    out: list[SourceReference] = []
+    for entry in sources:
+        if not isinstance(entry, dict):
+            continue
+        url = _safe_url(entry.get("url"))
+        if url is None:
+            continue
+        sid = entry.get("id")
+        title = entry.get("title")
+        if not isinstance(sid, str) or not sid:
+            continue
+        if not isinstance(title, str):
+            title = ""
+        out.append(SourceReference(id=sid, title=title, url=url))
+    return out
 
 
 @router.get("", response_model=ApiResponse[list[EpisodeListItem]])
@@ -78,7 +126,7 @@ async def _fetch_authorized(cur: Any, slug: str, user_id: str) -> dict[str, Any]
     await cur.execute(
         """
         select e.id, e.slug, e.title, e.title_zh, e.topic, e.cefr_level,
-               e.is_free, e.script_json, e.audio_r2_key,
+               e.is_free, e.script_json, e.audio_r2_key, e.sources,
                exists (
                  select 1 from public.deliveries d
                  where d.episode_id = e.id and d.user_id = %s
@@ -107,6 +155,7 @@ async def get_episode(slug: str, user_id: str = Depends(get_current_user)) -> Ap
         cefr_level=row["cefr_level"],
         is_free=row["is_free"],
         cues=_cues(row["script_json"]),
+        references=_references_from_sources(row.get("sources")),
     )
     return ok(episode)
 

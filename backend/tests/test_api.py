@@ -74,11 +74,26 @@ VOCAB_BY_USER: dict[str, list[dict[str, Any]]] = {
     ],
 }
 
-# slug → (is_free, A 是否有 delivery, B 是否有 delivery, 有無媒體 key)
+# slug → (is_free, A 是否有 delivery, B 是否有 delivery, 有無媒體 key, 有無 sources)
 EPISODES: dict[str, dict[str, Any]] = {
-    "ep-free": {"is_free": True, "deliveries": set(), "key": "media/ep-free.mp3"},
-    "ep-a-only": {"is_free": False, "deliveries": {USER_A}, "key": "media/ep-a.mp3"},
-    "ep-locked": {"is_free": False, "deliveries": set(), "key": "media/ep-locked.mp3"},
+    "ep-free": {
+        "is_free": True,
+        "deliveries": set(),
+        "key": "media/ep-free.mp3",
+        "sources": [],
+    },
+    "ep-a-only": {
+        "is_free": False,
+        "deliveries": {USER_A},
+        "key": "media/ep-a.mp3",
+        "sources": [],
+    },
+    "ep-locked": {
+        "is_free": False,
+        "deliveries": set(),
+        "key": "media/ep-locked.mp3",
+        "sources": [],
+    },
 }
 
 # (user_id, deliver_date) → 對應交付集數的 slug list。模擬 user 在指定日期的交付事實。
@@ -129,6 +144,7 @@ class FakeCursor:
                     "is_free": ep["is_free"],
                     "script_json": None,
                     "audio_r2_key": ep["key"],
+                    "sources": ep.get("sources", []),
                     "has_delivery": user_id in ep["deliveries"],
                 }
             ]
@@ -206,6 +222,9 @@ async def fake_connection() -> AsyncIterator[FakeConnection]:
 def _reset_activity() -> None:
     # ACTIVITY_BY_USER 會被 PATCH 測試就地寫入，測試間必須互相隔離。
     ACTIVITY_BY_USER.clear()
+    # 同樣隔離 EPISODES["..."]["sources"]（references 測試會就地改寫）。
+    for ep in EPISODES.values():
+        ep["sources"] = []
 
 
 @pytest.fixture(autouse=True)
@@ -572,3 +591,97 @@ def test_patch_activity_partial_body_untouched_fields(client: TestClient) -> Non
     assert data["listenMinutes"] == {"2026-07": 5}
     assert data["lastPlayedEpisodeId"] == "ep-free"
     assert data["lookupCount"] == {"2026-07": 1}
+
+
+# ── (g) /episodes/{slug}：sources → references 過濾映射 ────────────
+
+
+def test_get_episode_references_empty_when_no_sources(client: TestClient) -> None:
+    """沒 sources 的集數 → references 預設空 list（非 null）。"""
+    EPISODES["ep-free"]["sources"] = []
+    res = client.get("/episodes/ep-free", headers=_auth(USER_A))
+    assert res.status_code == 200
+    body = res.json()
+    assert body["ok"] is True
+    assert body["data"]["references"] == []
+
+
+def test_get_episode_references_maps_safe_urls(client: TestClient) -> None:
+    """合法 http/https URL 進 references，text / published_at 不外洩。"""
+    EPISODES["ep-free"]["sources"] = [
+        {
+            "id": "wiki:1",
+            "title": "Quantum",
+            "url": "https://en.wikipedia.org/wiki/Quantum",
+            "text": "leaked text should NOT appear in response",
+            "published_at": "2026-07-01",
+        },
+        {
+            "id": "tavily:2",
+            "title": "Qubits",
+            "url": "http://example.com/qubits",
+            "text": "another leaked body",
+        },
+    ]
+    res = client.get("/episodes/ep-free", headers=_auth(USER_A))
+    assert res.status_code == 200
+    refs = res.json()["data"]["references"]
+    assert refs == [
+        {
+            "id": "wiki:1",
+            "title": "Quantum",
+            "url": "https://en.wikipedia.org/wiki/Quantum",
+        },
+        {"id": "tavily:2", "title": "Qubits", "url": "http://example.com/qubits"},
+    ]
+    # 防呆：text / published_at 欄位不該出現
+    serialized = res.text
+    assert "leaked text" not in serialized
+    assert "another leaked body" not in serialized
+    assert "publishedAt" not in serialized
+
+
+def test_get_episode_references_filters_dangerous_schemes(client: TestClient) -> None:
+    """javascript: / data: / file: 等危險 scheme 一律過濾，不進 references。"""
+    EPISODES["ep-free"]["sources"] = [
+        {"id": "ok", "title": "OK", "url": "https://safe.example"},
+        {"id": "js", "title": "XSS", "url": "javascript:alert(1)"},
+        {"id": "data", "title": "datauri", "url": "data:text/html,<script>x</script>"},
+        {"id": "file", "title": "file", "url": "file:///etc/passwd"},
+        {"id": "ftp", "title": "ftp", "url": "ftp://example.com"},
+        {"id": "vbscript", "title": "vbscript", "url": "vbscript:msgbox(1)"},
+        # 缺 scheme 的相對 URL 一律拒絕
+        {"id": "rel", "title": "rel", "url": "/local/path"},
+        {"id": "empty", "title": "empty", "url": ""},
+        {"id": "nonstr", "title": "nonstr", "url": None},
+    ]
+    res = client.get("/episodes/ep-free", headers=_auth(USER_A))
+    assert res.status_code == 200
+    refs = res.json()["data"]["references"]
+    assert [r["id"] for r in refs] == ["ok"]
+
+
+def test_get_episode_references_skips_malformed_entries(client: TestClient) -> None:
+    """單筆髒（不是 dict / 缺 id / 缺 url）→ 該筆略過，其餘照出。"""
+    EPISODES["ep-free"]["sources"] = [
+        "not-a-dict",
+        {"title": "no id", "url": "https://ok"},
+        {"id": "no-url", "title": "missing url"},
+        {"id": "good", "title": "good", "url": "  https://trim.example  "},
+        {"id": "ok2", "url": "https://ok2"},
+    ]
+    res = client.get("/episodes/ep-free", headers=_auth(USER_A))
+    assert res.status_code == 200
+    refs = res.json()["data"]["references"]
+    assert refs == [
+        {"id": "good", "title": "good", "url": "https://trim.example"},
+        {"id": "ok2", "title": "", "url": "https://ok2"},
+    ]
+
+
+def test_get_episode_references_empty_when_sources_null(client: TestClient) -> None:
+    """DB row sources 為 NULL（極舊資料）→ 不爆，回空 references。"""
+    EPISODES["ep-free"]["sources"] = None
+    res = client.get("/episodes/ep-free", headers=_auth(USER_A))
+    assert res.status_code == 200
+    assert res.json()["data"]["references"] == []

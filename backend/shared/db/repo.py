@@ -149,6 +149,7 @@ async def upsert_episode(
     input_tokens: int = 0,
     output_tokens: int = 0,
     is_free: bool = True,
+    sources: list[dict[str, Any]] | None = None,
 ) -> tuple[str, bool]:
     """建一列 episodes（媒體 key / cues 之後用 update_episode_keys 補）。
 
@@ -160,7 +161,12 @@ async def upsert_episode(
 
     is_free：預設 True（公開，登入即可看）。呼叫端（upsert_episode_node）依
     topic_requests.source 是否為 'specified' 算出 False，做成該使用者專屬集。
+
+    sources：可選，落 episodes.sources jsonb。預設 None → 寫入空 list。
+    落原文 SourceSnippet（{id,title,url,text,published_at}），URL 安全過濾
+    由 app 層 router 對外輸出時再做。
     """
+    sources_json = json.dumps(sources or [], ensure_ascii=False)
     async with connection() as conn, conn.cursor(row_factory=dict_row) as cur:
         await cur.execute(
             """
@@ -168,8 +174,8 @@ async def upsert_episode(
                 (slug, title, title_zh, topic, cefr_level,
                  big_topic, angle, freshness_class, source_cluster_id,
                  idempotency_key, length_tier, format, grounded,
-                 input_tokens, output_tokens, is_free)
-            values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                 input_tokens, output_tokens, is_free, sources)
+            values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             on conflict (idempotency_key) do nothing
             returning id
             """,
@@ -190,6 +196,7 @@ async def upsert_episode(
                 input_tokens,
                 output_tokens,
                 is_free,
+                sources_json,
             ),
         )
         row = await cur.fetchone()
@@ -224,10 +231,18 @@ async def update_episode_keys(
     cues: list[Cue],
     extracted_facts: list[dict[str, Any]] | None = None,
     target_vocab: list[dict[str, Any]] | None = None,
+    sources: list[dict[str, Any]] | None = None,
 ) -> None:
-    """渲染完成後回填媒體 key 與內容。script_json 內含 cues（前端播放頁吃這個）。"""
+    """渲染完成後回填媒體 key 與內容。script_json 內含 cues（前端播放頁吃這個）。
+
+    sources：可選；非 None 時覆寫 episodes.sources。傳 None 表示保留既有值
+    （避免 update_episode_keys_node 在還沒拿到 retrieve_sources 結果時誤清空）。
+    """
     payload = dict(script_json)
     payload["cues"] = [c.model_dump(by_alias=False) for c in cues]
+    sources_json: str | None = (
+        json.dumps(sources, ensure_ascii=False) if sources is not None else None
+    )
     async with connection() as conn, conn.cursor(row_factory=dict_row) as cur:
         await cur.execute(
             """
@@ -236,7 +251,8 @@ async def update_episode_keys(
                 srt_r2_key = %s,
                 script_json = %s::jsonb,
                 extracted_facts = %s::jsonb,
-                target_vocab = %s::jsonb
+                target_vocab = %s::jsonb,
+                sources = coalesce(%s::jsonb, sources)
             where id = %s
             """,
             (
@@ -247,6 +263,7 @@ async def update_episode_keys(
                 if extracted_facts is not None
                 else None,
                 json.dumps(target_vocab, ensure_ascii=False) if target_vocab is not None else None,
+                sources_json,
                 episode_id,
             ),
         )
