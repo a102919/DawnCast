@@ -221,16 +221,12 @@ export const CueSchema = z.object({
   end: z.number(),
 }) satisfies z.ZodType<Cue> & z.ZodType<components['schemas']['Cue']>
 
-/** 資料來源連結 schema（Task #67 播放器參考資料 UI）。
- *  後端 Episode model 尚未合併此欄位（見 tasks/todo.md T6 標註：主線 API 合併後
- *  統一重生），前端先以 optional 收：後端有送就驗、沒送就當作空陣列，
- *  UI 端「無來源不渲染」自然 cover。publisher 是 nullable.optional 對齊
- *  SourceReference.publisher 標記為可空。 */
+/** 資料來源連結 schema。 */
 export const SourceReferenceSchema = z.object({
+  id: z.string(),
   title: z.string(),
   url: z.string(),
-  publisher: z.string().nullable().optional(),
-}) satisfies z.ZodType<SourceReference>
+}) satisfies z.ZodType<SourceReference> & z.ZodType<components['schemas']['SourceReference']>
 
 // audioUrl 由 /episodes/{slug}/url 補上，list 內容沒有 cues。
 // server get_episode Episode model 沒設 audioUrl 欄位會回 null（不是 undefined），

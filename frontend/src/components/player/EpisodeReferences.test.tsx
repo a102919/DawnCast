@@ -37,9 +37,9 @@ afterEach(() => {
 })
 
 const SAMPLE: readonly SourceReference[] = [
-  { title: 'IBM Quantum Learning', url: 'https://learning.quantum.ibm.com/', publisher: 'IBM' },
-  { title: '維基百科：量子位元', url: 'https://zh.wikipedia.org/wiki/%E9%87%8F%E5%AD%90%E4%BD%8D%E5%85%83', publisher: null },
-  { title: '量子國家（無 publisher）', url: 'https://quantum.country/qcvc/superposition' },
+  { id: 'ibm', title: 'IBM Quantum Learning', url: 'https://learning.quantum.ibm.com/' },
+  { id: 'wikipedia', title: '維基百科：量子位元', url: 'https://zh.wikipedia.org/wiki/%E9%87%8F%E5%AD%90%E4%BD%8D%E5%85%83' },
+  { id: 'quantum-country', title: '量子國家', url: 'https://quantum.country/qcvc/superposition' },
 ]
 
 describe('EpisodeReferences：無來源不渲染', () => {
@@ -79,40 +79,6 @@ describe('EpisodeReferences：UI 結構', () => {
     expect(links[2]?.textContent).toContain('量子國家')
   })
 
-  it('publisher 為 null 或省略時，不顯示該小字區塊', () => {
-    const { root, container } = renderElement(<EpisodeReferences references={SAMPLE} />)
-    pendingRoots.push(root)
-
-    const summary = container.querySelector('summary')
-    if (!summary) throw new Error('找不到 summary')
-    clickSync(summary)
-
-    // 三筆都展開為 li
-    const items = container.querySelectorAll('li')
-    expect(items).toHaveLength(3)
-    // 第二筆 publisher=null，li 內除了 anchor 不該再有別的 div
-    const secondItem = items[1]
-    const nonLinkDivs = secondItem.querySelectorAll(':scope > div')
-    expect(nonLinkDivs).toHaveLength(0)
-    // 第三筆 publisher=undefined → 同上不顯示
-    const thirdItem = items[2]
-    const thirdDivs = thirdItem.querySelectorAll(':scope > div')
-    expect(thirdDivs).toHaveLength(0)
-  })
-
-  it('publisher 有值時顯示在標題下方（小字）', () => {
-    const { root, container } = renderElement(<EpisodeReferences references={SAMPLE} />)
-    pendingRoots.push(root)
-
-    const summary = container.querySelector('summary')
-    if (!summary) throw new Error('找不到 summary')
-    clickSync(summary)
-
-    // 第一筆 publisher='IBM'
-    const firstItem = container.querySelector('li')
-    const publisherEl = firstItem?.querySelector('div')
-    expect(publisherEl?.textContent).toBe('IBM')
-  })
 })
 
 describe('EpisodeReferences：外連安全設定', () => {

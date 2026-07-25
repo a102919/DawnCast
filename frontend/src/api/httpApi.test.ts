@@ -220,39 +220,23 @@ describe('httpApi.getMe / deleteAccount（T4 帳號自我管理）', () => {
 })
 
 describe('SourceReferenceSchema（Task #67 參考資料）', () => {
-  it('接受 title + url 兩個必填欄位', () => {
+  it('接受 id、title、url 三個必填欄位', () => {
     const parsed = SourceReferenceSchema.parse({
+      id: 'ibm',
       title: 'IBM Quantum Learning',
       url: 'https://learning.quantum.ibm.com/',
     })
-    expect(parsed.title).toBe('IBM Quantum Learning')
-    expect(parsed.url).toBe('https://learning.quantum.ibm.com/')
-    expect(parsed.publisher).toBeUndefined()
-  })
-
-  it('publisher 為 string 時原樣收下', () => {
-    const parsed = SourceReferenceSchema.parse({
-      title: 'x', url: 'https://x', publisher: 'IBM',
+    expect(parsed).toEqual({
+      id: 'ibm',
+      title: 'IBM Quantum Learning',
+      url: 'https://learning.quantum.ibm.com/',
     })
-    expect(parsed.publisher).toBe('IBM')
   })
 
-  it('publisher 為 null 時原樣收下（nullable.optional）', () => {
-    const parsed = SourceReferenceSchema.parse({
-      title: 'x', url: 'https://x', publisher: null,
-    })
-    expect(parsed.publisher).toBeNull()
-  })
-
-  it('缺 title / url → 丟 zod 錯誤', () => {
-    expect(() => SourceReferenceSchema.parse({ url: 'https://x' })).toThrow()
-    expect(() => SourceReferenceSchema.parse({ title: 'x' })).toThrow()
-  })
-
-  it('title 為空字串仍然合法（schema 不擋內容，UI 端不顯示時也已先過濾）', () => {
-    // 允許空 title：後端萬一送空，前端不應直接 reject 整集；UI 可選擇忽略
-    const parsed = SourceReferenceSchema.parse({ title: '', url: 'https://x' })
-    expect(parsed.title).toBe('')
+  it('缺少任一必填欄位時丟出 zod 錯誤', () => {
+    expect(() => SourceReferenceSchema.parse({ title: 'x', url: 'https://x' })).toThrow()
+    expect(() => SourceReferenceSchema.parse({ id: 'x', url: 'https://x' })).toThrow()
+    expect(() => SourceReferenceSchema.parse({ id: 'x', title: 'x' })).toThrow()
   })
 })
 
@@ -271,13 +255,13 @@ describe('httpApi.getEpisode（Task #67：references 帶過）', () => {
         audioUrl: 'https://cdn.example.com/ep-x.mp3',
         cues: [{ index: 0, speaker: 'A', text: 'hi', zh: '嗨', start: 0, end: 1 }],
         references: [
-          { title: 'IBM', url: 'https://learning.quantum.ibm.com/', publisher: 'IBM' },
+          { id: 'ibm', title: 'IBM', url: 'https://learning.quantum.ibm.com/' },
         ],
       },
     })
     const ep = await httpApi.getEpisode('ep-x')
     expect(ep.references).toEqual([
-      { title: 'IBM', url: 'https://learning.quantum.ibm.com/', publisher: 'IBM' },
+      { id: 'ibm', title: 'IBM', url: 'https://learning.quantum.ibm.com/' },
     ])
 
     // 第二個請求：後端沒送 references → Episode 不該帶此欄位
@@ -317,7 +301,7 @@ describe('httpApi.getEpisode（Task #67：references 帶過）', () => {
     expect('references' in ep).toBe(false)
   })
 
-  it('references 缺 publisher 或 publisher=null 都合法', async () => {
+  it('references 必須符合 id、title、url 契約', async () => {
     mockFetchOnce(200, {
       ok: true,
       error: null,
@@ -330,15 +314,15 @@ describe('httpApi.getEpisode（Task #67：references 帶過）', () => {
         audioUrl: 'https://cdn.example.com/ep-w.mp3',
         cues: [],
         references: [
-          { title: 'a', url: 'https://a' },
-          { title: 'b', url: 'https://b', publisher: null },
+          { id: 'a', title: 'a', url: 'https://a' },
+          { id: 'b', title: 'b', url: 'https://b' },
         ],
       },
     })
     const ep = await httpApi.getEpisode('ep-w')
     expect(ep.references).toEqual([
-      { title: 'a', url: 'https://a', publisher: undefined },
-      { title: 'b', url: 'https://b', publisher: null },
+      { id: 'a', title: 'a', url: 'https://a' },
+      { id: 'b', title: 'b', url: 'https://b' },
     ])
   })
 })

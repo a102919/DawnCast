@@ -5,6 +5,7 @@ import { CueSchema, SourceReferenceSchema } from './httpApi'
 import type { MockEpisode } from '../lib/episode'
 
 // mock 模式的集數列表 seed（runtime 僅此處使用；畫面真資料一律走 httpApi）。
+// 擴充至 10 集以讓首頁 Hero / Weekly carousel 視覺成立；多元主題/CEFR 偶爾 isFeatured。
 const SEED_EPISODES: readonly MockEpisode[] = [
   {
     id: 'episode_test_seed_1',
@@ -12,8 +13,92 @@ const SEED_EPISODES: readonly MockEpisode[] = [
     titleZh: '測試用 seed 集數',
     topic: 'tech',
     cefrLevel: 'B1',
+    isFeatured: true,
     episode: 1,
     publishedAt: '2026-07-01',
+  },
+  {
+    id: 'episode_test_seed_2',
+    title: 'AI Agents in 2026',
+    titleZh: '2026 年的 AI 代理',
+    topic: 'tech',
+    cefrLevel: 'B2',
+    episode: 2,
+    publishedAt: '2026-07-05',
+  },
+  {
+    id: 'episode_test_seed_3',
+    title: 'Market Reads',
+    titleZh: '市場解讀',
+    topic: 'business',
+    cefrLevel: 'B1',
+    episode: 3,
+    publishedAt: '2026-07-08',
+  },
+  {
+    id: 'episode_test_seed_4',
+    title: 'Startup Funding Cycle',
+    titleZh: '新創募資循環',
+    topic: 'business',
+    cefrLevel: 'A2',
+    isFeatured: true,
+    episode: 4,
+    publishedAt: '2026-07-10',
+  },
+  {
+    id: 'episode_test_seed_5',
+    title: 'Street Photography',
+    titleZh: '街頭攝影',
+    topic: 'culture',
+    cefrLevel: 'B1',
+    episode: 5,
+    publishedAt: '2026-07-12',
+  },
+  {
+    id: 'episode_test_seed_6',
+    title: 'Modern Art Movements',
+    titleZh: '現代藝術運動',
+    topic: 'culture',
+    cefrLevel: 'B2',
+    episode: 6,
+    publishedAt: '2026-07-15',
+  },
+  {
+    id: 'episode_test_seed_7',
+    title: 'Quantum Computing Basics',
+    titleZh: '量子運算入門',
+    topic: 'science',
+    cefrLevel: 'B2',
+    episode: 7,
+    publishedAt: '2026-07-18',
+  },
+  {
+    id: 'episode_test_seed_8',
+    title: 'Climate Models Explained',
+    titleZh: '氣候模型解析',
+    topic: 'science',
+    cefrLevel: 'B1',
+    isFeatured: true,
+    episode: 8,
+    publishedAt: '2026-07-20',
+  },
+  {
+    id: 'episode_test_seed_9',
+    title: 'Why Open Source Wins',
+    titleZh: '為什麼開源會贏',
+    topic: 'tech',
+    cefrLevel: 'B1',
+    episode: 9,
+    publishedAt: '2026-07-22',
+  },
+  {
+    id: 'episode_test_seed_10',
+    title: 'Daily Listening Habit',
+    titleZh: '每日收聽習慣',
+    topic: 'science',
+    cefrLevel: 'A2',
+    episode: 10,
+    publishedAt: '2026-07-24',
   },
 ] as const
 
@@ -362,10 +447,18 @@ export const mockApi: Api = {
     return fetchMockEpisode()
   },
 
-  // mock 模式無 daily-orders 對應邏輯；直接回示範集（讓 PlayerRoute ?date= 連結在
-  // mock 下也可走通）。null 路徑靠 mock 自行決定，這裡採非 null 簡化。
-  async getDeliveredEpisode(_date) {
-    return fetchMockEpisode()
+  // mock 模式：以 date 字串做簡單 hash 對 SEED_EPISODES 取模，決定性回該集，
+  // 讓任一日期都能測到 hero 正常路徑；null 路徑由測試自己 mock。
+  async getDeliveredEpisode(date) {
+    const seed = SEED_EPISODES
+    if (seed.length === 0) return null
+    let hash = 0
+    for (let i = 0; i < date.length; i++) hash = (hash * 31 + date.charCodeAt(i)) | 0
+    const idx = Math.abs(hash) % seed.length
+    const target = seed[idx]
+    if (!target) return null
+    const mock = await fetchMockEpisode()
+    return { ...mock, id: target.id, title: target.title }
   },
 
   // T1：mock 模式沒有真 worker，setOrder 仍會呼叫此處但純 noop

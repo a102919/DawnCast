@@ -45,11 +45,6 @@ export function EpisodeReferences({ references }: EpisodeReferencesProps) {
               <span className="break-all">{ref.title}</span>
               <ExternalLink size={12} className="shrink-0 mt-0.5" aria-hidden="true" />
             </a>
-            {ref.publisher && (
-              <div className="text-xs text-text-tertiary mt-0.5 ml-0.5">
-                {ref.publisher}
-              </div>
-            )}
           </li>
         ))}
       </ul>

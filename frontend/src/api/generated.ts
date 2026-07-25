@@ -985,6 +985,8 @@ export interface components {
             audioUrl?: string | null;
             /** Cues */
             cues?: components["schemas"]["Cue"][];
+            /** References */
+            references?: components["schemas"]["SourceReference"][];
         };
         /**
          * EpisodeListItem
@@ -1174,6 +1176,21 @@ export interface components {
              * @enum {string}
              */
             cefrLevel: "A2" | "B1" | "B2";
+        };
+        /**
+         * SourceReference
+         * @description 對前端暴露的來源引用：只帶 id / title / url，不暴露 text / published_at。
+         *
+         *     URL 由 router 端過濾：只接受 http/https 開頭；javascript: / data: / file: 等
+         *     危險 scheme 會被丟棄，避免 XSS / SSRF 風險進入前端渲染。
+         */
+        SourceReference: {
+            /** Id */
+            id: string;
+            /** Title */
+            title: string;
+            /** Url */
+            url: string;
         };
         /**
          * UpdateSettingsBody

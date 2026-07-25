@@ -40,8 +40,8 @@ function mockEpisodeWithReferences(id: string): Episode {
   return {
     ...mockEpisodeFor(id),
     references: [
-      { title: 'IBM Quantum', url: 'https://learning.quantum.ibm.com/', publisher: 'IBM' },
-      { title: 'Quantum Country', url: 'https://quantum.country/qcvc/superposition' },
+      { id: 'ibm', title: 'IBM Quantum', url: 'https://learning.quantum.ibm.com/' },
+      { id: 'quantum-country', title: 'Quantum Country', url: 'https://quantum.country/qcvc/superposition' },
     ],
   }
 }
