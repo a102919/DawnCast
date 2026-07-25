@@ -111,3 +111,26 @@ async def archive(queue: str, msg_id: int) -> bool:
         await cur.execute("select pgmq.archive(%s, %s) as ok", (queue, msg_id))
         row = await cur.fetchone()
     return bool(row and row["ok"])
+
+
+async def send_daily_batch(deliver_date: str, bodies: list[dict[str, Any]]) -> int:
+    """原子送 5 筆 generate 訊息給當天 daily podcast batch。
+
+    包成單一 SQL function 呼叫 `public.enqueue_daily_podcast_batch(date, jsonb)`：
+      - 同 deliver_date 第二次呼叫 → function 回 0（marker ON CONFLICT）
+      - 任一 pgmq.send 失敗 → 整 transaction rollback（marker 也撤回）
+
+    回傳實際送出數：5（首次成功）或 0（已 claim）。
+
+    ponytail: 故意不迴圈 `send("generate", body)`，因為那樣無法保證 marker 與 5 筆
+    send 的原子性。整個 exactly-once 語意下沉到 SQL function。
+    """
+    async with connection() as conn, conn.cursor(row_factory=dict_row) as cur:
+        await cur.execute(
+            "select public.enqueue_daily_podcast_batch(%s::date, %s::jsonb) as sent_count",
+            (deliver_date, json.dumps(bodies)),
+        )
+        row = await cur.fetchone()
+    if row is None:
+        raise RuntimeError("enqueue_daily_podcast_batch 未回傳 sent_count")
+    return int(row["sent_count"])

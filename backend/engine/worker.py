@@ -23,6 +23,7 @@ from typing import Any
 from zoneinfo import ZoneInfo
 
 from engine.pipeline import dict_translate
+from engine.pipeline.daily_batch import enqueue_daily_batch
 from engine.pipeline.evergreen import run_evergreen
 from engine.pipeline.generate_job import run_generate_job
 from engine.pipeline.reuse import resolve_for_user
@@ -51,7 +52,7 @@ class _Shutdown:
         self.requested = True
 
 
-# ── 控制訊息分派（orchestrate / evergreen / collect_open）──────────────
+# ── 控制訊息分派（daily_podcast / orchestrate / evergreen / collect_open）
 
 
 def _anchor_date(body: dict[str, Any]) -> str:
@@ -81,6 +82,11 @@ async def _handle_control(body: dict[str, Any]) -> None:
             anchor, from_status="pending", to_status="queued"
         )
         logger.info("collect_open：%d 筆訂單翻 queued（date=%s）", n, anchor)
+    elif task == "daily_podcast":
+        # 02:00 每日公開批次：DB function 用 deliver_date 做 atomic claim，
+        # duplicate control 只會回傳 0，不會重送 generate。
+        n = await enqueue_daily_batch(anchor)
+        logger.info("daily_podcast：送出 %d 筆 generate（date=%s）", n, anchor)
     else:
         logger.warning("未知 control task=%r，略過", task)
 
