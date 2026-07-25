@@ -26,11 +26,15 @@ from shared.models.api import (
 )
 from shared.models.engine import (
     ANGLES,
+    ClaimCheck,
+    ClaimVerification,
     EntryMode,
+    EvidenceCard,
     FreshnessClass,
     JudgeVerdict,
     LengthTier,
     OutlineSegment,
+    ResearchQuestion,
     ScriptFormat,
     ScriptJSON,
     ScriptLine,
@@ -40,6 +44,7 @@ from shared.models.engine import (
     Speaker,
     TargetVocab,
     TopicType,
+    VerifiedClaim,
 )
 
 __all__ = [
@@ -52,6 +57,8 @@ __all__ = [
     "AdminTokenUsageItem",
     "AdminTokenUsageResponse",
     "CamelModel",
+    "ClaimCheck",
+    "ClaimVerification",
     "Cue",
     "DailyOrder",
     "DailyOrderStatus",
@@ -59,10 +66,12 @@ __all__ = [
     "Episode",
     "EpisodeListItem",
     "EntryMode",
+    "EvidenceCard",
     "FreshnessClass",
     "JudgeVerdict",
     "LengthTier",
     "OutlineSegment",
+    "ResearchQuestion",
     "ScriptFormat",
     "ScriptJSON",
     "ScriptLine",
@@ -74,5 +83,6 @@ __all__ = [
     "Speaker",
     "TargetVocab",
     "TopicType",
+    "VerifiedClaim",
     "VocabItem",
 ]

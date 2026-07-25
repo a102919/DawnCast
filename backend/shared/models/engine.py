@@ -202,3 +202,49 @@ class JudgeVerdict(BaseModel):
     chemistry: float = Field(ge=0.0, le=1.0)
     groundedness: float = Field(ge=0.0, le=1.0)
     feedback: list[str] = Field(default_factory=list, max_length=5)
+
+
+class ResearchQuestion(BaseModel):
+    """研究問題拆解後的單一可查證問題。"""
+
+    question: str = Field(min_length=1)
+    kind: Literal["academic", "statistics", "claim_check", "history", "general"]
+    requires_sources: bool = True
+
+
+class EvidenceCard(BaseModel):
+    """一張來源證據卡；source_ids 至少要指向一筆 SourceSnippet。"""
+
+    id: str = Field(min_length=1)
+    claim: str = Field(min_length=1)
+    source_ids: list[str] = Field(min_length=1)
+    provider: str
+    source_type: str
+    is_primary: bool = False
+    limitations: list[str] = Field(default_factory=list)
+    confidence: float = Field(ge=0.0, le=1.0)
+
+
+class VerifiedClaim(BaseModel):
+    """交叉驗證後可供寫稿採用或排除的主張。"""
+
+    claim: str = Field(min_length=1)
+    supporting_source_ids: list[str] = Field(default_factory=list)
+    contradicting_source_ids: list[str] = Field(default_factory=list)
+    confidence: float = Field(ge=0.0, le=1.0)
+    usable: bool
+
+
+class ClaimCheck(BaseModel):
+    """成稿中的單一事實主張核對結果。"""
+
+    claim: str = Field(min_length=1)
+    status: Literal["supported", "unsupported", "uncertain"]
+    source_ids: list[str] = Field(default_factory=list)
+
+
+class ClaimVerification(BaseModel):
+    """成稿事實主張的整體核對結果。"""
+
+    checks: list[ClaimCheck] = Field(default_factory=list)
+    unsupported_ratio: float = Field(ge=0.0, le=1.0)

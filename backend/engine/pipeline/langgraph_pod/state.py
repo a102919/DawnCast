@@ -16,7 +16,15 @@ from __future__ import annotations
 from typing import Annotated, Any, TypedDict
 
 from engine.media import EpisodeArtifacts
-from shared.models import ScriptFormat, ScriptJSON, SourceSnippet
+from shared.models import (
+    ClaimVerification,
+    EvidenceCard,
+    ResearchQuestion,
+    ScriptFormat,
+    ScriptJSON,
+    SourceSnippet,
+    VerifiedClaim,
+)
 
 
 def _append(a: list[str], b: list[str]) -> list[str]:
@@ -46,6 +54,13 @@ class PodState(TypedDict, total=False):
     # ── grounding（retrieve_sources_node 填）──────────────────
     sources: list[SourceSnippet]
     grounded: bool  # sources 非空才 True；空 sources 時 judge 的 groundedness 軸跳過不計分
+
+    # ── 研究（研究節點失敗時均安全降級，不阻斷寫稿）────────────
+    research_questions: list[ResearchQuestion]
+    evidence_cards: list[EvidenceCard]
+    verified_claims: list[VerifiedClaim]
+    source_conflicts: list[str]
+    claim_verification: ClaimVerification
 
     # ── LLM 輸出 ─────────────────────────────────────────────
     script: ScriptJSON

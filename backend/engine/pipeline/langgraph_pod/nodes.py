@@ -41,13 +41,18 @@ from engine.pipeline.langgraph_pod.prompt import (
 from shared.config import Settings
 from shared.errors import GenerationError, RateLimitError, SourceFetchError
 from shared.models import (
+    ClaimCheck,
+    ClaimVerification,
+    EvidenceCard,
     JudgeVerdict,
+    ResearchQuestion,
     ScriptFormat,
     ScriptJSON,
     ScriptLine,
     ScriptOutline,
     SourcedFact,
     SourceSnippet,
+    VerifiedClaim,
 )
 
 from .state import PodState
@@ -388,6 +393,33 @@ def _sources_block(sources: list[SourceSnippet], avoid_facts: tuple[str, ...] = 
     return "\n".join(lines)
 
 
+def _verified_research_block(
+    verified_claims: list[VerifiedClaim], source_conflicts: list[str]
+) -> str:
+    """只把可採用主張列為依據，並保留尚未解決的來源衝突。"""
+    usable = [claim for claim in verified_claims if claim.usable]
+    if not usable and not source_conflicts:
+        return ""
+
+    lines = ["# VERIFIED CLAIMS（只有本區主張可視為已交叉驗證）"]
+    if usable:
+        lines.extend(
+            (
+                f"- {claim.claim} "
+                f"[sources: {', '.join(claim.supporting_source_ids)}; "
+                f"confidence: {claim.confidence:.2f}]"
+            )
+            for claim in usable
+        )
+    else:
+        lines.append("- (none)")
+
+    if source_conflicts:
+        lines.append("\n# SOURCE CONFLICTS（不可自行選邊或寫成確定事實）")
+        lines.extend(f"- {conflict}" for conflict in source_conflicts)
+    return "\n".join(lines)
+
+
 def _shared_style_prefix(
     *,
     cefr: str,
@@ -441,6 +473,8 @@ def _build_outline_messages(
     format: ScriptFormat,
     sources: list[SourceSnippet] | None,
     avoid_facts: tuple[str, ...],
+    verified_claims: list[VerifiedClaim] | None = None,
+    source_conflicts: list[str] | None = None,
     feedback: list[str] | None = None,
 ) -> list[dict[str, str]]:
     """大綱 LLM 呼叫：只規劃「哪些內容切到哪幾段、各段帶哪些字彙」，不寫對話。
@@ -486,6 +520,7 @@ def _build_outline_messages(
         f"`vocab_words` 必須真的是 target_vocab 裡的字，不能憑主題聯想列字（這是硬性規則）。"
         f" 全集合計 target_vocab 數量上限 {target_vocab_size} 個。\n\n"
         f"# SOURCES\n{_sources_block(sources or [], avoid_facts)}\n\n"
+        f"{_verified_research_block(verified_claims or [], source_conflicts or [])}\n\n"
         "JSON SCHEMA (must match exactly):\n"
         '{"topic": str, "topic_zh": str, '
         '"category": "tech"|"business"|"culture"|"science", '
@@ -660,7 +695,292 @@ def _usage_from_ai_msg(ai_msg: Any) -> dict[str, object]:
     }
 
 
-# ── Node 0: retrieve_sources ──────────────────────────────
+def _fallback_research_questions(state: PodState) -> list[ResearchQuestion]:
+    return [
+        ResearchQuestion(
+            question=state.get("canonical_topic") or state["big_topic"],
+            kind="general",
+            requires_sources=True,
+        )
+    ]
+
+
+_DECOMPOSE_RESEARCH_SYSTEM = """You decompose a podcast topic into focused research questions.
+Return ONLY JSON with this exact shape:
+{"questions": [{"question": str, "kind": "academic"|"statistics"|"claim_check"|"history"|"general",
+"requires_sources": bool}]}
+Give 1-6 non-overlapping questions. Prefer questions that can be checked against cited sources."""
+
+
+async def decompose_research_node(
+    state: PodState, config: RunnableConfig
+) -> dict[str, Any]:
+    """用既有 MiniMax chat 拆研究問題；任何失敗都退回原題單問。"""
+    ctx = _ctx(config)
+    fallback = _fallback_research_questions(state)
+    chat = ctx.get("chat")
+    if (
+        chat is None
+        or ctx.get("source_provider_factory") is None
+        or state.get("topic_type") == "skill"
+    ):
+        return {"research_questions": fallback}
+
+    user = (
+        f"Canonical topic: {state.get('canonical_topic') or state['big_topic']}\n"
+        f"Big topic: {state['big_topic']}\n"
+        f"Angle: {state.get('angle') or '定義'}"
+    )
+    usage: dict[str, object] | None = None
+    try:
+        msg = await chat.ainvoke(
+            [
+                SystemMessage(content=_DECOMPOSE_RESEARCH_SYSTEM),
+                HumanMessage(content=user),
+            ]
+        )
+        usage = _usage_from_ai_msg(msg)
+        raw = msg.content
+        if not isinstance(raw, str):
+            raise ValueError("研究問題拆解回應不是文字")
+        payload = json.loads(_strip_code_fence(raw))
+        items = payload.get("questions") if isinstance(payload, dict) else None
+        if not isinstance(items, list) or not items:
+            raise ValueError("研究問題拆解回應缺少 questions")
+        questions = [ResearchQuestion.model_validate(item) for item in items[:6]]
+    except Exception as exc:
+        logger.warning(
+            "decompose_research 失敗，降級成原題單問 big_topic=%s: %s",
+            state.get("big_topic"),
+            exc,
+        )
+        result: dict[str, Any] = {
+            "research_questions": fallback,
+            "errors": [f"decompose_research 失敗：{type(exc).__name__}"],
+        }
+        if usage is not None:
+            result["token_usage"] = [{"node": "research_decompose", **usage}]
+        return result
+
+    return {
+        "research_questions": questions,
+        "token_usage": [{"node": "research_decompose", **(usage or {})}],
+    }
+
+
+def _provider_list(value: Any) -> list[Any]:
+    """相容既有單一 SourceProvider factory，也容許每題回最多兩個 provider。"""
+    if value is None:
+        return []
+    if isinstance(value, (list, tuple)):
+        return [provider for provider in value if provider is not None][:2]
+    return [value]
+
+
+def _evidence_source_type(snippet: SourceSnippet, provider_name: str) -> str:
+    prefix, separator, _ = snippet.id.partition(":")
+    return prefix if separator and prefix else provider_name
+
+
+async def gather_evidence_node(
+    state: PodState, config: RunnableConfig
+) -> dict[str, Any]:
+    """逐題抓證據；單一 provider/fetch/close 失敗只記錄，不阻斷其他來源。"""
+    ctx = _ctx(config)
+    factory = ctx.get("source_provider_factory")
+    if factory is None or state.get("topic_type") == "skill":
+        return {"sources": [], "evidence_cards": [], "grounded": False}
+
+    questions = (state.get("research_questions") or _fallback_research_questions(state))[:6]
+    topic_type = state.get("topic_type", "evergreen")
+    settings = ctx["settings"]
+    sources: list[SourceSnippet] = []
+    cards: list[EvidenceCard] = []
+    errors: list[str] = []
+
+    for question_index, question in enumerate(questions):
+        if not question.requires_sources:
+            continue
+        try:
+            providers = _provider_list(factory(topic_type, settings))
+        except Exception as exc:
+            logger.warning(
+                "gather_evidence provider factory 失敗 question=%s: %s",
+                question.question,
+                exc,
+            )
+            errors.append(f"gather_evidence factory 失敗：{type(exc).__name__}")
+            continue
+
+        for provider_index, provider in enumerate(providers):
+            provider_name = str(getattr(provider, "name", "unknown"))
+            try:
+                snippets = await provider.fetch(question.question)
+                for snippet_index, raw_snippet in enumerate(snippets):
+                    # Tavily/GDELT 的 id 是單次查詢內的序號；跨子問題時加 namespace，
+                    # 避免 q1:tavily:0 與 q2:tavily:0 在 citation 對映互相覆蓋。
+                    snippet = raw_snippet.model_copy(
+                        update={"id": f"q{question_index + 1}:{raw_snippet.id}"}
+                    )
+                    sources.append(snippet)
+                    cards.append(
+                        EvidenceCard(
+                            id=(
+                                f"e{question_index + 1}:"
+                                f"{provider_index + 1}:{snippet_index + 1}"
+                            ),
+                            claim=snippet.text,
+                            source_ids=[snippet.id],
+                            provider=raw_snippet.source or provider_name,
+                            source_type=_evidence_source_type(raw_snippet, provider_name),
+                            confidence=0.5,
+                        )
+                    )
+            except Exception as exc:
+                logger.warning(
+                    "gather_evidence provider 失敗 provider=%s question=%s: %s",
+                    provider_name,
+                    question.question,
+                    exc,
+                )
+                errors.append(
+                    f"gather_evidence {provider_name} 失敗：{type(exc).__name__}"
+                )
+            finally:
+                try:
+                    await provider.aclose()
+                except Exception as exc:
+                    logger.warning(
+                        "gather_evidence provider 關閉失敗 provider=%s: %s",
+                        provider_name,
+                        exc,
+                    )
+                    errors.append(
+                        f"gather_evidence {provider_name} 關閉失敗：{type(exc).__name__}"
+                    )
+
+    result: dict[str, Any] = {
+        "sources": sources,
+        "evidence_cards": cards,
+        "grounded": bool(sources),
+    }
+    if errors:
+        result["errors"] = errors
+    return result
+
+
+_CROSS_VERIFY_SYSTEM = """You cross-check evidence for a podcast research brief.
+Compare sources, preserve contradictions, and never mark a claim usable without cited support.
+Return ONLY JSON with this exact shape:
+{"verified_claims": [{"claim": str, "supporting_source_ids": [str],
+"contradicting_source_ids": [str], "confidence": float, "usable": bool}],
+"source_conflicts": [str]}"""
+
+
+def _unverified_claims(cards: list[EvidenceCard]) -> list[VerifiedClaim]:
+    """交叉驗證不可用時保留候選主張，但明確標成不可採用。"""
+    return [
+        VerifiedClaim(
+            claim=card.claim,
+            supporting_source_ids=[],
+            contradicting_source_ids=[],
+            confidence=0.0,
+            usable=False,
+        )
+        for card in cards
+    ]
+
+
+async def cross_verify_node(
+    state: PodState, config: RunnableConfig
+) -> dict[str, Any]:
+    """用 MiniMax 交叉比對證據；失敗時絕不把原始卡片假裝成已驗證。"""
+    cards = list(state.get("evidence_cards") or [])
+    if not cards:
+        return {"verified_claims": [], "source_conflicts": []}
+
+    ctx = _ctx(config)
+    chat = ctx.get("chat")
+    if chat is None:
+        return {
+            "verified_claims": _unverified_claims(cards),
+            "source_conflicts": [],
+        }
+
+    evidence_payload = [card.model_dump(mode="json") for card in cards]
+    usage: dict[str, object] | None = None
+    try:
+        msg = await chat.ainvoke(
+            [
+                SystemMessage(content=_CROSS_VERIFY_SYSTEM),
+                HumanMessage(content=json.dumps(evidence_payload, ensure_ascii=False)),
+            ]
+        )
+        usage = _usage_from_ai_msg(msg)
+        raw = msg.content
+        if not isinstance(raw, str):
+            raise ValueError("交叉驗證回應不是文字")
+        payload = json.loads(_strip_code_fence(raw))
+        if not isinstance(payload, dict):
+            raise ValueError("交叉驗證回應不是 JSON 物件")
+        raw_claims = payload.get("verified_claims")
+        raw_conflicts = payload.get("source_conflicts", [])
+        if not isinstance(raw_claims, list) or not isinstance(raw_conflicts, list):
+            raise ValueError("交叉驗證回應欄位形狀錯誤")
+
+        available_ids = {
+            source_id for card in cards for source_id in card.source_ids
+        }
+        verified_claims: list[VerifiedClaim] = []
+        for item in raw_claims:
+            claim = VerifiedClaim.model_validate(item)
+            supporting = [
+                source_id
+                for source_id in claim.supporting_source_ids
+                if source_id in available_ids
+            ]
+            contradicting = [
+                source_id
+                for source_id in claim.contradicting_source_ids
+                if source_id in available_ids
+            ]
+            verified_claims.append(
+                claim.model_copy(
+                    update={
+                        "supporting_source_ids": supporting,
+                        "contradicting_source_ids": contradicting,
+                        "usable": (
+                            claim.usable
+                            and bool(supporting)
+                            and not contradicting
+                        ),
+                    }
+                )
+            )
+        source_conflicts = [item for item in raw_conflicts if isinstance(item, str)]
+    except Exception as exc:
+        logger.warning(
+            "cross_verify 失敗，候選主張全部標成不可用 big_topic=%s: %s",
+            state.get("big_topic"),
+            exc,
+        )
+        result: dict[str, Any] = {
+            "verified_claims": _unverified_claims(cards),
+            "source_conflicts": [],
+            "errors": [f"cross_verify 失敗：{type(exc).__name__}"],
+        }
+        if usage is not None:
+            result["token_usage"] = [{"node": "research_cross_verify", **usage}]
+        return result
+
+    return {
+        "verified_claims": verified_claims,
+        "source_conflicts": source_conflicts,
+        "token_usage": [{"node": "research_cross_verify", **(usage or {})}],
+    }
+
+
+# ── Node 0: retrieve_sources（相容 shim）────────────────────
 
 
 async def retrieve_sources_node(state: PodState, config: RunnableConfig) -> dict[str, Any]:
@@ -817,6 +1137,8 @@ async def _generate_outline(
         format=state.get("format", "dialogue"),
         sources=state.get("sources"),
         avoid_facts=tuple(state.get("avoid_facts") or ()),
+        verified_claims=state.get("verified_claims"),
+        source_conflicts=state.get("source_conflicts"),
         feedback=feedback,
     )
 
@@ -857,6 +1179,8 @@ async def _generate_outline(
                     format=state.get("format", "dialogue"),
                     sources=state.get("sources"),
                     avoid_facts=tuple(state.get("avoid_facts") or ()),
+                    verified_claims=state.get("verified_claims"),
+                    source_conflicts=state.get("source_conflicts"),
                     feedback=[f"上一版大綱無法解析成合法結構：{exc}"],
                 )
                 continue
@@ -1284,6 +1608,131 @@ async def failover_write_script_node(state: PodState, config: RunnableConfig) ->
     return out
 
 
+_CLAIM_VERIFY_SYSTEM = """You verify factual claims in a finished podcast draft.
+Check ONLY the supplied extracted_facts and their source_ids against the supplied sources.
+Do not assess style, dialogue, or any uncited script line.
+Return ONLY JSON with this exact shape:
+{"checks": [{"claim": str, "status": "supported"|"unsupported"|"uncertain",
+"source_ids": [str]}], "unsupported_ratio": float}"""
+
+
+def _empty_claim_verification() -> ClaimVerification:
+    return ClaimVerification(checks=[], unsupported_ratio=0.0)
+
+
+async def verify_script_claims_node(
+    state: PodState, config: RunnableConfig
+) -> dict[str, Any]:
+    """核對成稿 extracted_facts；研究服務失敗時 fail-open，不阻斷既有出稿。"""
+    script = state.get("script")
+    sources = list(state.get("sources") or [])
+    if script is None or not script.extracted_facts or not sources:
+        return {"claim_verification": _empty_claim_verification()}
+
+    ctx = _ctx(config)
+    chat = (
+        ctx.get("chat_failover")
+        if state.get("engine_used") == "failover"
+        else ctx.get("chat")
+    )
+    if chat is None:
+        return {"claim_verification": _empty_claim_verification()}
+
+    facts_payload = [fact.model_dump(mode="json") for fact in script.extracted_facts]
+    sources_payload = [
+        {"id": source.id, "text": source.text[:800]} for source in sources
+    ]
+    user = json.dumps(
+        {"extracted_facts": facts_payload, "sources": sources_payload},
+        ensure_ascii=False,
+    )
+    usage: dict[str, object] | None = None
+    try:
+        msg = await chat.ainvoke(
+            [
+                SystemMessage(content=_CLAIM_VERIFY_SYSTEM),
+                HumanMessage(content=user),
+            ]
+        )
+        usage = _usage_from_ai_msg(msg)
+        raw = msg.content
+        if not isinstance(raw, str):
+            raise ValueError("成稿主張核對回應不是文字")
+        verification = ClaimVerification.model_validate_json(_strip_code_fence(raw))
+
+        available_ids = {source.id for source in sources}
+        checks_by_claim = {check.claim: check for check in verification.checks}
+        checks: list[ClaimCheck] = []
+        for fact in script.extracted_facts:
+            allowed_ids = [
+                source_id
+                for source_id in fact.source_ids
+                if source_id in available_ids
+            ]
+            raw_check = checks_by_claim.get(fact.claim)
+            if raw_check is None:
+                checks.append(
+                    ClaimCheck(
+                        claim=fact.claim,
+                        status="uncertain",
+                        source_ids=allowed_ids,
+                    )
+                )
+                continue
+
+            cited_ids = [
+                source_id
+                for source_id in raw_check.source_ids
+                if source_id in allowed_ids
+            ]
+            status = raw_check.status
+            if status == "supported" and not cited_ids:
+                status = "uncertain"
+            if not allowed_ids:
+                status = "unsupported"
+            checks.append(
+                ClaimCheck(
+                    claim=fact.claim,
+                    status=status,
+                    source_ids=cited_ids,
+                )
+            )
+
+        unsupported_count = sum(
+            check.status != "supported" for check in checks
+        )
+        normalized = ClaimVerification(
+            checks=checks,
+            unsupported_ratio=unsupported_count / len(checks),
+        )
+    except Exception as exc:
+        logger.warning(
+            "verify_script_claims 失敗，安全降級略過主張核對 big_topic=%s: %s",
+            state.get("big_topic"),
+            exc,
+        )
+        result: dict[str, Any] = {
+            "claim_verification": _empty_claim_verification(),
+            "errors": [f"verify_script_claims 失敗：{type(exc).__name__}"],
+        }
+        if usage is not None:
+            result["token_usage"] = [{"node": "research_claim_verify", **usage}]
+        return result
+
+    feedback = [
+        f"成稿主張 {check.status}：{check.claim[:160]}"
+        for check in normalized.checks
+        if check.status != "supported"
+    ]
+    result = {
+        "claim_verification": normalized,
+        "token_usage": [{"node": "research_claim_verify", **(usage or {})}],
+    }
+    if feedback:
+        result["judge_feedback"] = feedback
+    return result
+
+
 # ── Node 4: quality_judge ─────────────────────────────────
 
 
@@ -1422,10 +1871,24 @@ def judge_decision(state: PodState, config: RunnableConfig) -> Literal["upsert",
     max_iter = int(settings.get("max_rewrite_iterations", 2))
     scores = state.get("judge_scores") or {}
     iterations = state.get("rewrite_iterations", 0)
+    verification = state.get("claim_verification")
+    if isinstance(verification, ClaimVerification):
+        statuses = [check.status for check in verification.checks]
+    elif isinstance(verification, dict):
+        statuses = [
+            check.get("status")
+            for check in verification.get("checks", [])
+            if isinstance(check, dict)
+        ]
+    else:
+        statuses = []
+    has_unverified_claim = any(status != "supported" for status in statuses)
 
-    if _judge_passed(scores, threshold) or iterations >= max_iter:
+    if iterations >= max_iter:
         return "upsert"
-    return "rewrite"
+    if has_unverified_claim or not _judge_passed(scores, threshold):
+        return "rewrite"
+    return "upsert"
 
 
 # ── 紀錄 rewrite 次數（write_script 進場前 bump）───────────
@@ -1436,6 +1899,21 @@ async def rewrite_iteration_bump_node(state: PodState, config: RunnableConfig) -
 
 
 # ── Node 5: upsert_episode ────────────────────────────────
+
+
+def _source_metadata(state: PodState) -> list[dict[str, Any]]:
+    """持久化來源 attribution；不把原文 text 寫進 episodes.sources。"""
+    return [
+        {
+            "id": source.id,
+            "title": source.title,
+            "url": source.url,
+            "provider": source.source or "",
+            "source_type": "",
+            "published_at": source.published_at,
+        }
+        for source in state.get("sources", [])
+    ]
 
 
 async def upsert_episode_node(state: PodState, config: RunnableConfig) -> dict[str, Any]:
@@ -1484,6 +1962,7 @@ async def upsert_episode_node(state: PodState, config: RunnableConfig) -> dict[s
         input_tokens=total_in,
         output_tokens=total_out,
         is_free=is_free,
+        sources=_source_metadata(state),
     )
 
     if usage_log:
@@ -1698,6 +2177,7 @@ async def update_episode_keys_node(state: PodState, config: RunnableConfig) -> d
         cues=art.cues,
         extracted_facts=facts_payload,
         target_vocab=[v.model_dump(by_alias=False) for v in script.target_vocab],
+        sources=_source_metadata(state),
     )
     return {}
 

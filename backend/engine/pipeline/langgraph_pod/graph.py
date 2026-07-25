@@ -24,22 +24,25 @@ from shared.errors import GenerationError
 
 from .nodes import (
     backfill_dict_node,
+    cross_verify_node,
     dead_letter_node,
+    decompose_research_node,
     failover_decision,
     failover_write_script_node,
+    gather_evidence_node,
     insert_deliveries_node,
     judge_decision,
     quality_judge_node,
     rate_limit_decision,
     render_branch_decision,
     render_episode_node,
-    retrieve_sources_node,
     rewrite_iteration_bump_node,
     storage_decision,
     tone_selector_node,
     update_episode_keys_node,
     upload_artifacts_node,
     upsert_episode_node,
+    verify_script_claims_node,
     write_script_node,
 )
 from .state import PodState
@@ -61,7 +64,11 @@ def build_pod(*, checkpointer: MemorySaver | None = None) -> Any:
     builder = StateGraph(PodState)
 
     # ── nodes ─────────────────────────────────────────────
-    builder.add_node("retrieve_sources", retrieve_sources_node)
+    # retrieve_sources_node 保留給舊 caller；主線改走四段研究管線。
+    # 研究節點刻意不掛 RetryPolicy：任何外部/LLM 失敗由節點內安全降級。
+    builder.add_node("decompose_research", decompose_research_node)
+    builder.add_node("gather_evidence", gather_evidence_node)
+    builder.add_node("cross_verify", cross_verify_node)
     builder.add_node("tone_selector", tone_selector_node)
     builder.add_node(
         "write_script",
@@ -73,6 +80,7 @@ def build_pod(*, checkpointer: MemorySaver | None = None) -> Any:
         failover_write_script_node,
         retry_policy=_WRITER_RETRY,
     )
+    builder.add_node("verify_script_claims", verify_script_claims_node)
     builder.add_node("quality_judge", quality_judge_node)
     builder.add_node("rewrite_iter_bump", rewrite_iteration_bump_node)
     builder.add_node("upsert_episode", upsert_episode_node)
@@ -84,16 +92,18 @@ def build_pod(*, checkpointer: MemorySaver | None = None) -> Any:
     builder.add_node("backfill_dict", backfill_dict_node)
 
     # ── edges ─────────────────────────────────────────────
-    builder.add_edge(START, "retrieve_sources")
-    builder.add_edge("retrieve_sources", "tone_selector")
+    builder.add_edge(START, "decompose_research")
+    builder.add_edge("decompose_research", "gather_evidence")
+    builder.add_edge("gather_evidence", "cross_verify")
+    builder.add_edge("cross_verify", "tone_selector")
     builder.add_edge("tone_selector", "write_script")
 
-    # write_script 出來分三路：judge / failover / END
+    # write_script 出來分三路：主張核對 / failover / END
     builder.add_conditional_edges(
         "write_script",
         rate_limit_decision,
         {
-            "judge": "quality_judge",
+            "judge": "verify_script_claims",
             "failover": "failover_write_script",
             END: END,
         },
@@ -104,10 +114,12 @@ def build_pod(*, checkpointer: MemorySaver | None = None) -> Any:
         "failover_write_script",
         failover_decision,
         {
-            "judge": "quality_judge",
+            "judge": "verify_script_claims",
             END: END,
         },
     )
+
+    builder.add_edge("verify_script_claims", "quality_judge")
 
     # quality_judge 出來分：upsert / rewrite
     builder.add_conditional_edges(

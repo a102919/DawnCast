@@ -163,6 +163,61 @@ def _make_passing_chat(
     )
 
 
+def _make_research_passing_chat(*, source_id: str | None) -> FakeChatModel:
+    """研究圖 happy path；source_id=None 模擬 factory 無可用 provider。"""
+    responses = [
+        json.dumps(
+            {
+                "questions": [
+                    {
+                        "question": "量子力學的核心機制是什麼？",
+                        "kind": "academic",
+                        "requires_sources": True,
+                    }
+                ]
+            }
+        )
+    ]
+    if source_id is not None:
+        responses.append(
+            json.dumps(
+                {
+                    "verified_claims": [
+                        {
+                            "claim": "f1",
+                            "supporting_source_ids": [source_id],
+                            "contradicting_source_ids": [],
+                            "confidence": 0.9,
+                            "usable": True,
+                        }
+                    ],
+                    "source_conflicts": [],
+                }
+            )
+        )
+
+    outline = json.loads(_outline_json())
+    outline["extracted_facts"][0]["source_ids"] = [source_id] if source_id else []
+    responses.append(json.dumps(outline))
+    responses.extend(_segment_json(seg_index=i) for i in range(3))
+    if source_id is not None:
+        responses.append(
+            json.dumps(
+                {
+                    "checks": [
+                        {
+                            "claim": "f1",
+                            "status": "supported",
+                            "source_ids": [source_id],
+                        }
+                    ],
+                    "unsupported_ratio": 0.0,
+                }
+            )
+        )
+    return FakeChatModel(responses=responses, judge_responses=[_judge_json(0.8)])
+
+
 def _judge_json(score: float, feedback: list[str] | None = None) -> str:
     """五軸給同一分數（測試不關心軸間差異，只關心過/不過門檻）。"""
     return json.dumps(
@@ -677,7 +732,7 @@ async def test_retrieve_sources_populates_grounded_state(monkeypatch: pytest.Mon
     def factory(topic_type: str, settings: object) -> _StubProvider | None:
         return _StubProvider() if topic_type == "evergreen" else None
 
-    chat = _make_passing_chat()
+    chat = _make_research_passing_chat(source_id="q1:s1")
     repo, r2, queue = get_mocks(reset=True)
     renderer = MockRenderer(make_mock_workdir())
 
@@ -693,11 +748,21 @@ async def test_retrieve_sources_populates_grounded_state(monkeypatch: pytest.Mon
     ep = repo.get_episode(eid)
     assert ep is not None
     assert ep.grounded is True
+    assert ep.sources == [
+        {
+            "id": "q1:s1",
+            "title": "t",
+            "url": "https://x",
+            "provider": "",
+            "source_type": "",
+            "published_at": None,
+        }
+    ]
 
 
 async def test_retrieve_sources_no_provider_keeps_ungrounded() -> None:
     """factory 回 None（如 skill 類型）→ 空 sources，episode 標記未 grounded。"""
-    chat = _make_passing_chat()
+    chat = _make_research_passing_chat(source_id=None)
     repo, r2, queue = get_mocks(reset=True)
     renderer = MockRenderer(make_mock_workdir())
 

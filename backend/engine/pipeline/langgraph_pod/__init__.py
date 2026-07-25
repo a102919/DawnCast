@@ -21,6 +21,7 @@ from shared.config import Settings, get_settings
 from shared.db import pool as db_pool
 from shared.db import repo as db_repo
 from shared.errors import RateLimitError
+from shared.models import ClaimVerification
 from shared.storage import r2 as db_r2
 
 from .chat import make_langchain_chat
@@ -148,8 +149,18 @@ async def run_pod(
         "length_tier": body.get("length_tier") or "medium",
         "cefr": body.get("cefr") or cfg.cefr_level,
         "avoid_facts": list(body.get("avoid_facts") or []),
+        "sources": [],
+        "grounded": False,
+        "research_questions": [],
+        "evidence_cards": [],
+        "verified_claims": [],
+        "source_conflicts": [],
+        "claim_verification": ClaimVerification(
+            checks=[], unsupported_ratio=0.0
+        ),
         "rewrite_iterations": 0,
         "judge_feedback": [],
+        "token_usage": [],
         "errors": [],
         "rate_limited": False,
         "storage_failed": False,
