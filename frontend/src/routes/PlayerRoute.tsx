@@ -5,6 +5,7 @@ import { toast } from 'sonner'
 import { ErrorBanner } from '../components/primitives/ErrorBanner'
 import { AudioPlayer } from '../components/player/AudioPlayer'
 import { PlayerControls } from '../components/player/PlayerControls'
+import { EpisodeReferences } from '../components/player/EpisodeReferences'
 import { LyricsView } from '../components/lyrics/LyricsView'
 import { PlayerBottomBar } from '../components/player/PlayerBottomBar'
 import { WordCardPanel } from '../components/wordcard/WordCardPanel'
@@ -289,6 +290,13 @@ export function PlayerRoute() {
           onWordClick={handleWordClick}
           onCueClick={handleCueClick}
         />
+        {/* 行動版參考資料浮動卡：LyricsView 自帶滾動（無外部 container 可掛），
+            故以 absolute 浮在 main 的 padding-bottom 區；桌面版同一元件進 footer。 */}
+        {episode.references && episode.references.length > 0 && (
+          <div className="lg:hidden absolute inset-x-4 bottom-4 z-20">
+            <EpisodeReferences references={episode.references} />
+          </div>
+        )}
       </main>
 
       {/* 控制列（桌面） */}
@@ -315,6 +323,12 @@ export function PlayerRoute() {
             我的單字本
           </button>
         </div>
+        {/* 桌面版參考資料：放在 footer 底（無來源時 component 直接回 null 不佔空間） */}
+        {episode.references && episode.references.length > 0 && (
+          <div className="mt-3 max-w-md mx-auto">
+            <EpisodeReferences references={episode.references} />
+          </div>
+        )}
       </footer>
 
       {/* mobile bottom bar */}

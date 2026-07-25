@@ -12,7 +12,7 @@ import type {
   VocabItem,
 } from './types'
 import type { components } from './generated'
-import type { Cue, Episode } from '../types/episode'
+import type { Cue, Episode, SourceReference } from '../types/episode'
 import type { MockEpisode } from '../lib/episode'
 import { getAccessToken } from '../lib/supabaseClient'
 
@@ -221,11 +221,23 @@ export const CueSchema = z.object({
   end: z.number(),
 }) satisfies z.ZodType<Cue> & z.ZodType<components['schemas']['Cue']>
 
+/** 資料來源連結 schema（Task #67 播放器參考資料 UI）。
+ *  後端 Episode model 尚未合併此欄位（見 tasks/todo.md T6 標註：主線 API 合併後
+ *  統一重生），前端先以 optional 收：後端有送就驗、沒送就當作空陣列，
+ *  UI 端「無來源不渲染」自然 cover。publisher 是 nullable.optional 對齊
+ *  SourceReference.publisher 標記為可空。 */
+export const SourceReferenceSchema = z.object({
+  title: z.string(),
+  url: z.string(),
+  publisher: z.string().nullable().optional(),
+}) satisfies z.ZodType<SourceReference>
+
 // audioUrl 由 /episodes/{slug}/url 補上，list 內容沒有 cues。
 // server get_episode Episode model 沒設 audioUrl 欄位會回 null（不是 undefined），
 // 故 .nullable() 否則 zod 在 null 時拋 schema_mismatch。
 // titleZh/topic/cefrLevel/isFree 後端本來就會送（見 shared/models.py Episode），
 // 前端目前用不到但要收進來，不然 satisfies 抓不到後端這幾欄之後改型別/改名。
+// references 後端尚未合併（見 SourceReferenceSchema 註解），optional 對齊。
 const EpisodeContentSchema = z.object({
   id: z.string(),
   title: z.string(),
@@ -235,6 +247,7 @@ const EpisodeContentSchema = z.object({
   isFree: z.boolean(),
   audioUrl: z.string().nullable().optional(),
   cues: z.array(CueSchema),
+  references: z.array(SourceReferenceSchema).optional(),
 }) satisfies z.ZodType<components['schemas']['Episode']>
 
 // server /episodes/{slug}/url 的 data 是字串網址本身（不是 {url: ...} 物件）。
@@ -400,6 +413,11 @@ export const httpApi: Api = {
       title: content.title,
       audioUrl,
       cues: content.cues,
+      // 「無來源」語意對齊：後端沒送 references、或送空陣列 → 不帶欄位，
+      // UI 一律靠 `episode.references?.length > 0` 判斷，避免下游做兩種判斷。
+      ...(content.references && content.references.length > 0
+        ? { references: content.references }
+        : {}),
     }
     return episode
   },
@@ -418,6 +436,9 @@ export const httpApi: Api = {
       title: content.title,
       audioUrl,
       cues: content.cues,
+      ...(content.references && content.references.length > 0
+        ? { references: content.references }
+        : {}),
     }
   },
 

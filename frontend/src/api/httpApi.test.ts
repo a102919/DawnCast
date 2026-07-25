@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { httpApi, AppError } from './httpApi'
+import { httpApi, AppError, SourceReferenceSchema } from './httpApi'
 
 // Auth 一律回 null token，避免真的呼叫 Supabase。
 vi.mock('../lib/supabaseClient', () => ({
@@ -216,5 +216,129 @@ describe('httpApi.getMe / deleteAccount（T4 帳號自我管理）', () => {
       data: { id: 'user-1', email: '', tz: 'Asia/Taipei', deliveryTime: '07:00' },
     })
     await expect(httpApi.getMe()).rejects.toMatchObject({ code: 'schema_mismatch' })
+  })
+})
+
+describe('SourceReferenceSchema（Task #67 參考資料）', () => {
+  it('接受 title + url 兩個必填欄位', () => {
+    const parsed = SourceReferenceSchema.parse({
+      title: 'IBM Quantum Learning',
+      url: 'https://learning.quantum.ibm.com/',
+    })
+    expect(parsed.title).toBe('IBM Quantum Learning')
+    expect(parsed.url).toBe('https://learning.quantum.ibm.com/')
+    expect(parsed.publisher).toBeUndefined()
+  })
+
+  it('publisher 為 string 時原樣收下', () => {
+    const parsed = SourceReferenceSchema.parse({
+      title: 'x', url: 'https://x', publisher: 'IBM',
+    })
+    expect(parsed.publisher).toBe('IBM')
+  })
+
+  it('publisher 為 null 時原樣收下（nullable.optional）', () => {
+    const parsed = SourceReferenceSchema.parse({
+      title: 'x', url: 'https://x', publisher: null,
+    })
+    expect(parsed.publisher).toBeNull()
+  })
+
+  it('缺 title / url → 丟 zod 錯誤', () => {
+    expect(() => SourceReferenceSchema.parse({ url: 'https://x' })).toThrow()
+    expect(() => SourceReferenceSchema.parse({ title: 'x' })).toThrow()
+  })
+
+  it('title 為空字串仍然合法（schema 不擋內容，UI 端不顯示時也已先過濾）', () => {
+    // 允許空 title：後端萬一送空，前端不應直接 reject 整集；UI 可選擇忽略
+    const parsed = SourceReferenceSchema.parse({ title: '', url: 'https://x' })
+    expect(parsed.title).toBe('')
+  })
+})
+
+describe('httpApi.getEpisode（Task #67：references 帶過）', () => {
+  it('後端有送 references → Episode 物件帶 references；無 → 不帶欄位', async () => {
+    // 第一個請求：後端回含 references 的內容
+    mockFetchOnce(200, {
+      ok: true,
+      error: null,
+      data: {
+        id: 'ep-x',
+        title: 'Quantum 101',
+        topic: 'tech',
+        cefrLevel: 'B1',
+        isFree: true,
+        audioUrl: 'https://cdn.example.com/ep-x.mp3',
+        cues: [{ index: 0, speaker: 'A', text: 'hi', zh: '嗨', start: 0, end: 1 }],
+        references: [
+          { title: 'IBM', url: 'https://learning.quantum.ibm.com/', publisher: 'IBM' },
+        ],
+      },
+    })
+    const ep = await httpApi.getEpisode('ep-x')
+    expect(ep.references).toEqual([
+      { title: 'IBM', url: 'https://learning.quantum.ibm.com/', publisher: 'IBM' },
+    ])
+
+    // 第二個請求：後端沒送 references → Episode 不該帶此欄位
+    mockFetchOnce(200, {
+      ok: true,
+      error: null,
+      data: {
+        id: 'ep-y',
+        title: 'Other',
+        topic: 'tech',
+        cefrLevel: 'B1',
+        isFree: true,
+        audioUrl: 'https://cdn.example.com/ep-y.mp3',
+        cues: [],
+      },
+    })
+    const epNoRefs = await httpApi.getEpisode('ep-y')
+    expect('references' in epNoRefs).toBe(false)
+  })
+
+  it('references 陣列為空 → 同樣不帶欄位（與 undefined 同語意）', async () => {
+    mockFetchOnce(200, {
+      ok: true,
+      error: null,
+      data: {
+        id: 'ep-z',
+        title: 'Z',
+        topic: 'tech',
+        cefrLevel: 'B1',
+        isFree: true,
+        audioUrl: 'https://cdn.example.com/ep-z.mp3',
+        cues: [],
+        references: [],
+      },
+    })
+    const ep = await httpApi.getEpisode('ep-z')
+    expect('references' in ep).toBe(false)
+  })
+
+  it('references 缺 publisher 或 publisher=null 都合法', async () => {
+    mockFetchOnce(200, {
+      ok: true,
+      error: null,
+      data: {
+        id: 'ep-w',
+        title: 'W',
+        topic: 'tech',
+        cefrLevel: 'B1',
+        isFree: true,
+        audioUrl: 'https://cdn.example.com/ep-w.mp3',
+        cues: [],
+        references: [
+          { title: 'a', url: 'https://a' },
+          { title: 'b', url: 'https://b', publisher: null },
+        ],
+      },
+    })
+    const ep = await httpApi.getEpisode('ep-w')
+    expect(ep.references).toEqual([
+      { title: 'a', url: 'https://a', publisher: undefined },
+      { title: 'b', url: 'https://b', publisher: null },
+    ])
   })
 })

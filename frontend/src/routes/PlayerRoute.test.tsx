@@ -35,6 +35,17 @@ function mockEpisodeFor(id: string): Episode {
   }
 }
 
+/** 含 references 的 fixture：給 Task #67 測試用。 */
+function mockEpisodeWithReferences(id: string): Episode {
+  return {
+    ...mockEpisodeFor(id),
+    references: [
+      { title: 'IBM Quantum', url: 'https://learning.quantum.ibm.com/', publisher: 'IBM' },
+      { title: 'Quantum Country', url: 'https://quantum.country/qcvc/superposition' },
+    ],
+  }
+}
+
 const MOCK_DICT_ENTRY: DictEntry = {
   word: 'hello',
   pos: ['int.'],
@@ -394,5 +405,68 @@ describe('PlayerRoute：單句循環', () => {
 
     await click(getButton(container, '下一句'))
     expect(seekTo).toHaveBeenLastCalledWith(1)
+  })
+})
+
+describe('PlayerRoute：參考資料（Task #67）', () => {
+  it('無 references 時不渲染 <details>', async () => {
+    // getEpisode 預設 mockEpisodeFor（沒 references）
+    const { root, container } = await renderAt('/player/ep-2')
+    pendingRoots.push(root)
+
+    // 整個 DOM 不該有 details 元素
+    expect(container.querySelector('details')).toBeNull()
+  })
+
+  it('有 references 時渲染 <details> + summary（預設關閉）', async () => {
+    getEpisode.mockResolvedValueOnce(mockEpisodeWithReferences('ep-2'))
+    const { root, container } = await renderAt('/player/ep-2')
+    pendingRoots.push(root)
+
+    const details = container.querySelector('details')
+    expect(details).not.toBeNull()
+    expect(details?.hasAttribute('open')).toBe(false)
+
+    const summary = container.querySelector('summary')
+    expect(summary?.textContent).toContain('參考資料')
+    expect(summary?.textContent).toContain('2')
+  })
+
+  it('展開後列表含全部連結，外連安全設定齊全', async () => {
+    getEpisode.mockResolvedValueOnce(mockEpisodeWithReferences('ep-2'))
+    const { root, container } = await renderAt('/player/ep-2')
+    pendingRoots.push(root)
+
+    // 桌面 + 行動各 render 一份 EpisodeReferences，故 querySelectorAll 取 4 條；
+    // 任取一個 <details> 內的 <a> 來驗即可
+    const details = container.querySelector('details')
+    expect(details).not.toBeNull()
+
+    const summary = details?.querySelector('summary')
+    if (!summary) throw new Error('找不到 summary')
+
+    await act(async () => {
+      summary.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+      await Promise.resolve()
+    })
+
+    const links = Array.from(details!.querySelectorAll<HTMLAnchorElement>('a'))
+    expect(links).toHaveLength(2)
+    expect(links[0]?.textContent).toContain('IBM Quantum')
+    expect(links[1]?.textContent).toContain('Quantum Country')
+    for (const a of links) {
+      expect(a.target).toBe('_blank')
+      expect(a.rel.split(/\s+/)).toEqual(expect.arrayContaining(['noopener', 'noreferrer']))
+    }
+  })
+
+  it('getDeliveredEpisode 拿到的 references 也會渲染', async () => {
+    getEpisode.mockResolvedValueOnce(mockEpisodeWithReferences('ep-2'))
+    getDeliveredEpisode.mockResolvedValueOnce(mockEpisodeWithReferences('ep-2'))
+    // 帶 ?date= 會走 getDeliveredEpisode 路徑
+    const { root, container } = await renderAt('/player?date=2026-07-17')
+    pendingRoots.push(root)
+
+    expect(container.querySelector('details')).not.toBeNull()
   })
 })

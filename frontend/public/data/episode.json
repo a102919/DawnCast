@@ -211,5 +211,22 @@
       "start": 210.228,
       "end": 216.9
     }
+  ],
+  "references": [
+    {
+      "title": "Quantum Computing 入門（IBM Quantum Learning）",
+      "url": "https://learning.quantum.ibm.com/",
+      "publisher": "IBM"
+    },
+    {
+      "title": "疊加與量子糾纏科普解說",
+      "url": "https://quantum.country/qcvc/superposition",
+      "publisher": "Quantum Country"
+    },
+    {
+      "title": "維基百科：量子位元",
+      "url": "https://zh.wikipedia.org/wiki/%E9%87%8F%E5%AD%90%E4%BD%8D%E5%85%83",
+      "publisher": "Wikipedia"
+    }
   ]
 }

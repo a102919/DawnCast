@@ -1,7 +1,7 @@
 import { z } from 'zod'
 import type { AccountInfo, Activity, ActivityPatch, AdminEpsGenerateInput, AdminEpsGenerateResponse, Api, DailyOrder, DictEntry, Settings, VocabItem } from './types'
 import type { Episode } from '../types/episode'
-import { CueSchema } from './httpApi'
+import { CueSchema, SourceReferenceSchema } from './httpApi'
 import type { MockEpisode } from '../lib/episode'
 
 // mock 模式的集數列表 seed（runtime 僅此處使用；畫面真資料一律走 httpApi）。
@@ -18,17 +18,18 @@ const SEED_EPISODES: readonly MockEpisode[] = [
 ] as const
 
 // mock fixture（public/data/episode.json）是手寫的單一示範檔，只需要滿足前端 domain
-// Episode 型別（id/title/audioUrl/cues）；後端真實 wire schema（httpApi.ts 的
+// Episode 型別（id/title/audioUrl/cues/references）；後端真實 wire schema（httpApi.ts 的
 // EpisodeContentSchema）多出的 topic/cefrLevel/isFree 是驗「後端有沒有送」用的，
 // 跟這份 demo fixture 是兩件事，故用獨立、範圍對齊 domain 型別的 schema，
 // 不共用同一份會逼 fixture 硬塞不相關欄位。
 // fixture 欄位漂移（見 lessons.md 2026-07-19 videoUrl→audioUrl 教訓）在這裡一樣會直接炸，
-// 不會靜默播出無聲音檔。
+// 不會靜默播出無聲音檔。references optional：fixture 沒寫就當作「無來源」，UI 不渲染。
 const MockEpisodeContentSchema = z.object({
   id: z.string(),
   title: z.string(),
   audioUrl: z.string(),
   cues: z.array(CueSchema),
+  references: z.array(SourceReferenceSchema).optional(),
 }) satisfies z.ZodType<Episode>
 
 async function fetchMockEpisode(): Promise<Episode> {
