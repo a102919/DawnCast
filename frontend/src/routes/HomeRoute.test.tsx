@@ -1,5 +1,6 @@
 // @vitest-environment happy-dom
 // 首頁主題 chips 必須直接依 API 的 episode.topic 篩選，不另維護第二套分類狀態。
+// Hero / Weekly 區塊於載入完成後必須依 mock 的 delivered / episodes 正確渲染。
 
 ;(globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
 
@@ -25,11 +26,13 @@ const getEpisode = vi.fn(async (id: string): Promise<Episode> => ({
   audioUrl: `https://example.com/${id}.mp3`,
   cues: [],
 }))
+// 預設無今日 delivery；個別測試會 override
+const getDeliveredEpisode = vi.fn(async (): Promise<Episode | null> => null)
 const toggleFavorite = vi.fn(async (): Promise<void> => undefined)
 
 vi.mock('../api', () => ({
   get api() {
-    return { listEpisodes, getEpisode }
+    return { listEpisodes, getEpisode, getDeliveredEpisode }
   },
 }))
 
@@ -85,6 +88,8 @@ const pendingRoots: Root[] = []
 beforeEach(() => {
   listEpisodes.mockClear()
   getEpisode.mockClear()
+  getDeliveredEpisode.mockClear()
+  getDeliveredEpisode.mockResolvedValue(null)
   toggleFavorite.mockClear()
   localStorage.clear()
 })
@@ -117,3 +122,51 @@ describe('HomeRoute 主題篩選', () => {
   })
 })
 
+describe('HomeRoute Hero 區塊', () => {
+  it('無 delivery 時顯示 fallback 元件與 CTA', async () => {
+    const { root, container } = await renderRoute()
+    pendingRoots.push(root)
+
+    const fallback = container.querySelector('[data-testid="today-hero-fallback"]')
+    expect(fallback).not.toBeNull()
+    expect(container.querySelector('[data-testid="today-hero"]')).toBeNull()
+    expect(fallback?.textContent).toContain('今日尚未送達')
+  })
+
+  it('有 delivery 時顯示 hero 元件並標題對應', async () => {
+    getDeliveredEpisode.mockResolvedValue({
+      id: EPISODES[0]!.id,
+      title: EPISODES[0]!.title,
+      audioUrl: 'https://example.com/x.mp3',
+      cues: [],
+    })
+    const { root, container } = await renderRoute()
+    pendingRoots.push(root)
+
+    const hero = container.querySelector('[data-testid="today-hero"]')
+    expect(hero).not.toBeNull()
+    expect(container.querySelector('[data-testid="today-hero-fallback"]')).toBeNull()
+    expect(hero?.textContent).toContain('AI Systems')
+  })
+})
+
+describe('HomeRoute 今日推薦', () => {
+  it('episodes 載入後顯示今日推薦列，最多 2 張', async () => {
+    const { root, container } = await renderRoute()
+    pendingRoots.push(root)
+
+    const row = container.querySelector('[data-testid="weekly-row"]')
+    expect(row).not.toBeNull()
+    const cards = container.querySelectorAll('[data-testid="weekly-card"]')
+    expect(cards.length).toBe(2)
+    expect(row?.textContent).toContain('今日推薦')
+  })
+
+  it('episodes 為空時整個 weekly 區塊不渲染', async () => {
+    listEpisodes.mockResolvedValueOnce([])
+    const { root, container } = await renderRoute()
+    pendingRoots.push(root)
+
+    expect(container.querySelector('[data-testid="weekly-row"]')).toBeNull()
+  })
+})
