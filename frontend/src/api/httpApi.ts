@@ -243,6 +243,7 @@ const EpisodeContentSchema = z.object({
   cefrLevel: z.string(),
   isFree: z.boolean(),
   audioUrl: z.string().nullable().optional(),
+  coverIcon: z.string().nullable().optional(),
   cues: z.array(CueSchema),
   references: z.array(SourceReferenceSchema).optional(),
 }) satisfies z.ZodType<components['schemas']['Episode']>
@@ -262,6 +263,7 @@ const MockEpisodeSchema = z.object({
   isFeatured: z.boolean(),
   episode: z.number(),
   publishedAt: z.string(),
+  coverIcon: z.string().nullable().optional(),
 }) satisfies z.ZodType<MockEpisode> & z.ZodType<components['schemas']['EpisodeListItem']>
 
 const EpisodeListSchema = z.array(MockEpisodeSchema)

@@ -1157,6 +1157,7 @@ def _merge_outline_and_segments(
         "topic": outline.topic,
         "topic_zh": outline.topic_zh,
         "category": outline.category,
+        "cover_icon": outline.cover_icon,
         "extracted_facts": [f.model_dump() for f in outline.extracted_facts],
         "target_vocab": [v.model_dump() for v in outline.target_vocab],
         "script": [ln.model_dump() for ln in merged_lines],

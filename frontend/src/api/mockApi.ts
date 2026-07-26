@@ -16,6 +16,7 @@ const SEED_EPISODES: readonly MockEpisode[] = [
     isFeatured: true,
     episode: 1,
     publishedAt: '2026-07-01',
+    coverIcon: 'cpu',
   },
   {
     id: 'episode_test_seed_2',
@@ -25,6 +26,7 @@ const SEED_EPISODES: readonly MockEpisode[] = [
     cefrLevel: 'B2',
     episode: 2,
     publishedAt: '2026-07-05',
+    coverIcon: 'bot',
   },
   {
     id: 'episode_test_seed_3',
@@ -34,6 +36,7 @@ const SEED_EPISODES: readonly MockEpisode[] = [
     cefrLevel: 'B1',
     episode: 3,
     publishedAt: '2026-07-08',
+    coverIcon: 'trending-up',
   },
   {
     id: 'episode_test_seed_4',
@@ -44,6 +47,7 @@ const SEED_EPISODES: readonly MockEpisode[] = [
     isFeatured: true,
     episode: 4,
     publishedAt: '2026-07-10',
+    coverIcon: 'briefcase',
   },
   {
     id: 'episode_test_seed_5',
@@ -53,6 +57,7 @@ const SEED_EPISODES: readonly MockEpisode[] = [
     cefrLevel: 'B1',
     episode: 5,
     publishedAt: '2026-07-12',
+    coverIcon: 'camera',
   },
   {
     id: 'episode_test_seed_6',
@@ -62,6 +67,7 @@ const SEED_EPISODES: readonly MockEpisode[] = [
     cefrLevel: 'B2',
     episode: 6,
     publishedAt: '2026-07-15',
+    coverIcon: 'palette',
   },
   {
     id: 'episode_test_seed_7',
@@ -71,6 +77,7 @@ const SEED_EPISODES: readonly MockEpisode[] = [
     cefrLevel: 'B2',
     episode: 7,
     publishedAt: '2026-07-18',
+    coverIcon: 'atom',
   },
   {
     id: 'episode_test_seed_8',
@@ -81,6 +88,7 @@ const SEED_EPISODES: readonly MockEpisode[] = [
     isFeatured: true,
     episode: 8,
     publishedAt: '2026-07-20',
+    coverIcon: 'globe',
   },
   {
     id: 'episode_test_seed_9',
@@ -90,6 +98,7 @@ const SEED_EPISODES: readonly MockEpisode[] = [
     cefrLevel: 'B1',
     episode: 9,
     publishedAt: '2026-07-22',
+    coverIcon: 'code',
   },
   {
     id: 'episode_test_seed_10',
@@ -99,6 +108,7 @@ const SEED_EPISODES: readonly MockEpisode[] = [
     cefrLevel: 'A2',
     episode: 10,
     publishedAt: '2026-07-24',
+    coverIcon: 'headphones',
   },
 ] as const
 

@@ -46,6 +46,8 @@ export function TodayHeroCard({ ep, duration, today }: TodayHeroCardProps) {
         >
           <EpisodeCover
             episodeId={ep.id}
+            topic={ep.topic}
+            coverIcon={ep.coverIcon}
             size="hero"
             className="!w-32 !h-32 sm:!w-40 sm:!h-40 rounded-xl sm:rounded-2xl shadow-sm"
           />

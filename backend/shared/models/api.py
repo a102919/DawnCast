@@ -118,6 +118,7 @@ class Episode(CamelModel):
     title_zh: str | None = None
     topic: str
     cefr_level: str = "B1"
+    cover_icon: str | None = None
     is_free: bool = False
     audio_url: str | None = None
     cues: list[Cue] = Field(default_factory=list)
@@ -153,6 +154,7 @@ class EpisodeListItem(CamelModel):
     title_zh: str = ""
     topic: str
     cefr_level: str = "B1"
+    cover_icon: str | None = None
     is_free: bool = False
     is_featured: bool = False
     episode: int = 0

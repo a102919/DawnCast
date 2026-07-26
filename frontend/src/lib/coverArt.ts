@@ -20,7 +20,29 @@ function mulberry32(seed: number) {
   }
 }
 
-/** 8 組精選三階漸層色票（深→中→淺），避免隨機色相產生醜配色。 */
+export type TopicKey = 'all' | 'tech' | 'business' | 'culture' | 'science'
+
+/** 依主題分類特調的 Apple Music / Podcasts 質感色票庫 (深底, 中景, 高光) */
+const TOPIC_PALETTES: Record<string, readonly (readonly [string, string, string])[]> = {
+  tech: [
+    ['#0A0F1D', '#1D4ED8', '#60A5FA'], // Midnight Cyber Blue
+    ['#091E3A', '#2563EB', '#38BDF8'], // Electric Azure
+  ],
+  business: [
+    ['#141C16', '#15803D', '#FBBF24'], // Emerald Champagne
+    ['#1A1713', '#B45309', '#FDE047'], // Amber Slate
+  ],
+  culture: [
+    ['#260D18', '#BE185D', '#F472B6'], // Deep Magenta Rose
+    ['#23100A', '#C2410C', '#FB923C'], // Warm Terracotta
+  ],
+  science: [
+    ['#0F0D24', '#6D28D9', '#A78BFA'], // Cosmic Violet
+    ['#081C24', '#0D9488', '#2DD4BF'], // Deep Teal Nebula
+  ],
+}
+
+/** 通用 8 組精選三階漸層色票 */
 const PALETTES: readonly (readonly [string, string, string])[] = [
   ['#2B1704', '#C2410C', '#FBBF24'], // Dawn Ember
   ['#3F1D2B', '#C2416B', '#F4A6C1'], // Rose Quartz
@@ -42,9 +64,10 @@ export interface CoverArt {
   readonly blobSize: number
 }
 
-export function getCoverArt(episodeId: string): CoverArt {
+export function getCoverArt(episodeId: string, topic?: string): CoverArt {
   const rand = mulberry32(hashStringToSeed(episodeId))
-  const stops = PALETTES[Math.floor(rand() * PALETTES.length)]
+  const pool = (topic && TOPIC_PALETTES[topic]) || PALETTES
+  const stops = pool[Math.floor(rand() * pool.length)]
   return {
     stops,
     angle: Math.floor(rand() * 360),
@@ -52,15 +75,16 @@ export function getCoverArt(episodeId: string): CoverArt {
     posY: 20 + rand() * 60,
     blobX: 15 + rand() * 70,
     blobY: 15 + rand() * 70,
-    blobSize: 40 + rand() * 30,
+    blobSize: 45 + rand() * 35,
   }
 }
 
-/** conic 掃色 + radial 底色疊層組成的 CSS background 字串。 */
+/** conic 掃色 + radial 底色疊層組成的 Apple 質感動態 Mesh 漸層 background 字串。 */
 export function coverArtBackground(art: CoverArt): string {
   const [c1, c2, c3] = art.stops
   return [
-    `conic-gradient(from ${art.angle}deg at ${art.posX}% ${art.posY}%, transparent 0deg, ${c2}66 90deg, transparent 180deg)`,
+    `radial-gradient(circle at ${100 - art.posX}% ${100 - art.posY}%, ${c3}99 0%, transparent 60%)`,
+    `conic-gradient(from ${art.angle}deg at ${art.posX}% ${art.posY}%, transparent 0deg, ${c2}77 120deg, transparent 240deg)`,
     `radial-gradient(circle at ${art.posX}% ${art.posY}%, ${c3} 0%, ${c2} 45%, ${c1} 100%)`,
   ].join(', ')
 }

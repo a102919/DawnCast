@@ -37,7 +37,8 @@ _LIST_META = """
   is_free,
   is_featured,
   coalesce(episode_no, 0) as episode,
-  coalesce(to_char(published_at, 'YYYY-MM-DD'), '') as published_at
+  coalesce(to_char(published_at, 'YYYY-MM-DD'), '') as published_at,
+  script_json->>'cover_icon' as cover_icon
 """
 
 # 允許的 URL scheme：只放行 http / https，避免 javascript: / data: / file: 等
@@ -58,31 +59,31 @@ def _cues(script_json: Any) -> list[Cue]:
 def _safe_url(url: Any) -> str | None:
     """只放行 http(s) 開頭的 URL，回 strip 後的字串；其餘回 None。
 
-    空字串、非字串、缺 scheme、ValueError 一律視為不安全。回傳 strip 後字串讓
-    caller 直接用，不必再做 None 檢查（type narrowing）。
+    防止 javascript: / data: / file: 等危險 URL 進入前端 <a> 標籤。
     """
-    if not isinstance(url, str) or not url:
+    if not url or not isinstance(url, str):
         return None
+    cleaned = url.strip()
     try:
-        scheme = urlparse(url.strip()).scheme.lower()
+        scheme = urlparse(cleaned).scheme.lower()
     except ValueError:
         return None
     if scheme not in _ALLOWED_URL_SCHEMES:
         return None
-    return url.strip()
+    return cleaned
 
 
-def _references_from_sources(sources: Any) -> list[SourceReference]:
+def _references_from_sources(sources_json: Any) -> list[SourceReference]:
     """把 DB 落庫的 sources jsonb 轉成對外 SourceReference list。
 
     只挑 id / title / url 三欄（不暴露 text / published_at），並以 URL scheme
     白名單過濾。落庫殘留的 schema 漂移（缺欄位、非 dict）一律略過該筆，單筆髒
     不污染整集。
     """
-    if not sources or not isinstance(sources, list):
+    if not sources_json or not isinstance(sources_json, list):
         return []
     out: list[SourceReference] = []
-    for entry in sources:
+    for entry in sources_json:
         if not isinstance(entry, dict):
             continue
         url = _safe_url(entry.get("url"))
@@ -147,12 +148,19 @@ async def _fetch_authorized(cur: Any, slug: str, user_id: str) -> dict[str, Any]
 async def get_episode(slug: str, user_id: str = Depends(get_current_user)) -> ApiResponse[Episode]:
     async with connection() as conn, conn.cursor(row_factory=dict_row) as cur:
         row = await _fetch_authorized(cur, slug, user_id)
+    script_j = row.get("script_json")
+    cover_icon_val = (
+        script_j.get("cover_icon")
+        if isinstance(script_j, dict)
+        else None
+    )
     episode = Episode(
         id=row["slug"],
         title=row["title"],
         title_zh=row["title_zh"],
         topic=row["topic"],
         cefr_level=row["cefr_level"],
+        cover_icon=cover_icon_val,
         is_free=row["is_free"],
         cues=_cues(row["script_json"]),
         references=_references_from_sources(row.get("sources")),

@@ -29,7 +29,7 @@ export function WeeklyCard({ ep, duration, className = '' }: WeeklyCardProps) {
       <article className="h-full rounded-2xl bg-bg-elevated border border-border p-2.5 sm:p-3 hover:border-accent/40 transition-colors duration-fast flex flex-col sm:flex-row sm:items-center gap-2.5">
         {/* 封面：mobile 頂部 aspect-square，desktop 左側 96px/104px 固定 */}
         <div className="relative shrink-0 w-full sm:w-24 sm:h-24 aspect-square sm:aspect-auto">
-          <EpisodeCover episodeId={ep.id} size="hero" className="!w-full !h-full rounded-xl" />
+          <EpisodeCover episodeId={ep.id} topic={ep.topic} coverIcon={ep.coverIcon} size="hero" className="!w-full !h-full rounded-xl" />
         </div>
 
         {/* 內容區：mobile 位於封面下方，desktop 位於右側 */}

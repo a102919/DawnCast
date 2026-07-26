@@ -57,7 +57,7 @@ function CardRow({ ep, duration }: { readonly ep: MockEpisode; readonly duration
         </button>
         <div className="flex gap-3">
           <div className="relative">
-            <EpisodeCover episodeId={ep.id} size="md" />
+            <EpisodeCover episodeId={ep.id} topic={ep.topic} coverIcon={ep.coverIcon} size="md" />
             <div className="absolute -bottom-1 -right-1 w-6 h-6 rounded-full material-thin ring-1 ring-border flex items-center justify-center text-accent group-hover:bg-accent group-hover:text-white group-hover:ring-accent transition-colors duration-fast">
               <Play size={11} fill="currentColor" />
             </div>

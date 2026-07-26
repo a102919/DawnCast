@@ -22,6 +22,7 @@ export type MockEpisode = {
   readonly isFeatured?: boolean
   readonly episode: number
   readonly publishedAt: string
+  readonly coverIcon?: string | null
 }
 
 export const CEFR_COLOR: Record<CefrLevel, string> = {

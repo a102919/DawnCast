@@ -982,6 +982,8 @@ export interface components {
              * @default B1
              */
             cefrLevel: string;
+            /** Covericon */
+            coverIcon?: string | null;
             /**
              * Isfree
              * @default false
@@ -1018,6 +1020,8 @@ export interface components {
              * @default B1
              */
             cefrLevel: string;
+            /** Covericon */
+            coverIcon?: string | null;
             /**
              * Isfree
              * @default false

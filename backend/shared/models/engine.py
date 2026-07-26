@@ -101,6 +101,10 @@ class ScriptOutline(BaseModel):
     topic: str = Field(min_length=1)
     topic_zh: str = Field(min_length=1)
     category: EpisodeCategory
+    cover_icon: str | None = Field(
+        default=None,
+        description="LLM 自動推薦的專屬視覺圖示名稱（如 cpu, bot, trending-up, rocket, globe 等）",
+    )
     extracted_facts: list[SourcedFact] = Field(min_length=1)
     target_vocab: list[TargetVocab] = Field(min_length=1)
     # 上限 8：對齊 _LENGTH_TIERS["long"].chapters=4 留成長空間，又擋下 LLM 給數十段
@@ -126,6 +130,10 @@ class ScriptJSON(BaseModel):
     topic: str = Field(min_length=1)
     topic_zh: str = Field(min_length=1)  # 中文標題，非逐字翻譯——LLM 直接生成自然標題
     category: EpisodeCategory
+    cover_icon: str | None = Field(
+        default=None,
+        description="LLM 自動推薦的專屬視覺圖示名稱（如 cpu, bot, trending-up, rocket, globe 等）",
+    )
     extracted_facts: list[SourcedFact] = Field(min_length=1)
     target_vocab: list[TargetVocab] = Field(min_length=1)
     script: list[ScriptLine] = Field(min_length=8)  # 太短直接判失敗
