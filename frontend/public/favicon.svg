@@ -1,26 +1,23 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" fill="none">
-  <!-- 1. 朝日金太陽與光芒 (#F59E0B) -->
-  <g stroke="#F59E0B" stroke-width="18" stroke-linecap="round">
-    <line x1="256" y1="65" x2="256" y2="92"/>
-    <line x1="175" y1="98" x2="194" y2="117"/>
-    <line x1="337" y1="98" x2="318" y2="117"/>
-    <line x1="125" y1="175" x2="152" y2="183"/>
-    <line x1="387" y1="175" x2="360" y2="183"/>
+  <!-- 白底圓角 iOS 卡片底座 (White Squircle Card Background) -->
+  <rect width="512" height="512" rx="116" fill="#FFFFFF"/>
+  <rect width="504" height="504" x="4" y="4" rx="112" stroke="#E4E4E7" stroke-width="6"/>
+
+  <!-- 1. 太陽與 3 道放射光芒 (位于右上角 Sunrise Sun & 3 Rays) -->
+  <g stroke="#F59E0B" stroke-width="20" stroke-linecap="round">
+    <line x1="325" y1="90" x2="325" y2="118"/>
+    <line x1="400" y1="120" x2="380" y2="145"/>
+    <line x1="445" y1="195" x2="415" y2="208"/>
   </g>
-  
-  <circle cx="256" cy="190" r="76" fill="#F59E0B"/>
+  <circle cx="325" cy="215" r="70" fill="#F59E0B"/>
 
-  <!-- 2. 純白英文對話氣泡 (#FFFFFF) — 在深色與淺色背景下皆極致清晰醒目 -->
-  <path d="M 160 210 H 352 C 385 210 412 237 412 270 V 350 C 412 383 385 410 352 410 H 230 L 160 455 V 410 H 160 C 127 410 100 383 100 350 V 270 C 100 237 127 210 160 210 Z" fill="#FFFFFF"/>
+  <!-- 2. 極簡曜石黑對話單字氣泡 (#1A1B20) -->
+  <path d="M 140 180 H 330 C 374 180 410 216 410 260 V 340 C 410 384 374 420 330 420 H 220 L 140 460 V 420 H 140 C 96 420 60 384 60 340 V 260 C 60 216 96 180 140 180 Z" fill="#1A1B20"/>
 
-  <!-- 3. 對話氣泡內的高質感曜石黑聽力波形 (#18181B) -->
-  <g stroke="#18181B" stroke-width="16" stroke-linecap="round">
-    <line x1="175" y1="310" x2="175" y2="330"/>
-    <line x1="205" y1="290" x2="205" y2="350"/>
-    <line x1="235" y1="270" x2="235" y2="370"/>
-    <line x1="265" y1="280" x2="265" y2="360"/>
-    <line x1="295" y1="300" x2="295" y2="340"/>
-    <line x1="325" y1="290" x2="325" y2="350"/>
-    <line x1="355" y1="310" x2="355" y2="330"/>
+  <!-- 3. 對話氣泡內部 3 道金黃弧形聽力波形 (Golden Audio Arcs) -->
+  <g stroke="#F59E0B" stroke-width="22" stroke-linecap="round" fill="none">
+    <path d="M 160 270 A 35 35 0 0 1 160 330"/>
+    <path d="M 195 250 A 60 60 0 0 1 195 350"/>
+    <path d="M 230 230 A 85 85 0 0 1 230 370"/>
   </g>
 </svg>
