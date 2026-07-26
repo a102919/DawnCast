@@ -214,9 +214,13 @@
   background-color: var(--color-lyrics-scrim);
 }
 
-/* 行動版 bottom sheet 偏移：貼齊 BottomNav 上方，桌機版回歸底部 */
+/* 行動版 bottom sheet 偏移：貼齊 BottomNav 上方，桌機版回歸底部。
+   BottomNav 實際高度是 --bottom-nav-height 再加 safe-area-inset-bottom
+   （見 BottomNav.tsx 底部的 env(safe-area-inset-bottom) 佔位 div），這裡漏加
+   safe-area 會讓本 utility 定位的元素被 iPhone home indicator 那圈半透明底色
+   蓋住下半部（MiniPlayer 播放鍵被 tab bar 擋住的成因）。 */
 @utility bottom-nav-sheet {
-  bottom: var(--bottom-nav-height);
+  bottom: calc(var(--bottom-nav-height) + env(safe-area-inset-bottom, 0px));
   @media (width >= theme(--breakpoint-lg)) {
     bottom: 0;
   }

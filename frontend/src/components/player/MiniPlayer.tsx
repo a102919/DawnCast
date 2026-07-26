@@ -22,7 +22,9 @@ export function MiniPlayer() {
           animate={{ opacity: 1, y: 0 }}
           exit={{ opacity: 0, y: 12 }}
           transition={gentle}
-          className="lg:hidden fixed inset-x-0 bottom-nav-sheet z-40 material-thick border-t border-border"
+          // z-45：語意上浮在 BottomNav（z-40）之上，不能靠幾何剛好不重疊撐住
+          // （見 bottom-nav-sheet 註解的 safe-area 漏算事故）；小於 Sheet 內容的 z-50。
+          className="lg:hidden fixed inset-x-0 bottom-nav-sheet z-[45] material-thick border-t border-border"
         >
           <div className="h-0.5 bg-border">
             <div className="h-full bg-accent" style={{ width: `${progress}%` }} />
