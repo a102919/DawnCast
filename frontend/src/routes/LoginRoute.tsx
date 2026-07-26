@@ -51,10 +51,10 @@ export function LoginRoute() {
 
   return (
     <div className="relative flex h-dvh flex-col overflow-hidden bg-bg-canvas">
-      {/* 晨曦光暈：呼應 DawnCast 品牌色（favicon 紫→藍漸層），營造破曉氛圍深度 */}
+      {/* 晨曦光暈：呼應 DawnCast 品牌色（朝日暖金 #f59e0b），營造破曉氛圍深度 */}
       <div
         aria-hidden
-        className="pointer-events-none absolute -top-32 left-1/2 h-[28rem] w-[28rem] -translate-x-1/2 rounded-full bg-gradient-to-br from-[#7e14ff]/25 via-[#47bfff]/15 to-transparent blur-3xl dark:from-[#7e14ff]/35 dark:via-[#47bfff]/20"
+        className="pointer-events-none absolute -top-32 left-1/2 h-[28rem] w-[28rem] -translate-x-1/2 rounded-full bg-gradient-to-br from-[#f59e0b]/20 via-[#f97316]/15 to-transparent blur-3xl dark:from-[#f59e0b]/30 dark:via-[#f97316]/20"
       />
 
       <div className="relative flex items-center px-4 pt-[max(1rem,env(safe-area-inset-top))]">
@@ -70,11 +70,11 @@ export function LoginRoute() {
       <div className="relative flex min-h-0 flex-1 flex-col items-center justify-center gap-4 px-6 text-center">
         <motion.img
           src="/favicon.svg"
-          alt=""
+          alt="DawnCast"
           initial={{ opacity: 0, scale: 0.9, y: 8 }}
           animate={{ opacity: 1, scale: 1, y: 0 }}
           transition={gentle}
-          className="h-20 w-20 drop-shadow-[0_8px_24px_rgba(126,20,255,0.35)]"
+          className="h-20 w-20 drop-shadow-[0_8px_24px_rgba(245,158,11,0.3)]"
         />
         <motion.div
           initial={{ opacity: 0, y: 8 }}

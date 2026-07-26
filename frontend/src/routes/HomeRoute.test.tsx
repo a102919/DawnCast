@@ -141,7 +141,7 @@ describe('HomeRoute Hero 區塊', () => {
     const fallback = container.querySelector('[data-testid="today-hero-fallback"]')
     expect(fallback).not.toBeNull()
     expect(container.querySelector('[data-testid="today-hero"]')).toBeNull()
-    expect(fallback?.textContent).toContain('今日尚未送達')
+    expect(fallback?.textContent).toContain('精選試聽')
   })
 
   it('有 delivery 時顯示 hero 元件並標題對應', async () => {

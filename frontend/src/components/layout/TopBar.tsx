@@ -26,13 +26,15 @@ export function TopBar() {
               <ChevronLeft size={20} />
               <span className="text-sm font-medium">返回</span>
             </Link>
-            <Link to="/" className="hidden lg:block text-lg font-semibold text-text-primary tracking-tight">
-              DawnCast
+            <Link to="/" className="hidden lg:flex items-center gap-2 text-lg font-semibold text-text-primary tracking-tight">
+              <img src="/favicon.svg" alt="DawnCast" className="w-6 h-6 rounded-md shadow-sm" />
+              <span>DawnCast</span>
             </Link>
           </>
         ) : (
-          <Link to="/" className="text-lg font-semibold text-text-primary tracking-tight">
-            DawnCast
+          <Link to="/" className="flex items-center gap-2 text-lg font-semibold text-text-primary tracking-tight">
+            <img src="/favicon.svg" alt="DawnCast" className="w-6 h-6 rounded-md shadow-sm" />
+            <span>DawnCast</span>
           </Link>
         )}
 

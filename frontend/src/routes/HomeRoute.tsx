@@ -186,7 +186,7 @@ export function HomeRoute() {
             )}
             {todayPicks.length > 0 && (
               <div
-                className="grid grid-cols-2 gap-3 w-full sm:flex sm:flex-col sm:w-[38%] sm:shrink-0"
+                className="grid grid-cols-2 gap-3 w-full sm:flex sm:flex-col sm:w-[40%] sm:shrink-0 justify-between"
                 data-testid="weekly-scroll"
               >
                 {todayPicks.map(ep => (

@@ -40,6 +40,10 @@ export function AuthProvider({ children }: { readonly children: ReactNode }) {
   const signOut = useCallback(async () => {
     const { error } = await supabase.auth.signOut()
     if (error) throw error
+    if ('caches' in window) {
+      const keys = await caches.keys()
+      await Promise.all(keys.map((key) => caches.delete(key)))
+    }
   }, [])
 
   const value = useMemo<AuthContextValue>(

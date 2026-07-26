@@ -26,25 +26,30 @@ export function WeeklyCard({ ep, duration, className = '' }: WeeklyCardProps) {
       data-testid="weekly-card"
       className={`block active:scale-[0.98] transition-transform duration-fast focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent rounded-2xl ${className}`}
     >
-      <article className="h-full rounded-2xl bg-bg-elevated border border-border p-2 hover:border-accent/40 transition-[border-color] duration-fast">
-        <div className="relative">
-          {/* size="hero" 預設 w-full aspect-square，這裡只要把 rounded-2xl 改成 lg */}
-          <EpisodeCover episodeId={ep.id} size="hero" className="rounded-lg" />
+      <article className="h-full rounded-2xl bg-bg-elevated border border-border p-2.5 sm:p-3 hover:border-accent/40 transition-colors duration-fast flex flex-col sm:flex-row sm:items-center gap-2.5">
+        {/* 封面：mobile 頂部 aspect-square，desktop 左側 96px/104px 固定 */}
+        <div className="relative shrink-0 w-full sm:w-24 sm:h-24 aspect-square sm:aspect-auto">
+          <EpisodeCover episodeId={ep.id} size="hero" className="!w-full !h-full rounded-xl" />
         </div>
-        <div className="mt-2 flex items-center justify-between text-[10px] text-text-tertiary">
-          <span className={`font-semibold px-1.5 py-0.5 rounded ${CEFR_COLOR[ep.cefrLevel]}`}>
-            {ep.cefrLevel}
-          </span>
-          <span className="flex items-center gap-0.5">
-            <Clock size={10} />
+
+        {/* 內容區：mobile 位於封面下方，desktop 位於右側 */}
+        <div className="flex-1 min-w-0 flex flex-col justify-between h-full py-0.5">
+          <div>
+            <div className="flex items-center gap-1.5 text-[10px] text-text-tertiary mb-1">
+              <span className={`font-semibold px-1.5 py-0.5 rounded ${CEFR_COLOR[ep.cefrLevel]}`}>
+                {ep.cefrLevel}
+              </span>
+              <span>· {TOPIC_LABELS[ep.topic]}</span>
+            </div>
+            <div className="text-xs sm:text-sm font-semibold text-text-primary line-clamp-2 leading-snug">
+              {ep.title}
+            </div>
+          </div>
+
+          <div className="mt-2 flex items-center gap-1 text-[11px] text-text-tertiary">
+            <Clock size={11} />
             <span>{duration ? formatTime(duration) : '—'}</span>
-          </span>
-        </div>
-        <div className="mt-1.5 text-[13px] font-medium text-text-primary line-clamp-2 leading-snug">
-          {ep.title}
-        </div>
-        <div className="text-[11px] text-text-secondary truncate mt-0.5">
-          {TOPIC_LABELS[ep.topic]}
+          </div>
         </div>
       </article>
     </Link>

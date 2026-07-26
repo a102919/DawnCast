@@ -85,7 +85,7 @@ export function VocabDrawer({ isOpen, onClose }: VocabDrawerProps) {
       </div>
 
       {/* 列表 */}
-      <div className="flex-1 min-h-0 overflow-y-auto px-3 pb-4">
+      <div className="flex-1 min-h-0 overflow-y-auto px-3 pb-[calc(1rem+env(safe-area-inset-bottom,0px))]">
         {filtered.length === 0 ? (
           items.length === 0 ? (
             <EmptyState icon={BookOpen} size="compact" title="單字本是空的" description="點擊字幕中的單字即可收錄" />

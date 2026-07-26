@@ -2,7 +2,7 @@ import { BrowserRouter, Routes, Route, Navigate, useLocation } from 'react-route
 import { AnimatePresence, motion } from 'framer-motion'
 import { Toaster } from 'sonner'
 import { useEffect } from 'react'
-import { AuthProvider, ActivityProvider, PlayerProvider, VocabProvider, SettingsProvider, FavoritesProvider, DailyOrderProvider, useAuth } from './state'
+import { AuthProvider, ActivityProvider, PlayerProvider, VocabProvider, SettingsProvider, FavoritesProvider, DailyOrderProvider, useAuth, usePlayer } from './state'
 import { TopBar, BottomNav } from './components/layout'
 import { GlobalAudioHost, MiniPlayer } from './components/player'
 import { HomeRoute, PlayerRoute, VocabRoute, FavoritesRoute, SettingsRoute, ProgressRoute, FlashcardRoute, DailyRoute, LoginRoute, AdminRoute } from './routes'
@@ -56,10 +56,34 @@ function AnimatedRoutes() {
   )
 }
 
+function AuthenticatedContent() {
+  const { pathname } = useLocation()
+  const { currentEpisode } = usePlayer()
+  const isImmersive = pathname === '/login'
+  const isPlayer = pathname.startsWith('/player')
+  const hasMiniPlayer = currentEpisode !== null && !isPlayer && !isImmersive
+
+  return (
+    <div className={isImmersive ? 'bg-bg-primary text-text-primary font-sans' : 'min-h-screen bg-bg-primary text-text-primary font-sans'}>
+      <TopBar />
+      <main className={
+        isImmersive
+          ? ''
+          : hasMiniPlayer
+            ? 'pb-[calc(7.125rem+env(safe-area-inset-bottom))] lg:pb-0'
+            : 'pb-[calc(3.5rem+env(safe-area-inset-bottom))] lg:pb-0'
+      }>
+        <AnimatedRoutes />
+      </main>
+      <GlobalAudioHost />
+      <MiniPlayer />
+      <BottomNav />
+    </div>
+  )
+}
+
 // 登入後才掛載：包住所有 data provider，避免未登入時 mount 觸發 401。
 function AuthenticatedShell() {
-  const { pathname } = useLocation()
-  const isImmersive = pathname === '/login'
   return (
     <SettingsProvider>
       <ActivityProvider>
@@ -67,15 +91,7 @@ function AuthenticatedShell() {
           <VocabProvider>
             <FavoritesProvider>
               <DailyOrderProvider>
-                <div className={isImmersive ? 'bg-bg-primary text-text-primary font-sans' : 'min-h-screen bg-bg-primary text-text-primary font-sans'}>
-                  <TopBar />
-                  <main className={isImmersive ? '' : 'pb-[calc(3.5rem+env(safe-area-inset-bottom))] lg:pb-0'}>
-                    <AnimatedRoutes />
-                  </main>
-                  <GlobalAudioHost />
-                  <MiniPlayer />
-                  <BottomNav />
-                </div>
+                <AuthenticatedContent />
               </DailyOrderProvider>
             </FavoritesProvider>
           </VocabProvider>
