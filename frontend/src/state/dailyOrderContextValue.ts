@@ -8,6 +8,8 @@ export type DailyOrderContextValue = {
   setOrder(date: string, input: DailyOrderInput): Promise<DailyOrder>
   deleteOrder(date: string): Promise<void>
   markPlayed(date: string): Promise<DailyOrder | null>
+  /** 重新拉 [HISTORY_DAYS, FORWARD_DAYS] 區間的訂單；polling 命中時呼叫 */
+  refresh: () => Promise<void>
 }
 
 export const DailyOrderContext = createContext<DailyOrderContextValue | null>(null)

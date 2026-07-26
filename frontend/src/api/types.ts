@@ -141,6 +141,34 @@ export type AdminEpsGenerateResponse = {
   readonly status: 'queued'
 }
 
+/** 單一 LangGraph node 的耗時；鏡像後端 shared/models/api.py StageMetric。 */
+export type StageMetric = {
+  readonly node: string
+  readonly durationMs: number
+  readonly status: string
+  readonly attempt: number
+}
+
+/** GET /admin/token-usage 明細列，鏡像後端 AdminTokenUsageItem。 */
+export type AdminTokenUsageItem = {
+  readonly slug: string
+  readonly title: string
+  readonly inputTokens: number
+  readonly outputTokens: number
+  readonly createdAt: string
+  readonly generationStartedAt?: string | null
+  readonly generationFinishedAt?: string | null
+  readonly stages: readonly StageMetric[]
+}
+
+/** GET /admin/token-usage 回應：全站加總 + 最近 50 筆明細。 */
+export type AdminTokenUsageResponse = {
+  readonly totalInputTokens: number
+  readonly totalOutputTokens: number
+  readonly episodeCount: number
+  readonly items: readonly AdminTokenUsageItem[]
+}
+
 export interface Api {
   lookupDict(word: string): Promise<DictEntry | null>
   addVocab(item: Omit<VocabItem, 'id' | 'createdAt'>): Promise<VocabItem>
@@ -181,4 +209,6 @@ export interface Api {
   // Admin 主動觸發單集公開 podcast 生成（X-Admin-Token 認證，非 Supabase JWT）。
   // httpApi 內部會從 localStorage 讀 admin token；mock 模式 noop 回丟擲。
   triggerAdminGenerate(input: AdminEpsGenerateInput): Promise<AdminEpsGenerateResponse>
+  // Admin token 用量與分階段耗時總覽（同一組 X-Admin-Token 認證）。
+  getAdminTokenUsage(): Promise<AdminTokenUsageResponse>
 }

@@ -405,6 +405,15 @@ class _GenRepoSpy:
         self.deliveries.append((user_id, episode_id, deliver_date))
         return True
 
+    async def start_pipeline_run(self, idempotency_key: str, *, enqueued_at: Any) -> str:
+        return "run-spy-id"
+
+    async def attach_pipeline_run_episode(self, run_id: str, episode_id: str) -> None:
+        return None
+
+    async def finalize_pipeline_run(self, run_id: str, **kw: Any) -> None:
+        return None
+
 
 def _patch_generate_job(
     monkeypatch: pytest.MonkeyPatch,
@@ -755,7 +764,7 @@ async def test_worker_generate_timeout_no_delete(monkeypatch: pytest.MonkeyPatch
     q = FakeWorkerQueue()
     monkeypatch.setattr(worker, "queue", q)
 
-    async def slow(body: dict[str, Any]) -> None:
+    async def slow(body: dict[str, Any], **_kw: Any) -> None:
         await asyncio.sleep(0.05)
 
     async def handler(body: dict[str, Any]) -> None:
@@ -782,7 +791,7 @@ async def test_worker_loop_routes_control_then_generate(
     async def fake_control(body: dict[str, Any]) -> None:
         handled.append(f"control:{body.get('task')}")
 
-    async def fake_generate(body: dict[str, Any]) -> None:
+    async def fake_generate(body: dict[str, Any], **_kw: Any) -> None:
         handled.append(f"generate:{body.get('big_topic')}")
 
     monkeypatch.setattr(worker, "_handle_control", fake_control)

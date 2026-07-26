@@ -21,6 +21,7 @@ import json
 import logging
 import re
 import shutil
+import time
 import uuid
 from typing import Any, Literal, TypedDict, cast
 
@@ -40,6 +41,7 @@ from engine.pipeline.langgraph_pod.prompt import (
 )
 from shared.config import Settings
 from shared.errors import GenerationError, RateLimitError, SourceFetchError
+from shared.idempotency import compute_idempotency_key
 from shared.models import (
     ClaimCheck,
     ClaimVerification,
@@ -55,6 +57,7 @@ from shared.models import (
     VerifiedClaim,
 )
 
+from .metrics import MetricsCollector
 from .state import PodState
 
 logger = logging.getLogger(__name__)
@@ -229,6 +232,11 @@ def _ctx(config: RunnableConfig) -> dict[str, Any]:
             "請用 run_pod(body, settings) 進入點，不要直接 graph.invoke({})."
         )
     return configurable
+
+
+def _collector(config: RunnableConfig) -> MetricsCollector | None:
+    """metrics collector 未接（測試直接 graph.ainvoke 沒帶 configurable）時回 None。"""
+    return cast(MetricsCollector | None, _ctx(config).get("metrics_collector"))
 
 
 def _slugify(canonical: str) -> str:
@@ -687,7 +695,7 @@ def _to_lc_messages(msgs: list[dict[str, str]]) -> list[Any]:
 
 
 def _usage_from_ai_msg(ai_msg: Any) -> dict[str, object]:
-    """從 chat.py 塞進 AIMessage.usage_metadata 的量抽出來；FakeChatModel 沒填時回 0。"""
+    """從 chat.py 塞進 AIMessage.usage_metadata 的量抽出來；缺欄位時回 0。"""
     meta = getattr(ai_msg, "usage_metadata", None) or {}
     return {
         "input_tokens": int(meta.get("input_tokens", 0)),
@@ -717,6 +725,7 @@ async def decompose_research_node(
 ) -> dict[str, Any]:
     """用既有 MiniMax chat 拆研究問題；任何失敗都退回原題單問。"""
     ctx = _ctx(config)
+    collector = _collector(config)
     fallback = _fallback_research_questions(state)
     chat = ctx.get("chat")
     if (
@@ -724,6 +733,8 @@ async def decompose_research_node(
         or ctx.get("source_provider_factory") is None
         or state.get("topic_type") == "skill"
     ):
+        if collector is not None:
+            collector.set_research_summary(questions_count=len(fallback))
         return {"research_questions": fallback}
 
     user = (
@@ -754,6 +765,8 @@ async def decompose_research_node(
             state.get("big_topic"),
             exc,
         )
+        if collector is not None:
+            collector.set_research_summary(questions_count=len(fallback))
         result: dict[str, Any] = {
             "research_questions": fallback,
             "errors": [f"decompose_research 失敗：{type(exc).__name__}"],
@@ -762,6 +775,11 @@ async def decompose_research_node(
             result["token_usage"] = [{"node": "research_decompose", **usage}]
         return result
 
+    if collector is not None:
+        collector.set_research_summary(
+            questions_count=len(questions),
+            subtopics=[q.question for q in questions][:20],
+        )
     return {
         "research_questions": questions,
         "token_usage": [{"node": "research_decompose", **(usage or {})}],
@@ -787,8 +805,13 @@ async def gather_evidence_node(
 ) -> dict[str, Any]:
     """逐題抓證據；單一 provider/fetch/close 失敗只記錄，不阻斷其他來源。"""
     ctx = _ctx(config)
+    collector = _collector(config)
     factory = ctx.get("source_provider_factory")
     if factory is None or state.get("topic_type") == "skill":
+        if collector is not None:
+            collector.set_research_summary(
+                source_count=0, evidence_card_count=0, grounded=False, provider_counts={}
+            )
         return {"sources": [], "evidence_cards": [], "grounded": False}
 
     questions = (state.get("research_questions") or _fallback_research_questions(state))[:6]
@@ -859,6 +882,17 @@ async def gather_evidence_node(
                         f"gather_evidence {provider_name} 關閉失敗：{type(exc).__name__}"
                     )
 
+    if collector is not None:
+        provider_counts: dict[str, int] = {}
+        for card in cards:
+            provider_counts[card.provider] = provider_counts.get(card.provider, 0) + 1
+        collector.set_research_summary(
+            source_count=len(sources),
+            evidence_card_count=len(cards),
+            grounded=bool(sources),
+            provider_counts=provider_counts,
+        )
+
     result: dict[str, Any] = {
         "sources": sources,
         "evidence_cards": cards,
@@ -896,14 +930,24 @@ async def cross_verify_node(
 ) -> dict[str, Any]:
     """用 MiniMax 交叉比對證據；失敗時絕不把原始卡片假裝成已驗證。"""
     cards = list(state.get("evidence_cards") or [])
+    collector = _collector(config)
     if not cards:
+        if collector is not None:
+            collector.set_research_summary(
+                verified_claim_count=0, usable_claim_count=0, conflict_count=0
+            )
         return {"verified_claims": [], "source_conflicts": []}
 
     ctx = _ctx(config)
     chat = ctx.get("chat")
     if chat is None:
+        unverified = _unverified_claims(cards)
+        if collector is not None:
+            collector.set_research_summary(
+                verified_claim_count=len(unverified), usable_claim_count=0, conflict_count=0
+            )
         return {
-            "verified_claims": _unverified_claims(cards),
+            "verified_claims": unverified,
             "source_conflicts": [],
         }
 
@@ -964,8 +1008,13 @@ async def cross_verify_node(
             state.get("big_topic"),
             exc,
         )
+        unverified = _unverified_claims(cards)
+        if collector is not None:
+            collector.set_research_summary(
+                verified_claim_count=len(unverified), usable_claim_count=0, conflict_count=0
+            )
         result: dict[str, Any] = {
-            "verified_claims": _unverified_claims(cards),
+            "verified_claims": unverified,
             "source_conflicts": [],
             "errors": [f"cross_verify 失敗：{type(exc).__name__}"],
         }
@@ -973,6 +1022,12 @@ async def cross_verify_node(
             result["token_usage"] = [{"node": "research_cross_verify", **usage}]
         return result
 
+    if collector is not None:
+        collector.set_research_summary(
+            verified_claim_count=len(verified_claims),
+            usable_claim_count=sum(1 for c in verified_claims if c.usable),
+            conflict_count=len(source_conflicts),
+        )
     return {
         "verified_claims": verified_claims,
         "source_conflicts": source_conflicts,
@@ -1120,6 +1175,7 @@ async def _generate_outline(
     cefr: str,
     length_tier: str,
     feedback: list[str] | None = None,
+    collector: MetricsCollector | None = None,
 ) -> tuple[ScriptOutline, dict[str, Any], dict[str, int]]:
     """打 LLM 產大綱。回傳 (outline, usage_metadata_by_call, total_usage)。
 
@@ -1145,6 +1201,7 @@ async def _generate_outline(
     last_exc: GenerationError | None = None
     total_usage = {"input_tokens": 0, "output_tokens": 0}
     for attempt in range(_MAX_OUTLINE_RETRIES + 1):
+        call_start = time.monotonic()
         try:
             ai_msg = await chat.ainvoke(_to_lc_messages(msgs))
         except RateLimitError:
@@ -1154,6 +1211,15 @@ async def _generate_outline(
         usage = _usage_from_ai_msg(ai_msg)
         total_usage["input_tokens"] += cast(int, usage.get("input_tokens", 0))
         total_usage["output_tokens"] += cast(int, usage.get("output_tokens", 0))
+        if collector is not None:
+            collector.record_llm_call(
+                node=usage_node,
+                call="outline",
+                attempt=attempt + 1,
+                duration_ms=int((time.monotonic() - call_start) * 1000),
+                input_tokens=cast(int, usage.get("input_tokens", 0)),
+                output_tokens=cast(int, usage.get("output_tokens", 0)),
+            )
 
         try:
             return _parse_outline(ai_msg.content), usage, total_usage
@@ -1207,6 +1273,7 @@ async def _generate_segment(  # type: ignore[return]
     previous_tail_lines: list[ScriptLine],
     extracted_facts: list[SourcedFact] | None = None,
     feedback: list[str] | None = None,
+    collector: MetricsCollector | None = None,
 ) -> tuple[list[ScriptLine], dict[str, int]]:
     """打 LLM 寫單段對話。回傳 (script_lines, total_usage_for_this_segment)。
 
@@ -1241,6 +1308,7 @@ async def _generate_segment(  # type: ignore[return]
     total_usage = {"input_tokens": 0, "output_tokens": 0}
     last_exc: GenerationError | None = None
     for attempt in range(_MAX_SEGMENT_RETRIES + 1):
+        call_start = time.monotonic()
         try:
             ai_msg = await chat.ainvoke(_to_lc_messages(msgs))
         except RateLimitError:
@@ -1256,6 +1324,16 @@ async def _generate_segment(  # type: ignore[return]
         usage = _usage_from_ai_msg(ai_msg)
         total_usage["input_tokens"] += cast(int, usage.get("input_tokens", 0))
         total_usage["output_tokens"] += cast(int, usage.get("output_tokens", 0))
+        if collector is not None:
+            collector.record_llm_call(
+                node=usage_node,
+                call="segment",
+                attempt=attempt + 1,
+                duration_ms=int((time.monotonic() - call_start) * 1000),
+                input_tokens=cast(int, usage.get("input_tokens", 0)),
+                output_tokens=cast(int, usage.get("output_tokens", 0)),
+                segment_index=segment_index,
+            )
 
         try:
             lines = _parse_segment_script(ai_msg.content)
@@ -1353,7 +1431,13 @@ async def _generate_segment(  # type: ignore[return]
 
 
 async def _invoke_writer(
-    chat: Any, state: PodState, settings: Settings, *, engine_label: str, usage_node: str
+    chat: Any,
+    state: PodState,
+    settings: Settings,
+    *,
+    engine_label: str,
+    usage_node: str,
+    collector: MetricsCollector | None = None,
 ) -> dict[str, Any]:
     """primary / failover 共用的寫稿呼叫：outline 1 次 + 分段 N 次。
 
@@ -1393,6 +1477,7 @@ async def _invoke_writer(
             cefr=cefr,
             length_tier=length_tier,
             feedback=base_feedback or None,
+            collector=collector,
         )
     except RateLimitError:
         return {"rate_limited": True, "engine_used": engine_label}
@@ -1461,6 +1546,7 @@ async def _invoke_writer(
                     previous_tail_lines=prev_tail,
                     extracted_facts=outline.extracted_facts,
                     feedback=base_feedback or None,
+                    collector=collector,
                 )
                 total_usage["input_tokens"] += seg_usage["input_tokens"]
                 total_usage["output_tokens"] += seg_usage["output_tokens"]
@@ -1580,6 +1666,7 @@ async def write_script_node(state: PodState, config: RunnableConfig) -> dict[str
         ctx["settings"],
         engine_label="primary",
         usage_node="write_script",
+        collector=_collector(config),
     )
 
 
@@ -1602,6 +1689,7 @@ async def failover_write_script_node(state: PodState, config: RunnableConfig) ->
         ctx["settings"],
         engine_label="failover",
         usage_node="write_script_failover",
+        collector=_collector(config),
     )
     if out.get("rate_limited"):
         out["errors"] = ["failover engine also rate-limited"]
@@ -1626,7 +1714,13 @@ async def verify_script_claims_node(
     """核對成稿 extracted_facts；研究服務失敗時 fail-open，不阻斷既有出稿。"""
     script = state.get("script")
     sources = list(state.get("sources") or [])
+    collector = _collector(config)
     if script is None or not script.extracted_facts or not sources:
+        if collector is not None:
+            collector.set_research_summary(
+                claim_check_total=0, claim_check_supported=0,
+                claim_check_unsupported=0, claim_check_unsupported_ratio=0.0,
+            )
         return {"claim_verification": _empty_claim_verification()}
 
     ctx = _ctx(config)
@@ -1647,6 +1741,7 @@ async def verify_script_claims_node(
         ensure_ascii=False,
     )
     usage: dict[str, object] | None = None
+    call_start = time.monotonic()
     try:
         msg = await chat.ainvoke(
             [
@@ -1655,6 +1750,14 @@ async def verify_script_claims_node(
             ]
         )
         usage = _usage_from_ai_msg(msg)
+        if collector is not None:
+            collector.record_llm_call(
+                node="research_claim_verify",
+                call="verify",
+                duration_ms=int((time.monotonic() - call_start) * 1000),
+                input_tokens=cast(int, usage.get("input_tokens") or 0),
+                output_tokens=cast(int, usage.get("output_tokens") or 0),
+            )
         raw = msg.content
         if not isinstance(raw, str):
             raise ValueError("成稿主張核對回應不是文字")
@@ -1724,6 +1827,15 @@ async def verify_script_claims_node(
         for check in normalized.checks
         if check.status != "supported"
     ]
+    if collector is not None:
+        supported = sum(1 for c in normalized.checks if c.status == "supported")
+        unsupported = sum(1 for c in normalized.checks if c.status == "unsupported")
+        collector.set_research_summary(
+            claim_check_total=len(normalized.checks),
+            claim_check_supported=supported,
+            claim_check_unsupported=unsupported,
+            claim_check_unsupported_ratio=normalized.unsupported_ratio,
+        )
     result = {
         "claim_verification": normalized,
         "token_usage": [{"node": "research_claim_verify", **(usage or {})}],
@@ -1792,6 +1904,7 @@ async def quality_judge_node(state: PodState, config: RunnableConfig) -> dict[st
     失敗路徑：failover 過後，primary chat 沒 judge 設定；用 chat_failover 當 judge。
     """
     ctx = _ctx(config)
+    collector = _collector(config)
     judge_chat = ctx.get("chat_failover") or ctx.get("chat")
     script = state.get("script")
     fmt = state.get("format", "dialogue")
@@ -1817,11 +1930,20 @@ async def quality_judge_node(state: PodState, config: RunnableConfig) -> dict[st
     if hasattr(judge_chat, "role"):
         judge_chat.role = "judge"
 
+    call_start = time.monotonic()
     try:
         msg = await judge_chat.ainvoke(
             [SystemMessage(content=_JUDGE_SYSTEM), HumanMessage(content=user)]
         )
         usage = _usage_from_ai_msg(msg)
+        if collector is not None:
+            collector.record_llm_call(
+                node="judge",
+                call="judge",
+                duration_ms=int((time.monotonic() - call_start) * 1000),
+                input_tokens=cast(int, usage.get("input_tokens") or 0),
+                output_tokens=cast(int, usage.get("output_tokens") or 0),
+            )
         # judge 也可能包 ```json fence（寫稿路徑早有同樣防護，這裡補齊）。
         verdict = JudgeVerdict.model_validate_json(_strip_code_fence(msg.content))
     except Exception as exc:
@@ -1847,6 +1969,8 @@ async def quality_judge_node(state: PodState, config: RunnableConfig) -> dict[st
         "chemistry": 1.0 if fmt == "monologue" else verdict.chemistry,
         "groundedness": 1.0 if not sources else verdict.groundedness,
     }
+    if collector is not None:
+        collector.set_research_summary(judge_scores=scores)
     return {
         "judge_scores": scores,
         "judge_feedback": verdict.feedback,
@@ -1884,11 +2008,22 @@ def judge_decision(state: PodState, config: RunnableConfig) -> Literal["upsert",
         statuses = []
     has_unverified_claim = any(status != "supported" for status in statuses)
 
+    verdict: Literal["upsert", "rewrite"]
     if iterations >= max_iter:
-        return "upsert"
-    if has_unverified_claim or not _judge_passed(scores, threshold):
-        return "rewrite"
-    return "upsert"
+        verdict = "upsert"
+    elif has_unverified_claim or not _judge_passed(scores, threshold):
+        verdict = "rewrite"
+    else:
+        verdict = "upsert"
+
+    collector = _collector(config)
+    if collector is not None:
+        collector.set_research_summary(
+            judge_verdict="pass" if verdict == "upsert" else "rewrite",
+            rewrite_iterations=iterations,
+            engine_used=state.get("engine_used"),
+        )
+    return verdict
 
 
 # ── 紀錄 rewrite 次數（write_script 進場前 bump）───────────
@@ -1919,6 +2054,7 @@ def _source_metadata(state: PodState) -> list[dict[str, Any]]:
 async def upsert_episode_node(state: PodState, config: RunnableConfig) -> dict[str, Any]:
     ctx = _ctx(config)
     repo = ctx["repo"]
+    collector = _collector(config)
 
     script: ScriptJSON = state["script"]
     cluster_id = state.get("cluster_id")
@@ -1932,10 +2068,15 @@ async def upsert_episode_node(state: PodState, config: RunnableConfig) -> dict[s
     source = state.get("source") or "fallback"
     is_free = source != "specified"
 
-    # 冪等鍵同帶 length_tier 與 topic_type：同日同 big_topic 但不同入口或長度
-    # 的請求不能共用同一列（否則後送的會覆蓋先前已渲染的集數）。
-    # format 是 derived（=resolve_format(topic_type, length_tier)），不重複併入。
-    idem_key = f"{cluster_id or f'{deliver_date}:{big_topic}:{angle}'}:{length_tier}:{topic_type}"
+    # format 是 derived（=resolve_format(topic_type, length_tier)），不重複併入 idem_key。
+    idem_key = compute_idempotency_key(
+        cluster_id=cluster_id,
+        deliver_date=deliver_date,
+        big_topic=big_topic,
+        angle=angle,
+        length_tier=length_tier,
+        topic_type=topic_type,
+    )
     slug = _slugify(canonical)
     script_format = state.get("format", "dialogue")
     grounded = bool(state.get("grounded"))
@@ -1963,7 +2104,14 @@ async def upsert_episode_node(state: PodState, config: RunnableConfig) -> dict[s
         output_tokens=total_out,
         is_free=is_free,
         sources=_source_metadata(state),
+        generation_started_at=collector.started_at if collector is not None else None,
+        gen_metrics=collector.gen_metrics() if collector is not None else None,
+        research_metrics=collector.research_metrics() if collector is not None else None,
     )
+
+    run_id = ctx.get("pipeline_run_id")
+    if run_id is not None and not already_rendered:
+        await repo.attach_pipeline_run_episode(run_id, episode_id)
 
     if usage_log:
         logger.info(
@@ -2056,12 +2204,24 @@ async def dead_letter_node(state: PodState, config: RunnableConfig) -> dict[str,
     render_episode (TTS 33s+) 重做。改 graceful END：DELETE row + 寫
     errors 標記，worker 視為完成，read_ct 不累積。
     """
-    repo = _ctx(config).get("repo")
+    ctx = _ctx(config)
+    repo = ctx.get("repo")
     idem_key = state.get("idempotency_key")
     slug = state.get("slug")
     episode_id = state.get("episode_id")
     if repo is not None and idem_key:
         await repo.delete_episode_by_idem(idem_key)
+    collector = _collector(config)
+    run_id = ctx.get("pipeline_run_id")
+    if collector is not None:
+        collector.finalize("dead_letter")
+        if repo is not None and run_id is not None:
+            await repo.finalize_pipeline_run(
+                run_id,
+                status="dead_letter",
+                gen_metrics=collector.gen_metrics(),
+                research_metrics=collector.research_metrics(),
+            )
     logger.warning(
         "媒體雙重失敗 graceful dead-letter（id=%s slug=%s idem=%s）",
         episode_id,
@@ -2139,6 +2299,8 @@ async def upload_artifacts_node(state: PodState, config: RunnableConfig) -> dict
 async def update_episode_keys_node(state: PodState, config: RunnableConfig) -> dict[str, Any]:
     ctx = _ctx(config)
     repo = ctx["repo"]
+    collector = _collector(config)
+    run_id = ctx.get("pipeline_run_id")
     art: EpisodeArtifacts = state["artifacts"]
     script: ScriptJSON = state["script"]
     # extracted_facts 現在是 SourcedFact 物件（非純字串），jsonb 落庫前先轉 dict。
@@ -2159,6 +2321,15 @@ async def update_episode_keys_node(state: PodState, config: RunnableConfig) -> d
             idem_key,
         )
         await repo.delete_episode_by_idem(idem_key)
+        if collector is not None:
+            collector.finalize("dead_letter")
+            if run_id is not None:
+                await repo.finalize_pipeline_run(
+                    run_id,
+                    status="dead_letter",
+                    gen_metrics=collector.gen_metrics(),
+                    research_metrics=collector.research_metrics(),
+                )
         # 上層 graph 已 conditional 分流到 END；這裡再寫一次 errors 是防呆，
         # 確保即使 conditional edge 未來被改壞也不會觸發 worker pgmq vt 重投 → render 重做。
         return {
@@ -2167,6 +2338,9 @@ async def update_episode_keys_node(state: PodState, config: RunnableConfig) -> d
                 f"upload_artifacts 雙重失敗，row 已清。slug={slug}",
             ]
         }
+
+    if collector is not None:
+        collector.finalize("success")
 
     # repo 是 MockRepo 或 shared.db.repo 模組，surface 相同——直接呼叫，不做 hasattr 分派。
     await repo.update_episode_keys(
@@ -2178,7 +2352,16 @@ async def update_episode_keys_node(state: PodState, config: RunnableConfig) -> d
         extracted_facts=facts_payload,
         target_vocab=[v.model_dump(by_alias=False) for v in script.target_vocab],
         sources=_source_metadata(state),
+        generation_finished_at=collector.finished_at if collector is not None else None,
+        gen_metrics=collector.gen_metrics() if collector is not None else None,
     )
+    if collector is not None and run_id is not None:
+        await repo.finalize_pipeline_run(
+            run_id,
+            status="success",
+            gen_metrics=collector.gen_metrics(),
+            research_metrics=collector.research_metrics(),
+        )
     return {}
 
 

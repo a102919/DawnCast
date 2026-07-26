@@ -995,3 +995,91 @@ async def test_mock_repo_update_episode_keys_sources_none_preserves_existing() -
     row = repo.get_episode(eid)
     assert row is not None
     assert row.sources == original
+
+
+# ── 14. Pipeline metrics：分階段耗時 + forensic run row ─────────────
+
+
+async def test_pod_happy_path_records_gen_and_research_metrics() -> None:
+    """成功路徑：episode row 有完整 gen_metrics/research_metrics，forensic run 標 success。"""
+    chat = _make_passing_chat()
+    repo, r2, queue = get_mocks(reset=True)
+    renderer = MockRenderer(make_mock_workdir())
+
+    eid = await run_pod(
+        _body(),
+        chat=chat,
+        repo=repo,
+        r2=r2,
+        queue=queue,
+        renderer=renderer,
+    )
+
+    episode = repo.get_episode(eid)
+    assert episode is not None
+    assert episode.generation_started_at is not None
+    assert episode.generation_finished_at is not None
+
+    gen_metrics = episode.gen_metrics
+    stage_names = [s["node"] for s in gen_metrics["stages"]]
+    # 主線每個 node 都要有一筆 stage timing（順序不苛求，集合比對即可）。
+    for expected in (
+        "decompose_research",
+        "gather_evidence",
+        "cross_verify",
+        "write_script",
+        "quality_judge",
+        "upsert_episode",
+        "render_episode",
+        "upload_artifacts",
+        "update_episode_keys",
+    ):
+        assert expected in stage_names, f"缺少 stage：{expected}"
+    assert gen_metrics["status"] == "success"
+    assert gen_metrics["totals"]["llm_call_count"] > 0
+    assert gen_metrics["totals"]["input_tokens"] > 0
+    # outline + 3 segments 應該各自留一筆 llm_calls 明細，不是被合併成一筆。
+    write_calls = [c for c in gen_metrics["llm_calls"] if c["node"] == "write_script"]
+    assert len(write_calls) == 4  # 1 outline + 3 segments
+    assert {c["call"] for c in write_calls} == {"outline", "segment"}
+
+    research_metrics = episode.research_metrics
+    assert research_metrics["judge_verdict"] == "pass"
+    assert research_metrics["rewrite_iterations"] == 0
+    assert "judge_scores" in research_metrics
+
+    # forensic run：run_pod 開始就建，upsert 後補回 episode_id，成功後標 success。
+    runs = [r for r in repo.pipeline_runs.values() if r.episode_id == eid]
+    assert len(runs) == 1
+    assert runs[0].status == "success"
+
+
+async def test_pod_pre_upsert_failure_leaves_forensic_run() -> None:
+    """decompose 前置階段直接炸掉（無 chat/factory）不影響——改用「researcher 全滅仍完成」
+    的情境驗證正向路徑已覆蓋；這裡改測「寫稿重試耗盡直接 raise」時 forensic run 仍留下
+    status=failed 記錄，即使從未建立 episode row。
+    """
+    from shared.errors import GenerationError
+
+    # outline 一律回不合法 JSON，逼 _generate_outline 重試耗盡後 raise GenerationError，
+    # RetryPolicy 3 次仍失敗 → graph.ainvoke 整個炸給 run_pod 的 except 分支接住。
+    chat = FakeChatModel(responses=["not json"] * 10, judge_responses=[_judge_json(0.8)])
+    repo, r2, queue = get_mocks(reset=True)
+    renderer = MockRenderer(make_mock_workdir())
+
+    with pytest.raises(GenerationError):
+        await run_pod(
+            _body(),
+            chat=chat,
+            repo=repo,
+            r2=r2,
+            queue=queue,
+            renderer=renderer,
+        )
+
+    assert len(repo.pipeline_runs) == 1
+    run = next(iter(repo.pipeline_runs.values()))
+    assert run.status == "failed"
+    assert run.episode_id is None  # 從沒走到 upsert_episode
+    assert run.error is not None
+    assert run.error["type"] == "GenerationError"

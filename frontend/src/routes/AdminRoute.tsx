@@ -1,9 +1,9 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { toast } from 'sonner'
-import { ShieldCheck, Send, Eye, EyeOff } from 'lucide-react'
+import { ShieldCheck, Send, Eye, EyeOff, RefreshCw, ChevronDown, ChevronRight } from 'lucide-react'
 import { api, AppError, clearAdminToken, getAdminToken, setAdminToken } from '../api'
-import type { AdminEpsGenerateInput, AdminEpsGenerateResponse } from '../api'
-import { Button, Card, ErrorBanner, SectionLabel } from '../components/primitives'
+import type { AdminEpsGenerateInput, AdminEpsGenerateResponse, AdminTokenUsageResponse } from '../api'
+import { Button, Card, ErrorBanner, SectionLabel, StatCard } from '../components/primitives'
 
 const ANGLE_OPTIONS = [
   { value: '定義', label: '定義' },
@@ -255,7 +255,126 @@ export function AdminRoute() {
           {busy ? '送出中…' : '送出生成請求'}
         </Button>
       </Card>
+
+      {token && <TokenUsagePanel />}
     </div>
+  )
+}
+
+function formatDuration(ms: number): string {
+  if (ms < 1000) return `${ms}ms`
+  const totalSec = Math.round(ms / 1000)
+  const min = Math.floor(totalSec / 60)
+  const sec = totalSec % 60
+  return min > 0 ? `${min}分${sec}秒` : `${sec}秒`
+}
+
+function formatDateTime(iso: string | null | undefined): string {
+  if (!iso) return '—'
+  return iso.replace('T', ' ').replace('Z', '')
+}
+
+/** 生成耗時明細：起訖時間 + 分階段耗時（gen_metrics.stages）。 */
+function TokenUsagePanel() {
+  const [data, setData] = useState<AdminTokenUsageResponse | null>(null)
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  const [expandedSlug, setExpandedSlug] = useState<string | null>(null)
+  const [reloadKey, setReloadKey] = useState(0)
+
+  useEffect(() => {
+    const load = async () => {
+      setBusy(true)
+      setError(null)
+      try {
+        const result = await api.getAdminTokenUsage()
+        setData(result)
+      } catch (err) {
+        const msg = err instanceof AppError ? err.message : err instanceof Error ? err.message : '未知錯誤'
+        setError(msg)
+      } finally {
+        setBusy(false)
+      }
+    }
+    void load()
+  }, [reloadKey])
+
+  return (
+    <Card className="p-4 space-y-4">
+      <div className="flex items-center justify-between">
+        <SectionLabel>生成紀錄與 Token 用量</SectionLabel>
+        <Button size="sm" variant="ghost" onClick={() => setReloadKey(k => k + 1)} disabled={busy}>
+          <RefreshCw size={14} className={busy ? 'animate-spin' : ''} />
+          重新整理
+        </Button>
+      </div>
+
+      {error && <ErrorBanner message={error} variant="inline" />}
+
+      {data && (
+        <>
+          <div className="grid grid-cols-3 gap-3">
+            <StatCard label="集數" value={data.episodeCount} />
+            <StatCard label="輸入 tokens" value={data.totalInputTokens.toLocaleString()} />
+            <StatCard label="輸出 tokens" value={data.totalOutputTokens.toLocaleString()} />
+          </div>
+
+          <div className="space-y-1">
+            {data.items.length === 0 && (
+              <p className="text-xs text-text-secondary py-4 text-center">尚無集數資料</p>
+            )}
+            {data.items.map(item => {
+              const expanded = expandedSlug === item.slug
+              const wallMs =
+                item.generationStartedAt && item.generationFinishedAt
+                  ? new Date(item.generationFinishedAt).getTime() - new Date(item.generationStartedAt).getTime()
+                  : null
+              return (
+                <div key={item.slug} className="border border-border rounded-lg overflow-hidden">
+                  <button
+                    type="button"
+                    onClick={() => setExpandedSlug(expanded ? null : item.slug)}
+                    className="w-full flex items-center gap-2 px-3 py-2 text-left hover:bg-bg-secondary"
+                    disabled={item.stages.length === 0}
+                  >
+                    {item.stages.length > 0 ? (
+                      expanded ? <ChevronDown size={14} className="shrink-0 text-text-secondary" /> : <ChevronRight size={14} className="shrink-0 text-text-secondary" />
+                    ) : (
+                      <span className="w-3.5 shrink-0" />
+                    )}
+                    <div className="flex-1 min-w-0">
+                      <p className="text-sm text-text-primary truncate">{item.title}</p>
+                      <p className="text-[11px] text-text-secondary">
+                        {formatDateTime(item.createdAt)}
+                        {wallMs !== null && <span className="ml-2">耗時 {formatDuration(wallMs)}</span>}
+                      </p>
+                    </div>
+                    <div className="text-[11px] text-text-secondary text-right shrink-0">
+                      <div>入 {item.inputTokens.toLocaleString()}</div>
+                      <div>出 {item.outputTokens.toLocaleString()}</div>
+                    </div>
+                  </button>
+
+                  {expanded && item.stages.length > 0 && (
+                    <div className="border-t border-border px-3 py-2 space-y-1 bg-bg-secondary/50">
+                      {item.stages.map((stage, i) => (
+                        <div key={`${stage.node}-${stage.attempt}-${i}`} className="flex items-center justify-between text-[11px]">
+                          <span className={stage.status === 'failed' ? 'text-danger' : 'text-text-primary'}>
+                            {stage.node}
+                            {stage.attempt > 1 && <span className="text-text-secondary"> (第 {stage.attempt} 次)</span>}
+                          </span>
+                          <span className="text-text-secondary font-mono">{formatDuration(stage.durationMs)}</span>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              )
+            })}
+          </div>
+        </>
+      )}
+    </Card>
   )
 }
 

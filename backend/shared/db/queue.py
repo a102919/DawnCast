@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Any
 
 from psycopg.rows import dict_row
@@ -20,11 +21,16 @@ from shared.db.pool import connection
 
 @dataclass(frozen=True)
 class Msg:
-    """從佇列讀出的一筆訊息。read_ct 是被讀取次數，dead-letter 判斷的依據。"""
+    """從佇列讀出的一筆訊息。read_ct 是被讀取次數，dead-letter 判斷的依據。
+
+    enqueued_at 是 pgmq 記錄的入列時間，用來算 queue_wait_ms（見 metrics.py）；
+    default None 是為了不破壞既有測試裡直接構造 Msg(...) 的呼叫點。
+    """
 
     msg_id: int
     read_ct: int
     body: dict[str, Any]
+    enqueued_at: datetime | None = None
 
 
 def _as_dict(raw: Any) -> dict[str, Any]:
@@ -60,7 +66,7 @@ async def read(queue: str, vt: int) -> Msg | None:
     async with connection() as conn, conn.cursor(row_factory=dict_row) as cur:
         # pgmq.read(queue_name text, vt int, qty int) -> setof pgmq.message_record
         await cur.execute(
-            "select msg_id, read_ct, message from pgmq.read(%s, %s, 1)",
+            "select msg_id, read_ct, enqueued_at, message from pgmq.read(%s, %s, 1)",
             (queue, vt),
         )
         row = await cur.fetchone()
@@ -70,6 +76,7 @@ async def read(queue: str, vt: int) -> Msg | None:
         msg_id=int(row["msg_id"]),
         read_ct=int(row["read_ct"]),
         body=_as_dict(row["message"]),
+        enqueued_at=row.get("enqueued_at"),
     )
 
 
@@ -81,7 +88,7 @@ async def read_batch(queue: str, vt: int, qty: int) -> list[Msg]:
     """
     async with connection() as conn, conn.cursor(row_factory=dict_row) as cur:
         await cur.execute(
-            "select msg_id, read_ct, message from pgmq.read(%s, %s, %s)",
+            "select msg_id, read_ct, enqueued_at, message from pgmq.read(%s, %s, %s)",
             (queue, vt, qty),
         )
         rows = await cur.fetchall()
@@ -90,6 +97,7 @@ async def read_batch(queue: str, vt: int, qty: int) -> list[Msg]:
             msg_id=int(r["msg_id"]),
             read_ct=int(r["read_ct"]),
             body=_as_dict(r["message"]),
+            enqueued_at=r.get("enqueued_at"),
         )
         for r in rows
     ]

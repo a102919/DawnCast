@@ -372,7 +372,7 @@ export interface paths {
         };
         /**
          * Get Admin Token Usage
-         * @description token 用量總覽：全集數 input/output 加總 + 最近 50 筆明細。
+         * @description token 用量總覽：全集數 input/output 加總 + 最近 50 筆明細（含分階段耗時）。
          */
         get: operations["get_admin_token_usage_admin_token_usage_get"];
         put?: never;
@@ -704,6 +704,12 @@ export interface components {
             outputTokens: number;
             /** Createdat */
             createdAt: string;
+            /** Generationstartedat */
+            generationStartedAt?: string | null;
+            /** Generationfinishedat */
+            generationFinishedAt?: string | null;
+            /** Stages */
+            stages?: components["schemas"]["StageMetric"][];
         };
         /** AdminTokenUsageResponse */
         AdminTokenUsageResponse: {
@@ -1191,6 +1197,23 @@ export interface components {
             title: string;
             /** Url */
             url: string;
+        };
+        /**
+         * StageMetric
+         * @description 單一 LangGraph node 的耗時；來自 episodes.gen_metrics->'stages'。
+         */
+        StageMetric: {
+            /** Node */
+            node: string;
+            /** Durationms */
+            durationMs: number;
+            /** Status */
+            status: string;
+            /**
+             * Attempt
+             * @default 1
+             */
+            attempt: number;
         };
         /**
          * UpdateSettingsBody

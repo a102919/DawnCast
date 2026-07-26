@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { AnimatePresence, motion } from 'framer-motion'
 import { Play, Brain, SearchX } from 'lucide-react'
@@ -8,7 +8,7 @@ import { ErrorBanner } from '../components/primitives/ErrorBanner'
 import { TodayHeroCard } from '../components/home/TodayHeroCard'
 import { HomeHeroFallback } from '../components/home/HomeHeroFallback'
 import { WeeklyCard } from '../components/home/WeeklyCard'
-import { useVocab } from '../state'
+import { useDailyOrder, useVocab } from '../state'
 import { EpisodeRow } from '../components/shared/EpisodeRow'
 import { api } from '../api'
 import { TOPIC_LABELS } from '../lib'
@@ -17,6 +17,14 @@ import type { Episode } from '../types/episode'
 
 /** 今日推薦最多顯示幾張（featured 不夠時用 published desc 補到這個上限）。 */
 const TODAY_PICKS_LIMIT = 2
+
+// episode-readiness 輪詢：worker 跑完就停。間隔遞增避免對剛排隊的 job 過度打，
+// 上限 16s 對齊「生成中」視覺節奏（不會讓 spinner 看起來卡住）。
+// ponytail: 30 次無命中後停止。worker 卡死時不會無限打；使用者按 retryKey 重啟。
+const POLL_DELAYS_MS = [2000, 4000, 8000, 16000, 16000, 16000, 16000, 16000, 16000, 16000,
+  16000, 16000, 16000, 16000, 16000, 16000, 16000, 16000, 16000, 16000,
+  16000, 16000, 16000, 16000, 16000, 16000, 16000, 16000, 16000, 16000] as const
+const MAX_POLL_ATTEMPTS = POLL_DELAYS_MS.length
 
 // 集數庫進退場：tween + 自訂 ease，半透明 + 微縮放。empty 狀態與每張卡片共用。
 const EPISODE_CARD_MOTION = {
@@ -43,7 +51,8 @@ export function HomeRoute() {
   // 今日已送達集數的 Episode 內容（id 對齊 listEpisodes）；null = 沒送達，fallback
   const [deliveredEpisode, setDeliveredEpisode] = useState<Episode | null>(null)
   const { items: vocabItems } = useVocab()
-  const today = new Date().toISOString().slice(0, 10)
+  const { todayDate, getOrder, refresh: refreshOrders } = useDailyOrder()
+  const today = todayDate
   const dueCount = vocabItems.filter(v => !v.nextReview || v.nextReview <= today).length
 
   // 給「繼續學習」按鈕帶位用：新到首集，沒有就 fallback 留空（按鈕仍渲染但網址無效）
@@ -91,6 +100,48 @@ export function HomeRoute() {
     if (!deliveredEpisode) return null
     return episodes.find(ep => ep.id === deliveredEpisode.id) ?? null
   }, [deliveredEpisode, episodes])
+
+  // Episode readiness polling：T1 trigger 下單後 worker 開始跑，產出後 user 沒 reload
+  // 永遠看不到「可收聽」。條件：今日有訂單（status != played）+ deliveredEpisode 還沒拿到
+  // → 每 2s→16s 輪詢，命中就 refresh orders（讓 daily_order 翻 played）並停止。
+  // 進度由 timerRef.current 控制，cancelled 旗標防 setState-after-unmount。
+  const todayOrder = getOrder(today)
+  const shouldPoll = todayOrder !== null && todayOrder.status !== 'played' && deliveredEpisode === null
+  const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const cancelledRef = useRef<boolean>(false)
+  useEffect(() => {
+    cancelledRef.current = false
+    if (!shouldPoll) return
+    let attempt = 0
+    const tick = async () => {
+      if (cancelledRef.current) return
+      if (attempt >= MAX_POLL_ATTEMPTS) return
+      const delay = POLL_DELAYS_MS[attempt]
+      attempt += 1
+      timerRef.current = setTimeout(async () => {
+        if (cancelledRef.current) return
+        try {
+          const d = await api.getDeliveredEpisode(today)
+          if (cancelledRef.current) return
+          if (d) {
+            setDeliveredEpisode(d)
+            // 命中：連帶刷全集數庫（hero card 需要封面/主題）+ 訂單狀態（翻 played）。
+            setRetryKey(k => k + 1)
+            void refreshOrders()
+            return
+          }
+        } catch {
+          // 輪詢失敗不 throw；下次 tick 再試
+        }
+        void tick()
+      }, delay)
+    }
+    void tick()
+    return () => {
+      cancelledRef.current = true
+      if (timerRef.current) clearTimeout(timerRef.current)
+    }
+  }, [shouldPoll, today, refreshOrders])
 
   // Fallback 用的「精選」集：優先 is_featured，其次全集第一集
   const fallbackFeatured = useMemo(() => {

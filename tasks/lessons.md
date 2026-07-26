@@ -220,3 +220,26 @@ curl 直接打 8000 帶 `/api/episodes` 是 200（用 prefix 加完的版本）�
 - prod 26 集已存在的錯位 cues — 動 prod DB 風險高、且使用者要等新流程在 prod 跑穩才能放心 backfill。解法是對既有集跑一次性 scale backfill script（從 R2 下載 mp3 → ffprobe → scale 寫回 `script_json.cues`），等使用者下 ticket 再做。
 - 前端 `PlayerRoute.tsx:275` 已經是 `duration > 0 ? duration : cueDuration` fallback（優先 audio.duration），不用改前端。
 - mock fixture `frontend/public/data/episode.json` 指向 mp4 是獨立 mock mode bug，跟正式 R2 mp3 流程無關。
+
+## 2026-07-26 — `git push → Zeabur auto-deploy → 自動跑 migration → pgmq 自動 pickup → 真實 LLM/RAG/DB closed-loop` 是可驗的整條路徑
+
+**情境**：把新研究 graph（decompose_research → gather_evidence → cross_verify → write_script → verify_script_claims → quality_judge → upsert → render → upload → delivery → backfill_dict）+ `episodes.sources jsonb` migration + 6 個新 source provider（OpenAlex / Crossref / World Bank / FRED / Google Fact Check / Internet Archive）+ `verify_script_claims` 核對節點連續推到 origin/main。
+
+- `git push` 一次後 Zeabur 觸發 source-built api-ovate + prebuilt worker-gir 同時部署（deployment `6a659c5e`）。
+- `apply_migrations.py` 在 api-ovate container 啟動時跑 15 支 migration（包含新加的 `0015_episode_sources.sql`），冪等 ALTER 加欄位成功。
+- `daily_podcast_runs` SQL function 用 cron 02:00 自動建 marker + pgmq send 5 部；worker 收菜跑完整圖，**真實 MiniMax M2.7 reasoning model + 真實 Tavily + 真實 Wikipedia + 真實 R2 + 真實 Supabase DB**，無 mock。
+- 結果：5 集 evergreen 建出 cues + audio，prod 直接驗到 `sources=30 / grounded=True`（msg_id=53、`deliver_date=2026-07-28`）、`slug=how_does_rust_ownership_prevent_data_rac_0d1815ef`，Tavily 抓的真實 URL 全是 `rust-lang.org` / `reddit.com/r/rust` / `nomicon` 等合法外連。
+
+**撞過的 3 個 production 等級 bug**（皆透過閉環才一次浮現）：
+
+1. **TAVILY_API_KEY 只在 api-ovate、worker-gir 沒設** — `worker.py::run_worker` 跑 `gather_evidence_node` 時 `TavilyProvider.fetch()` 拿到 `_api_key=""` 直接 silent return `[]`，log 沒留痕跡。**規則**：silent fallback 在 LLM / provider 邊界不留 trace 是偵測失能；任何「key 缺失就 disabled」的 provider 都要在 `__init__` 或第一次 fetch 時 `logger.warning("XXX_API_KEY not set, provider skipped")`，不要 return [] 假裝成功。
+2. **Zeabur env 變更不會自動重啟 container，且 worker 是 prebuilt marketplace 不會被 git push 觸發 rebuild** — `create_environment_variable` 後 worker 仍跑舊 process、`os.environ['TAVILY_API_KEY']==''`。**規則**：補 env 後必須 `zeabur service restart --env-id ... --id ... --name ... -y` 手動重啟；prebuilt 服務不吃 git push event。已建獨立 memory `worker-env-tavily-not-restarted.md`。
+3. **idempotency_key 撞鍵會讓新 enqueue 看起來「沒做事」** — 同 `deliver_date+topic+angle+length_tier+topic_type` 的 idempotency_key 第一次手動測試 SQL function 就建了 row，再 enqueue 是 `ON CONFLICT DO UPDATE` 靜默 no-op。**規則**：測試新節點時要 `deliver_date` 用「明天」讓 idempotency_key 跟歷史 episode 自然分流，避免假性「queue 卡住」誤判。相關 lessons：「重複 enqueue 對 Q 不要只看 msg_count，要看 episode.created_at」。
+
+**規則**：
+- **`git push → Zeabur deployment` 是 prod 自動部署唯一來源**：`api-ovate` source-built 走 GitHub webhook，`worker-gir` marketplace prebuilt 不會被 git push 觸發，只能 env 變更或 Restart 動它。**兩種 service 的部署/重啟模型不同**，debug 前先確認是哪種。
+- **`apply_migrations.py` 是冪等的就放心 push**：每支 SQL 寫 `ADD COLUMN IF NOT EXISTS` / `CREATE INDEX IF NOT EXISTS`，push 後 migration 自動跑不用人工補 — 這是「部署零手動」的關鍵；如果 migration 不是冪等的，會在 prod 跟 dev 反覆炸。
+- **LangGraph 新節點先在 mock 完整跑通一集端到端（`/tmp/run_pod_mock_full.py`），再 push 上 prod**：mock 端到端能驗證 graph 拓樸、JSON parse、retry loop；prod push 才能驗 LLM schema、RAG 來源、DB 落地。兩段不能互相取代。
+- **「prod 有跑過」是不可妥協的驗證**：local mock 跑通不代表 prod 通 — LLM 換模型會換 schema 偏好、Tavily 配額會撞限、R2 credential 會被截、deployment env 不一樣。每一個新圖節點都需要 prod episode UUID 作為 confirmation token，不能只靠「model 200 OK」。
+- **debug prod 失敗的入口順序**：(1) 看 Zeabur `runtime logs` 找 exception、(2) 看 DB `episodes WHERE created_at > now() - interval '2 hour'` 確認有 row、(3) `pgmq.read` 看 msg 還在不在 queue、(4) `jsonb_array_elements(episodes.sources)->>'url'` 看抓到什麼真實 URL。比直接 `curl API` 早一步。
+- **別用 `kill -9 1` 重啟 Zeabur container**：OCI exec 跟 PID 1 不同 namespace，Zeabur 也沒 expose 通用 restart command；要重啟就 `zeabur service restart` CLI，user 也希望「自幹別問我點 dashboard」。

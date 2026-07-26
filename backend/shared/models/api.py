@@ -192,12 +192,24 @@ class AdminJobQueue(CamelModel):
     total_messages: int | None = None
 
 
+class StageMetric(CamelModel):
+    """單一 LangGraph node 的耗時；來自 episodes.gen_metrics->'stages'。"""
+
+    node: str
+    duration_ms: int
+    status: str
+    attempt: int = 1
+
+
 class AdminTokenUsageItem(CamelModel):
     slug: str
     title: str
     input_tokens: int = 0
     output_tokens: int = 0
     created_at: str
+    generation_started_at: str | None = None
+    generation_finished_at: str | None = None
+    stages: list[StageMetric] = Field(default_factory=list)
 
 
 class AdminTokenUsageResponse(CamelModel):

@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
 import { storageGet, storageSet } from '../lib/storage'
 import { PlayerContext, type PlayerContextValue } from './playerContextValue'
 import { useActivity } from './useActivity'
+import type { Episode } from '../types/episode'
 
 const LS_KEY_CURRENT_TIME = 'dawncast:player:currentTime'
 const LS_KEY_LAST_EPISODE_ID = 'dawncast:player:lastEpisodeId'
@@ -18,6 +19,7 @@ export function PlayerProvider({ children }: { readonly children: ReactNode }) {
   const [isPlaying, setIsPlaying] = useState(false)
   const [duration, setDuration] = useState(0)
   const [playbackRate, setPlaybackRateState] = useState(1)
+  const [currentEpisode, setCurrentEpisode] = useState<Episode | null>(null)
   const progressTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const animationFrameRef = useRef<number | null>(null)
   const lastSavedTimeRef = useRef<number>(0)
@@ -199,8 +201,8 @@ export function PlayerProvider({ children }: { readonly children: ReactNode }) {
   }, [lastPlayedEpisodeId, lastPlayedPosition])
 
   const value: PlayerContextValue = {
-    currentTime, isPlaying, duration, playbackRate, videoRef,
-    seekTo, setVideoRef, play, pause, setPlaybackRate, loadProgress,
+    currentTime, isPlaying, duration, playbackRate, videoRef, currentEpisode,
+    seekTo, setVideoRef, play, pause, setPlaybackRate, loadProgress, setCurrentEpisode,
   }
 
   return (

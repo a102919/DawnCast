@@ -3,7 +3,6 @@ import { useParams, useNavigate } from 'react-router-dom'
 import { Sparkles, BookMarked, MessageCircle } from 'lucide-react'
 import { toast } from 'sonner'
 import { ErrorBanner } from '../components/primitives/ErrorBanner'
-import { AudioPlayer } from '../components/player/AudioPlayer'
 import { PlayerControls } from '../components/player/PlayerControls'
 import { EpisodeReferences } from '../components/player/EpisodeReferences'
 import { LyricsView } from '../components/lyrics/LyricsView'
@@ -28,7 +27,7 @@ export function PlayerRoute() {
   const [loopCueIdx, setLoopCueIdx] = useState<number | null>(null)
   const [isVocabDrawerOpen, setIsVocabDrawerOpen] = useState(false)
   const [lookupError, setLookupError] = useState<string | null>(null)
-  const { currentTime, isPlaying, duration, seekTo, play, pause, videoRef, loadProgress, setPlaybackRate } = usePlayer()
+  const { currentTime, isPlaying, duration, seekTo, play, pause, videoRef, loadProgress, setPlaybackRate, setCurrentEpisode } = usePlayer()
   const { settings } = useSettings()
   const { markPlayed } = useDailyOrder()
   const { addListenMinutes, addLookupCount, markListened } = useActivity()
@@ -87,6 +86,11 @@ export function PlayerRoute() {
       hasNotifiedDueRef.current = false
     }
   }, [episode])
+
+  useEffect(() => {
+    // 推到全域 PlayerProvider：離開播放頁後 GlobalAudioHost/MiniPlayer 才知道現在播誰。
+    if (episode) setCurrentEpisode(episode)
+  }, [episode, setCurrentEpisode])
 
   useEffect(() => {
     if (!episode || initialSeekAppliedRef.current) return
@@ -227,15 +231,17 @@ export function PlayerRoute() {
     if (selectedWord) void lookupWord(selectedWord)
   }
 
-  const handleEpisodeEnded = useCallback(() => {
-    if (hasNotifiedDueRef.current) return
+  useEffect(() => {
+    // 播完（<audio> 是全域節點，改用 currentTime/duration 逼近判斷取代 onEnded 事件）
+    if (!episode || duration <= 0 || hasNotifiedDueRef.current) return
+    if (currentTime < duration - 0.25) return
     const dueCount = filterDueDeck(vocabItems).length
     if (dueCount === 0) return
     hasNotifiedDueRef.current = true
     toast(`還有 ${dueCount} 個單字到期待複習`, {
       action: { label: '去複習', onClick: () => navigate('/flashcards') },
     })
-  }, [vocabItems, navigate])
+  }, [currentTime, duration, episode, vocabItems, navigate])
 
   const handleCopyPrompt = async () => {
     if (!episode) return
@@ -277,9 +283,6 @@ export function PlayerRoute() {
 
   return (
     <div className="bg-bg-canvas h-[calc(100dvh-56px-env(safe-area-inset-top,0px))] overflow-hidden text-text-primary flex flex-col">
-      {/* 隱形音檔綁時間軸（不上視） */}
-      <AudioPlayer audioUrl={episode.audioUrl} onEnded={handleEpisodeEnded} />
-
       {/* 大歌詞：佔滿中間剩餘空間，封面與標題作為第一個 scroll item 一起滾動 */}
       <main className="flex-1 min-h-0 relative pb-[100px] lg:pb-40">
         <LyricsView

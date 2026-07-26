@@ -22,6 +22,7 @@ from shared.models.api import (
     EpisodeListItem,
     Settings,
     SourceReference,
+    StageMetric,
     VocabItem,
 )
 from shared.models.engine import (
@@ -81,6 +82,7 @@ __all__ = [
     "SourceSnippet",
     "SourcedFact",
     "Speaker",
+    "StageMetric",
     "TargetVocab",
     "TopicType",
     "VerifiedClaim",

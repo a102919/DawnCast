@@ -79,6 +79,14 @@ _TOKEN_ITEM_ROWS: list[dict[str, Any]] = [
         "input_tokens": 500,
         "output_tokens": 300,
         "created_at": "2026-07-16T00:00:00Z",
+        "generation_started_at": "2026-07-16T00:00:00Z",
+        "generation_finished_at": "2026-07-16T00:08:00Z",
+        "gen_metrics": {
+            "stages": [
+                {"node": "write_script", "duration_ms": 12000, "status": "ok", "attempt": 1},
+                {"node": "render_episode", "duration_ms": 350000, "status": "ok", "attempt": 1},
+            ]
+        },
     },
     {
         "slug": "ep-1",
@@ -86,6 +94,9 @@ _TOKEN_ITEM_ROWS: list[dict[str, Any]] = [
         "input_tokens": 200,
         "output_tokens": 100,
         "created_at": "2026-07-15T00:00:00Z",
+        "generation_started_at": None,
+        "generation_finished_at": None,
+        "gen_metrics": {},
     },
 ]
 
@@ -271,6 +282,12 @@ def test_token_usage_correct_token_returns_200(client: TestClient) -> None:
     assert data["episodeCount"] == 2
     items = data["items"]
     assert [i["slug"] for i in items] == ["ep-2", "ep-1"]  # createdAt desc
+    # ep-2 有 gen_metrics.stages → 攤平進 AdminTokenUsageItem.stages
+    assert [s["node"] for s in items[0]["stages"]] == ["write_script", "render_episode"]
+    assert items[0]["generationStartedAt"] == "2026-07-16T00:00:00Z"
+    # ep-1 沒有 gen_metrics（舊集數 / migration 前）→ 空 list，不是 null
+    assert items[1]["stages"] == []
+    assert items[1]["generationStartedAt"] is None
 
 
 # ── 兩套授權機制互不相通 / fail-closed ──────────────────────────────

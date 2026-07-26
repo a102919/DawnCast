@@ -18,6 +18,7 @@ import tempfile
 import uuid
 from collections import defaultdict
 from dataclasses import dataclass, field
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -54,6 +55,11 @@ class _EpisodeRow:
     # retrieve_sources_node 抓到的真實資料片段；鏡像 repo.sources jsonb。
     # 內部存 SourceSnippet 序列化後的 dict list（含 text），對外過濾由 router 處理。
     sources: list[dict[str, Any]] = field(default_factory=list)
+    # 分階段耗時 + 研究過程摘要；鏡像 repo.gen_metrics / research_metrics jsonb。
+    generation_started_at: datetime | None = None
+    generation_finished_at: datetime | None = None
+    gen_metrics: dict[str, Any] = field(default_factory=dict)
+    research_metrics: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass
@@ -61,6 +67,19 @@ class _DeliveryRow:
     user_id: str
     episode_id: str
     deliver_date: str
+
+
+@dataclass
+class _PipelineRunRow:
+    run_id: str
+    idempotency_key: str
+    attempt: int
+    status: str = "running"
+    episode_id: str | None = None
+    enqueued_at: datetime | None = None
+    gen_metrics: dict[str, Any] = field(default_factory=dict)
+    research_metrics: dict[str, Any] = field(default_factory=dict)
+    error: dict[str, Any] | None = None
 
 
 @dataclass
@@ -74,12 +93,51 @@ class MockRepo:
     by_idem: dict[str, str] = field(default_factory=dict)  # idempotency_key → episode_id
     deliveries: list[_DeliveryRow] = field(default_factory=list)
     fail_upsert: bool = False  # test hook：模擬 DB 失敗
+    pipeline_runs: dict[str, _PipelineRunRow] = field(default_factory=dict)  # run_id → row
 
     def reset(self) -> None:
         self.episodes.clear()
         self.by_idem.clear()
         self.deliveries.clear()
         self.fail_upsert = False
+        self.pipeline_runs.clear()
+
+    async def start_pipeline_run(
+        self, idempotency_key: str, *, enqueued_at: datetime | None
+    ) -> str:
+        attempt = 1 + sum(
+            1 for r in self.pipeline_runs.values() if r.idempotency_key == idempotency_key
+        )
+        run_id = uuid.uuid4().hex[:12]
+        self.pipeline_runs[run_id] = _PipelineRunRow(
+            run_id=run_id,
+            idempotency_key=idempotency_key,
+            attempt=attempt,
+            enqueued_at=enqueued_at,
+        )
+        return run_id
+
+    async def attach_pipeline_run_episode(self, run_id: str, episode_id: str) -> None:
+        row = self.pipeline_runs.get(run_id)
+        if row is not None:
+            row.episode_id = episode_id
+
+    async def finalize_pipeline_run(
+        self,
+        run_id: str,
+        *,
+        status: str,
+        gen_metrics: dict[str, Any],
+        research_metrics: dict[str, Any],
+        error: dict[str, Any] | None = None,
+    ) -> None:
+        row = self.pipeline_runs.get(run_id)
+        if row is None:
+            return
+        row.status = status
+        row.gen_metrics = dict(gen_metrics)
+        row.research_metrics = dict(research_metrics)
+        row.error = error
 
     async def upsert_episode(
         self,
@@ -101,6 +159,9 @@ class MockRepo:
         output_tokens: int = 0,
         is_free: bool = True,
         sources: list[dict[str, Any]] | None = None,
+        generation_started_at: datetime | None = None,
+        gen_metrics: dict[str, Any] | None = None,
+        research_metrics: dict[str, Any] | None = None,
     ) -> tuple[str, bool]:
         if self.fail_upsert:
             raise RuntimeError("mock: upsert_episode forced failure")
@@ -127,6 +188,9 @@ class MockRepo:
             output_tokens=output_tokens,
             is_free=is_free,
             sources=[dict(s) for s in (sources or [])],
+            generation_started_at=generation_started_at,
+            gen_metrics=dict(gen_metrics or {}),
+            research_metrics=dict(research_metrics or {}),
         )
         self.by_idem[idempotency_key] = eid
         return eid, False
@@ -142,6 +206,8 @@ class MockRepo:
         extracted_facts: list[dict[str, Any]] | None = None,
         target_vocab: list[dict[str, Any]] | None = None,
         sources: list[dict[str, Any]] | None = None,
+        generation_finished_at: datetime | None = None,
+        gen_metrics: dict[str, Any] | None = None,
     ) -> None:
         row = self.episodes.get(episode_id)
         if row is None:
@@ -155,6 +221,10 @@ class MockRepo:
         # 鏡像 repo：None 保留既有值；非 None 才覆寫。
         if sources is not None:
             row.sources = [dict(s) for s in sources]
+        if generation_finished_at is not None:
+            row.generation_finished_at = generation_finished_at
+        if gen_metrics is not None:
+            row.gen_metrics = dict(gen_metrics)
 
     async def insert_delivery(self, user_id: str, episode_id: str, deliver_date: str) -> bool:
         # 模擬 ON CONFLICT DO NOTHING

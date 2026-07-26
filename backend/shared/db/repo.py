@@ -9,6 +9,7 @@ SQL 全參數化，禁字串拼接。重用查詢核心是單一 anti-join（見
 from __future__ import annotations
 
 import json
+from datetime import datetime
 from typing import Any
 
 from psycopg.rows import dict_row
@@ -150,6 +151,9 @@ async def upsert_episode(
     output_tokens: int = 0,
     is_free: bool = True,
     sources: list[dict[str, Any]] | None = None,
+    generation_started_at: datetime | None = None,
+    gen_metrics: dict[str, Any] | None = None,
+    research_metrics: dict[str, Any] | None = None,
 ) -> tuple[str, bool]:
     """建一列 episodes（媒體 key / cues 之後用 update_episode_keys 補）。
 
@@ -165,8 +169,14 @@ async def upsert_episode(
     sources：可選，落 episodes.sources jsonb。預設 None → 寫入空 list。
     落原文 SourceSnippet（{id,title,url,text,published_at}），URL 安全過濾
     由 app 層 router 對外輸出時再做。
+
+    generation_started_at / gen_metrics / research_metrics：上集生成的分階段耗時
+    與研究過程摘要（見 langgraph_pod/metrics.py）。此時 render/upload 尚未跑完，
+    gen_metrics 只到 write_script/judge 為止；完整版由 update_episode_keys 補寫。
     """
     sources_json = json.dumps(sources or [], ensure_ascii=False)
+    gen_metrics_json = json.dumps(gen_metrics or {}, ensure_ascii=False)
+    research_metrics_json = json.dumps(research_metrics or {}, ensure_ascii=False)
     async with connection() as conn, conn.cursor(row_factory=dict_row) as cur:
         await cur.execute(
             """
@@ -174,8 +184,9 @@ async def upsert_episode(
                 (slug, title, title_zh, topic, cefr_level,
                  big_topic, angle, freshness_class, source_cluster_id,
                  idempotency_key, length_tier, format, grounded,
-                 input_tokens, output_tokens, is_free, sources)
-            values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                 input_tokens, output_tokens, is_free, sources,
+                 generation_started_at, gen_metrics, research_metrics)
+            values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             on conflict (idempotency_key) do nothing
             returning id
             """,
@@ -197,6 +208,9 @@ async def upsert_episode(
                 output_tokens,
                 is_free,
                 sources_json,
+                generation_started_at,
+                gen_metrics_json,
+                research_metrics_json,
             ),
         )
         row = await cur.fetchone()
@@ -232,16 +246,25 @@ async def update_episode_keys(
     extracted_facts: list[dict[str, Any]] | None = None,
     target_vocab: list[dict[str, Any]] | None = None,
     sources: list[dict[str, Any]] | None = None,
+    generation_finished_at: datetime | None = None,
+    gen_metrics: dict[str, Any] | None = None,
 ) -> None:
     """渲染完成後回填媒體 key 與內容。script_json 內含 cues（前端播放頁吃這個）。
 
     sources：可選；非 None 時覆寫 episodes.sources。傳 None 表示保留既有值
     （避免 update_episode_keys_node 在還沒拿到 retrieve_sources 結果時誤清空）。
+
+    generation_finished_at / gen_metrics：render_episode + upload_artifacts 跑完後
+    的完整 metrics（含 render/upload 兩個 stage），覆寫 upsert_episode 當時寫入的
+    半成品版本。傳 None 表示保留既有值（測試 / 沒接 metrics 的呼叫端）。
     """
     payload = dict(script_json)
     payload["cues"] = [c.model_dump(by_alias=False) for c in cues]
     sources_json: str | None = (
         json.dumps(sources, ensure_ascii=False) if sources is not None else None
+    )
+    gen_metrics_json: str | None = (
+        json.dumps(gen_metrics, ensure_ascii=False) if gen_metrics is not None else None
     )
     async with connection() as conn, conn.cursor(row_factory=dict_row) as cur:
         await cur.execute(
@@ -252,7 +275,9 @@ async def update_episode_keys(
                 script_json = %s::jsonb,
                 extracted_facts = %s::jsonb,
                 target_vocab = %s::jsonb,
-                sources = coalesce(%s::jsonb, sources)
+                sources = coalesce(%s::jsonb, sources),
+                generation_finished_at = coalesce(%s, generation_finished_at),
+                gen_metrics = coalesce(%s::jsonb, gen_metrics)
             where id = %s
             """,
             (
@@ -264,6 +289,8 @@ async def update_episode_keys(
                 else None,
                 json.dumps(target_vocab, ensure_ascii=False) if target_vocab is not None else None,
                 sources_json,
+                generation_finished_at,
+                gen_metrics_json,
                 episode_id,
             ),
         )
@@ -284,6 +311,74 @@ async def delete_episode_by_idem(idempotency_key: str) -> int:
             (idempotency_key,),
         )
         return cur.rowcount
+
+
+async def start_pipeline_run(idempotency_key: str, *, enqueued_at: datetime | None) -> str:
+    """run_pod 開始時 INSERT 一筆 forensic row，即使後面 crash 也留得住紀錄。
+
+    attempt 依同 idempotency_key 既有筆數遞增（同集因錯誤重投會有多筆）。
+    """
+    async with connection() as conn, conn.cursor(row_factory=dict_row) as cur:
+        await cur.execute(
+            """
+            insert into public.episode_pipeline_runs
+                (idempotency_key, attempt, status, enqueued_at, started_at)
+            select %(idem)s,
+                   coalesce(
+                       (select max(attempt) from public.episode_pipeline_runs
+                        where idempotency_key = %(idem)s),
+                       0
+                   ) + 1,
+                   'running', %(enqueued_at)s, now()
+            returning run_id
+            """,
+            {"idem": idempotency_key, "enqueued_at": enqueued_at},
+        )
+        row = await cur.fetchone()
+    if row is None:
+        raise RuntimeError("start_pipeline_run 未回傳 run_id")
+    return str(row["run_id"])
+
+
+async def attach_pipeline_run_episode(run_id: str, episode_id: str) -> None:
+    """upsert_episode_node 拿到 episode_id 後補回 forensic row，方便日後對照。"""
+    async with connection() as conn, conn.cursor() as cur:
+        await cur.execute(
+            "update public.episode_pipeline_runs set episode_id = %s, updated_at = now() "
+            "where run_id = %s",
+            (episode_id, run_id),
+        )
+
+
+async def finalize_pipeline_run(
+    run_id: str,
+    *,
+    status: str,
+    gen_metrics: dict[str, Any],
+    research_metrics: dict[str, Any],
+    error: dict[str, Any] | None = None,
+) -> None:
+    """run_pod 結束（成功或失敗）時關閉 forensic row。"""
+    async with connection() as conn, conn.cursor() as cur:
+        await cur.execute(
+            """
+            update public.episode_pipeline_runs
+            set status = %s,
+                finished_at = now(),
+                gen_metrics = %s::jsonb,
+                research_metrics = %s::jsonb,
+                error = %s::jsonb,
+                updated_at = now()
+            where run_id = %s
+            """,
+            (
+                status,
+                json.dumps(gen_metrics, ensure_ascii=False),
+                json.dumps(research_metrics, ensure_ascii=False),
+                json.dumps(error, ensure_ascii=False) if error is not None else None,
+                run_id,
+            ),
+        )
 
 
 async def find_reusable_episode(

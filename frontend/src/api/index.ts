@@ -10,6 +10,8 @@ export type {
   AccountInfo,
   AdminEpsGenerateInput,
   AdminEpsGenerateResponse,
+  AdminTokenUsageItem,
+  AdminTokenUsageResponse,
   Api,
   DailyOrder,
   DailyOrderInput,
@@ -18,5 +20,6 @@ export type {
   EntryMode,
   LengthTier,
   Settings,
+  StageMetric,
   VocabItem,
 } from './types'

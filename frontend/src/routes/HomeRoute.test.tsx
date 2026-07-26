@@ -40,6 +40,17 @@ vi.mock('../state', () => ({
   useActivity: () => ({ listenedEpisodeIds: new Set<string>() }),
   useVocab: () => ({ items: [] }),
   useFavorites: () => ({ favorites: new Set<string>(), toggle: toggleFavorite }),
+  // Episode readiness polling：測試不模擬訂單（getOrder 回 null → 不觸發輪詢），
+  // 避免 setTimeout 殘留導致 act() warning。
+  useDailyOrder: () => ({
+    todayDate: new Date().toISOString().slice(0, 10),
+    orders: new Map(),
+    getOrder: () => null,
+    setOrder: async () => ({}) as never,
+    deleteOrder: async () => undefined,
+    markPlayed: async () => null,
+    refresh: async () => undefined,
+  }),
 }))
 
 async function renderRoute(): Promise<{ root: Root; container: HTMLDivElement }> {

@@ -1,5 +1,5 @@
 import { z } from 'zod'
-import type { AccountInfo, Activity, ActivityPatch, AdminEpsGenerateInput, AdminEpsGenerateResponse, Api, DailyOrder, DictEntry, Settings, VocabItem } from './types'
+import type { AccountInfo, Activity, ActivityPatch, AdminEpsGenerateInput, AdminEpsGenerateResponse, AdminTokenUsageResponse, Api, DailyOrder, DictEntry, Settings, VocabItem } from './types'
 import type { Episode } from '../types/episode'
 import { CueSchema, SourceReferenceSchema } from './httpApi'
 import type { MockEpisode } from '../lib/episode'
@@ -503,5 +503,10 @@ export const mockApi: Api = {
   // Admin trigger：mock 模式無真 worker，回丟擲讓 UI 提示「請切真實後端」。
   async triggerAdminGenerate(_input: AdminEpsGenerateInput): Promise<AdminEpsGenerateResponse> {
     throw new Error('mock 模式不支援管理員觸發，請將 VITE_USE_MOCK 設為 false')
+  },
+
+  // 同上：mock 模式沒有真實 episodes/gen_metrics 資料可查。
+  async getAdminTokenUsage(): Promise<AdminTokenUsageResponse> {
+    throw new Error('mock 模式不支援管理員查詢，請將 VITE_USE_MOCK 設為 false')
   },
 }

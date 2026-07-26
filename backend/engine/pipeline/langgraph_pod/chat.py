@@ -255,8 +255,27 @@ class FakeChatModel(BaseChatModel):
         if isinstance(resp, Exception):
             raise resp
         return ChatResult(
-            generations=[ChatGeneration(message=AIMessage(content=resp))],
+            generations=[
+                ChatGeneration(
+                    message=AIMessage(
+                        content=resp,
+                        usage_metadata=self._fake_usage_metadata(messages, resp),
+                    )
+                )
+            ],
         )
+
+    @staticmethod
+    def _fake_usage_metadata(messages: list[BaseMessage], resp_text: str) -> dict[str, int]:
+        """給測試用的確定性假 token 數（字元數/4 概算），讓 metrics 測試有非零值可斷言。"""
+        input_chars = sum(len(str(m.content)) for m in messages)
+        input_tokens = max(1, input_chars // 4)
+        output_tokens = max(1, len(resp_text) // 4)
+        return {
+            "input_tokens": input_tokens,
+            "output_tokens": output_tokens,
+            "total_tokens": input_tokens + output_tokens,
+        }
 
     def _next(self) -> ChatResponse:
         pool = self.judge_responses if self.role == "judge" else self.responses
@@ -288,7 +307,14 @@ class FakeChatModel(BaseChatModel):
         if isinstance(resp, Exception):
             raise resp
         return ChatResult(
-            generations=[ChatGeneration(message=AIMessage(content=resp))],
+            generations=[
+                ChatGeneration(
+                    message=AIMessage(
+                        content=resp,
+                        usage_metadata=self._fake_usage_metadata(messages, resp),
+                    )
+                )
+            ],
         )
 
 

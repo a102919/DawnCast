@@ -4,6 +4,7 @@ import { Toaster } from 'sonner'
 import { useEffect } from 'react'
 import { AuthProvider, ActivityProvider, PlayerProvider, VocabProvider, SettingsProvider, FavoritesProvider, DailyOrderProvider, useAuth } from './state'
 import { TopBar, BottomNav } from './components/layout'
+import { GlobalAudioHost, MiniPlayer } from './components/player'
 import { HomeRoute, PlayerRoute, VocabRoute, FavoritesRoute, SettingsRoute, ProgressRoute, FlashcardRoute, DailyRoute, LoginRoute, AdminRoute } from './routes'
 import { useSprings } from './lib/motion'
 
@@ -71,6 +72,8 @@ function AuthenticatedShell() {
                   <main className={isImmersive ? '' : 'pb-[calc(3.5rem+env(safe-area-inset-bottom))] lg:pb-0'}>
                     <AnimatedRoutes />
                   </main>
+                  <GlobalAudioHost />
+                  <MiniPlayer />
                   <BottomNav />
                 </div>
               </DailyOrderProvider>

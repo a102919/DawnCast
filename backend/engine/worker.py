@@ -31,6 +31,7 @@ from shared.config import get_settings
 from shared.db import queue, repo
 from shared.db.pool import close_pool, open_pool
 from shared.db.queue import Msg
+from shared.idempotency import compute_idempotency_key
 
 logger = logging.getLogger(__name__)
 
@@ -117,10 +118,15 @@ async def _orchestrate(request_date: str) -> None:
 # ── 生成訊息處理 ───────────────────────────────────────────────────
 
 
-async def _handle_generate(body: dict[str, Any], timeout_sec: int) -> None:
-    """generate 佇列：包 asyncio.timeout 跑單集生成。超時往外拋給主迴圈判 dead-letter。"""
+async def _handle_generate(
+    body: dict[str, Any], timeout_sec: int, enqueued_at: datetime | None = None
+) -> None:
+    """generate 佇列：包 asyncio.timeout 跑單集生成。超時往外拋給主迴圈判 dead-letter。
+
+    enqueued_at：pgmq 訊息入列時間，轉傳給 run_pod 算 queue_wait_ms（見 metrics.py）。
+    """
     async with asyncio.timeout(timeout_sec):
-        await run_generate_job(body)
+        await run_generate_job(body, enqueued_at=enqueued_at)
 
 
 # ── 單筆訊息的成功 / 失敗收斂 ──────────────────────────────────────
@@ -132,13 +138,14 @@ async def _compensate_generate_failure(body: dict[str, Any]) -> None:
     只對 generate 佇列有意義（其他佇列 body 沒有 idempotency 欄位）。
     delete_episode_by_idem 內部已加 audio_r2_key IS NULL 條件，不會誤殺健康 row。
     """
-    cluster_id = body.get("cluster_id")
-    deliver_date = body.get("deliver_date") or ""
-    big_topic = body.get("big_topic") or ""
-    angle = body.get("angle") or ""
-    length_tier = body.get("length_tier") or "medium"
-    topic_type = body.get("topic_type") or "evergreen"
-    idem = f"{cluster_id or f'{deliver_date}:{big_topic}:{angle}'}:{length_tier}:{topic_type}"
+    idem = compute_idempotency_key(
+        cluster_id=body.get("cluster_id"),
+        deliver_date=body.get("deliver_date") or "",
+        big_topic=body.get("big_topic") or "",
+        angle=body.get("angle"),
+        length_tier=body.get("length_tier"),
+        topic_type=body.get("topic_type"),
+    )
     try:
         n = await repo.delete_episode_by_idem(idem)
         if n > 0:
@@ -198,9 +205,6 @@ async def run_worker(shutdown: _Shutdown | None = None) -> None:
     await open_pool()
     logger.info("worker 啟動，輪詢 control / generate / dict_translate 佇列")
 
-    async def gen_handler(body: dict[str, Any]) -> None:
-        await _handle_generate(body, settings.job_timeout_sec)
-
     try:
         while not shutdown.requested:
             ctrl = await queue.read(CONTROL_QUEUE, CONTROL_VT)
@@ -210,6 +214,13 @@ async def run_worker(shutdown: _Shutdown | None = None) -> None:
 
             gen = await queue.read(GENERATE_QUEUE, GENERATE_VT)
             if gen is not None:
+                # 用 default-arg 把這筆訊息的 enqueued_at 綁進 closure，避免迴圈
+                # late-binding 陷阱（下一輪 gen 換值後這個 handler 早已被呼叫完畢）。
+                async def gen_handler(
+                    body: dict[str, Any], _enqueued_at: datetime | None = gen.enqueued_at
+                ) -> None:
+                    await _handle_generate(body, settings.job_timeout_sec, _enqueued_at)
+
                 await _process(GENERATE_QUEUE, gen, gen_handler, settings.dead_letter_after)
                 continue
 

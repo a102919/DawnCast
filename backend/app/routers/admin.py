@@ -84,7 +84,10 @@ _TOKEN_USAGE_AGGREGATE_SQL = """
 _TOKEN_USAGE_ITEMS_SQL = """
   select
     slug, title, input_tokens, output_tokens,
-    to_char(created_at, 'YYYY-MM-DD"T"HH24:MI:SS"Z"') as created_at
+    to_char(created_at, 'YYYY-MM-DD"T"HH24:MI:SS"Z"') as created_at,
+    to_char(generation_started_at, 'YYYY-MM-DD"T"HH24:MI:SS"Z"') as generation_started_at,
+    to_char(generation_finished_at, 'YYYY-MM-DD"T"HH24:MI:SS"Z"') as generation_finished_at,
+    gen_metrics
   from public.episodes
   order by created_at desc
   limit 50
@@ -111,17 +114,22 @@ async def list_admin_jobs() -> ApiResponse[list[AdminJobQueue]]:
 
 @router.get("/token-usage", response_model=ApiResponse[AdminTokenUsageResponse])
 async def get_admin_token_usage() -> ApiResponse[AdminTokenUsageResponse]:
-    """token 用量總覽：全集數 input/output 加總 + 最近 50 筆明細。"""
+    """token 用量總覽：全集數 input/output 加總 + 最近 50 筆明細（含分階段耗時）。"""
     async with connection() as conn, conn.cursor(row_factory=dict_row) as cur:
         await cur.execute(_TOKEN_USAGE_AGGREGATE_SQL)
         agg = await cur.fetchone()
         await cur.execute(_TOKEN_USAGE_ITEMS_SQL)
-        items = await cur.fetchall()
+        rows = await cur.fetchall()
+    items: list[AdminTokenUsageItem] = []
+    for r in rows:
+        gen_metrics = r.get("gen_metrics")
+        stages = gen_metrics.get("stages") if isinstance(gen_metrics, dict) else None
+        items.append(AdminTokenUsageItem.model_validate({**r, "stages": stages or []}))
     response = AdminTokenUsageResponse(
         total_input_tokens=agg["total_input_tokens"] if agg else 0,
         total_output_tokens=agg["total_output_tokens"] if agg else 0,
         episode_count=agg["episode_count"] if agg else 0,
-        items=[AdminTokenUsageItem.model_validate(r) for r in items],
+        items=items,
     )
     return ok(response)
 

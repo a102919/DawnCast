@@ -1,4 +1,4 @@
-import { CheckCircle2, Lock, Plus, type LucideIcon } from 'lucide-react'
+import { CheckCircle2, Loader2, Lock, Plus, type LucideIcon } from 'lucide-react'
 import type { DailyOrderStatus } from '../../api'
 
 type Tone = 'neutral' | 'success' | 'warning' | 'accent'
@@ -13,8 +13,11 @@ interface Resolved {
 function resolve(order: { status: DailyOrderStatus } | null, locked: boolean): Resolved {
   if (!order) return { icon: Plus, badgeIcon: false, tone: 'neutral', label: '未點' }
   if (order.status === 'played') return { icon: CheckCircle2, badgeIcon: true, tone: 'success', label: '已播放' }
+  // queued 排在 locked 之前：T1 trigger 下單後立刻翻 queued，但今天晚下單
+  // 時 deliveryTime 已過 cutoff → locked=true → 舊邏輯會顯示「已鎖定」蓋掉
+  // 「生成中」，使用者以為「等隔天」。實際 worker 已 fire-and-forget 入列。
+  if (order.status === 'queued') return { icon: Loader2, badgeIcon: false, tone: 'accent', label: '生成中' }
   if (locked) return { icon: Lock, badgeIcon: true, tone: 'warning', label: '已鎖定' }
-  if (order.status === 'queued') return { icon: CheckCircle2, badgeIcon: false, tone: 'accent', label: '已排入' }
   return { icon: CheckCircle2, badgeIcon: false, tone: 'accent', label: '已送出' }
 }
 

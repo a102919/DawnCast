@@ -14,8 +14,11 @@ RetryPolicy 對照 production 行為：
 
 from __future__ import annotations
 
+import functools
+import inspect
 from typing import Any
 
+from langchain_core.runnables import RunnableConfig
 from langgraph.checkpoint.memory import MemorySaver
 from langgraph.graph import END, START, StateGraph
 from langgraph.types import RetryPolicy
@@ -54,6 +57,34 @@ _WRITER_RETRY = RetryPolicy(
     retry_on=GenerationError,
 )
 
+def _timed(name: str, fn: Any) -> Any:
+    """把每個 node 包一層計時：讀 config['configurable']['metrics_collector']。
+
+    collector 未接（測試直接 graph.ainvoke 沒帶 configurable）時原樣直通，不影響行為。
+    RetryPolicy 重試會讓同一個 node 被呼叫多次，collector.stage() 內部依 attempt 遞增
+    區分每次重試的耗時。tone_selector_node 是同步函式，其餘皆 async——用
+    iscoroutinefunction 判斷呼叫方式，wrapper 本身固定回傳 coroutine（LangGraph
+    支援 sync/async node，包一層後一律視為 async 不影響行為）。
+
+    回傳型別刻意標 Any：StateGraph.add_node 的 overload 要求跟原始 node function
+    完全一致的具名 Callable 結構，包一層 wraps 後的 closure 即使結構相同也會撞
+    overload 解析失敗；這是 wrap-a-third-party-typed-API 的已知邊界，不是型別錯誤。
+    """
+    is_async = inspect.iscoroutinefunction(fn)
+
+    @functools.wraps(fn)
+    async def wrapper(state: PodState, config: RunnableConfig) -> dict[str, Any]:
+        collector = (config.get("configurable") or {}).get("metrics_collector")
+        result: dict[str, Any]
+        if collector is None:
+            result = await fn(state, config) if is_async else fn(state, config)
+        else:
+            with collector.stage(name):
+                result = await fn(state, config) if is_async else fn(state, config)
+        return result
+
+    return wrapper
+
 
 def build_pod(*, checkpointer: MemorySaver | None = None) -> Any:
     """組出 CompiledStateGraph。
@@ -66,30 +97,37 @@ def build_pod(*, checkpointer: MemorySaver | None = None) -> Any:
     # ── nodes ─────────────────────────────────────────────
     # retrieve_sources_node 保留給舊 caller；主線改走四段研究管線。
     # 研究節點刻意不掛 RetryPolicy：任何外部/LLM 失敗由節點內安全降級。
-    builder.add_node("decompose_research", decompose_research_node)
-    builder.add_node("gather_evidence", gather_evidence_node)
-    builder.add_node("cross_verify", cross_verify_node)
-    builder.add_node("tone_selector", tone_selector_node)
+    # 每個 node 用 _timed() 包一層記分階段耗時（見 metrics.py）。
+    builder.add_node("decompose_research", _timed("decompose_research", decompose_research_node))
+    builder.add_node("gather_evidence", _timed("gather_evidence", gather_evidence_node))
+    builder.add_node("cross_verify", _timed("cross_verify", cross_verify_node))
+    builder.add_node("tone_selector", _timed("tone_selector", tone_selector_node))
     builder.add_node(
         "write_script",
-        write_script_node,
+        _timed("write_script", write_script_node),
         retry_policy=_WRITER_RETRY,
     )
     builder.add_node(
         "failover_write_script",
-        failover_write_script_node,
+        _timed("failover_write_script", failover_write_script_node),
         retry_policy=_WRITER_RETRY,
     )
-    builder.add_node("verify_script_claims", verify_script_claims_node)
-    builder.add_node("quality_judge", quality_judge_node)
-    builder.add_node("rewrite_iter_bump", rewrite_iteration_bump_node)
-    builder.add_node("upsert_episode", upsert_episode_node)
-    builder.add_node("render_episode", render_episode_node)
-    builder.add_node("upload_artifacts", upload_artifacts_node)
-    builder.add_node("dead_letter", dead_letter_node)
-    builder.add_node("update_episode_keys", update_episode_keys_node)
-    builder.add_node("insert_deliveries", insert_deliveries_node)
-    builder.add_node("backfill_dict", backfill_dict_node)
+    builder.add_node(
+        "verify_script_claims", _timed("verify_script_claims", verify_script_claims_node)
+    )
+    builder.add_node("quality_judge", _timed("quality_judge", quality_judge_node))
+    builder.add_node(
+        "rewrite_iter_bump", _timed("rewrite_iter_bump", rewrite_iteration_bump_node)
+    )
+    builder.add_node("upsert_episode", _timed("upsert_episode", upsert_episode_node))
+    builder.add_node("render_episode", _timed("render_episode", render_episode_node))
+    builder.add_node("upload_artifacts", _timed("upload_artifacts", upload_artifacts_node))
+    builder.add_node("dead_letter", _timed("dead_letter", dead_letter_node))
+    builder.add_node(
+        "update_episode_keys", _timed("update_episode_keys", update_episode_keys_node)
+    )
+    builder.add_node("insert_deliveries", _timed("insert_deliveries", insert_deliveries_node))
+    builder.add_node("backfill_dict", _timed("backfill_dict", backfill_dict_node))
 
     # ── edges ─────────────────────────────────────────────
     builder.add_edge(START, "decompose_research")

@@ -81,12 +81,14 @@ vi.mock('../state', () => ({
     duration: 0,
     playbackRate: 1,
     videoRef: { current: null },
+    currentEpisode: null,
     seekTo,
     setVideoRef: vi.fn(),
     play,
     pause,
     setPlaybackRate: vi.fn(),
     loadProgress: () => ({ currentTime: 0, exists: false }),
+    setCurrentEpisode: vi.fn(),
   }),
   useSettings: () => ({
     settings: {

@@ -4,6 +4,7 @@ import type {
   Activity,
   AdminEpsGenerateInput,
   AdminEpsGenerateResponse,
+  AdminTokenUsageResponse,
   Api,
   DailyOrder,
   DailyOrderStatus,
@@ -292,6 +293,31 @@ const AdminEpsGenerateResponseSchema = z.object({
   status: z.literal('queued'),
 }) satisfies z.ZodType<AdminEpsGenerateResponse> & z.ZodType<components['schemas']['AdminEpsGenerateResponse']>
 
+const StageMetricSchema = z.object({
+  node: z.string(),
+  durationMs: z.number(),
+  status: z.string(),
+  attempt: z.number(),
+}) satisfies z.ZodType<components['schemas']['StageMetric']>
+
+const AdminTokenUsageResponseSchema = z.object({
+  totalInputTokens: z.number(),
+  totalOutputTokens: z.number(),
+  episodeCount: z.number(),
+  items: z.array(
+    z.object({
+      slug: z.string(),
+      title: z.string(),
+      inputTokens: z.number(),
+      outputTokens: z.number(),
+      createdAt: z.string(),
+      generationStartedAt: z.string().nullable().optional(),
+      generationFinishedAt: z.string().nullable().optional(),
+      stages: z.array(StageMetricSchema),
+    }),
+  ),
+}) satisfies z.ZodType<AdminTokenUsageResponse> & z.ZodType<components['schemas']['AdminTokenUsageResponse']>
+
 // ─── 實作 ─────────────────────────────────────────────────────────────────
 
 export const httpApi: Api = {
@@ -476,6 +502,17 @@ export const httpApi: Api = {
       schema: AdminEpsGenerateResponseSchema,
       // 後端 ADMIN_TOKEN 是 secrets.compare_digest，header 大小寫不敏感但統一用
       // 官方慣例 X-Admin-Token 對齊 curl / 文件範例。
+      extraHeaders: { 'X-Admin-Token': token },
+    })
+  },
+
+  async getAdminTokenUsage() {
+    const token = getAdminToken()
+    if (!token) {
+      throw new AppError('missing_admin_token', '尚未設定管理員權杖，請先在管理後台貼上')
+    }
+    return request<AdminTokenUsageResponse>('/admin/token-usage', {
+      schema: AdminTokenUsageResponseSchema,
       extraHeaders: { 'X-Admin-Token': token },
     })
   },

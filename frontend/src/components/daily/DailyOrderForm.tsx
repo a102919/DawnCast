@@ -227,7 +227,7 @@ export function DailyOrderForm({
         </p>
       </header>
 
-      {locked && <LockedBanner existing={existing} />}
+      {locked && existing?.status !== 'queued' && <LockedBanner existing={existing} />}
 
       {/* Phase 4：三分頁入口選擇 */}
       <div className="space-y-2">

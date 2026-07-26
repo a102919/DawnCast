@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Callable
+from datetime import datetime
 from typing import Any, cast
 
 from langchain_core.language_models import BaseChatModel
@@ -21,11 +22,13 @@ from shared.config import Settings, get_settings
 from shared.db import pool as db_pool
 from shared.db import repo as db_repo
 from shared.errors import RateLimitError
+from shared.idempotency import compute_idempotency_key
 from shared.models import ClaimVerification
 from shared.storage import r2 as db_r2
 
 from .chat import make_langchain_chat
 from .graph import build_pod
+from .metrics import MetricsCollector
 from .mock import MockRenderer, get_mocks
 
 SourceProviderFactory = Callable[[str, Settings], Any]
@@ -98,6 +101,7 @@ async def run_pod(
     queue: Any = None,
     source_provider_factory: SourceProviderFactory | None = None,
     thread_id: str | None = None,
+    enqueued_at: datetime | None = None,
 ) -> str:
     """跑一集 LangGraph pod，回傳 episode_id。
 
@@ -106,6 +110,9 @@ async def run_pod(
       * demo：scripts/run_langgraph_pod.py 帶 `--mock` 走 in-memory。
       * 測試：注入 FakeChatModel 等 fixtures（任意一個被注入就自動進 mock 模式，
         不會去開 DB pool）。要測 grounding 行為時額外注入 source_provider_factory。
+
+    enqueued_at：pgmq 訊息入列時間，從 worker 一路傳進來算 queue_wait_ms
+    （見 metrics.py）。demo / 直接呼叫時可留 None。
     """
     cfg = settings or get_settings()
     # 任何元件被注入 → 視為測試 / mock 模式，不開 DB pool，也不 reset mock state
@@ -134,6 +141,36 @@ async def run_pod(
         runtime["queue"] = queue
     if source_provider_factory is not None:
         runtime["source_provider_factory"] = source_provider_factory
+
+    # idem_key 這裡先算一份給 collector / forensic run 用，
+    # upsert_episode_node 內仍是唯一權威來源。
+    idem_key = compute_idempotency_key(
+        cluster_id=body.get("cluster_id"),
+        deliver_date=body["deliver_date"],
+        big_topic=body["big_topic"],
+        angle=body.get("angle"),
+        length_tier=body.get("length_tier"),
+        topic_type=body.get("topic_type"),
+    )
+    collector = MetricsCollector(idempotency_key=idem_key, enqueued_at=enqueued_at)
+    run_id = await runtime["repo"].start_pipeline_run(idem_key, enqueued_at=enqueued_at)
+    runtime["metrics_collector"] = collector
+    runtime["pipeline_run_id"] = run_id
+
+    async def _finalize_run_failed(exc_type: str, message: str) -> None:
+        collector.finalize(
+            "failed", error={"node": "run_pod", "type": exc_type, "message": message[:500]}
+        )
+        try:
+            await runtime["repo"].finalize_pipeline_run(
+                run_id,
+                status="failed",
+                gen_metrics=collector.gen_metrics(),
+                research_metrics=collector.research_metrics(),
+                error=collector.error,
+            )
+        except Exception:
+            logger.exception("finalize_pipeline_run 失敗 run_id=%s", run_id)
 
     # 初始 state：解開 body 為 PodState 欄位
     initial: dict[str, Any] = {
@@ -180,6 +217,11 @@ async def run_pod(
 
     try:
         final: Any = await graph.ainvoke(initial, config=config)
+    except Exception as exc:
+        # graph 整個炸掉（多半發生在 upsert_episode 之前，例如 write_script 重試
+        # 耗盡）：episode row 可能還沒建立，forensic run row 是唯一留得住的紀錄。
+        await _finalize_run_failed(type(exc).__name__, str(exc))
+        raise
     finally:
         if not effective_mock:
             chat_obj = runtime.get("chat")
@@ -193,8 +235,10 @@ async def run_pod(
     if not episode_id:
         # 走到 END 沒拿到 episode_id 代表 fail（典型：degrade 模式撞限流放棄）。
         # worker 端 vt-retry 機制會接手重投；rate limit 也要明確 raise 讓
-        # production 觀測能正確分流。
+        # production 觀測能正確分流。這條路徑通常發生在 upsert_episode 之前，
+        # 尚未有其他 node 幫忙 finalize forensic run，這裡補上。
         errors = final.get("errors") or []
+        await _finalize_run_failed("NoEpisodeId", str(errors))
         if final.get("rate_limited"):
             raise RateLimitError(f"pod 限流且未啟用 failover：{errors}")
         raise RuntimeError(f"pod 沒產出 episode_id：errors={errors}")

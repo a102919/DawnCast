@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState, type ReactNode } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { api, type DailyOrder, type DailyOrderInput } from '../api'
 import { DailyOrderContext, type DailyOrderContextValue } from './dailyOrderContextValue'
 import { DEFAULT_DELIVERY_TIME, addDays, previousNDays, toIsoDate } from '../lib/dailyOrderDate'
@@ -14,17 +14,30 @@ export function DailyOrderProvider({ children }: { readonly children: ReactNode 
   const todayDate = useMemo(() => getTodayDate(), [])
   const [orders, setOrders] = useState<ReadonlyMap<string, DailyOrder>>(new Map())
 
-  useEffect(() => {
+  const loadOrders = useCallback(async (): Promise<void> => {
     const fromDate = previousNDays(todayDate, HISTORY_DAYS).at(-1) ?? todayDate
     const toDate = addDays(todayDate, FORWARD_DAYS - 1)
-    void api.listDailyOrders(fromDate, toDate).then(list => {
+    try {
+      const list = await api.listDailyOrders(fromDate, toDate)
       const map = new Map<string, DailyOrder>()
       for (const o of list) map.set(o.date, o)
       setOrders(map)
-    }).catch(err => {
-      console.warn('[daily-order] initial load failed', err)
-    })
+    } catch (err) {
+      console.warn('[daily-order] load failed', err)
+    }
   }, [todayDate])
+
+  const refresh = useCallback(async (): Promise<void> => {
+    await loadOrders()
+  }, [loadOrders])
+
+  // 初次掛載跑一次載入。mounted ref 確保 StrictMode 雙 mount 只觸發一次。
+  const mountedRef = useRef<boolean>(false)
+  useEffect(() => {
+    if (mountedRef.current) return
+    mountedRef.current = true
+    void refresh()
+  }, [refresh])
 
   const getOrder = useCallback(
     (date: string): DailyOrder | null => orders.get(date) ?? null,
@@ -99,6 +112,7 @@ export function DailyOrderProvider({ children }: { readonly children: ReactNode 
     setOrder,
     deleteOrder,
     markPlayed,
+    refresh,
   }
 
   return (
