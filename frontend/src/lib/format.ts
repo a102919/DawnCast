@@ -1,6 +1,9 @@
 export function formatDateZhTW(isoDate: string): string {
-  // ponytail: 後端尚未回傳真實 publishedAt，給空字串；new Date('') 是 Invalid Date，
-  // 直接 format 會 RangeError 把整個 HomeRoute 炸白。fallback 回原文（空字串也 OK）。
+  // ponytail: DB 偶發拿到空字串（舊資料 migration 未跑齊、手動匯入、seed 無值）時，
+  // new Date('') 是 Invalid Date，Intl 直接 format 會 RangeError 把整個 HomeRoute 炸白。
+  // fallback 回原文（空字串也 OK，UI 留空比整頁 crash 好）。
+  // 正常路徑：migration 0018 把 episodes.published_at 補上 current_date default + backfill，
+  // 不會再走到 fallback。
   const d = new Date(isoDate)
   if (Number.isNaN(d.getTime())) return isoDate
   return new Intl.DateTimeFormat('zh-TW', { month: 'long', day: 'numeric' }).format(d)
