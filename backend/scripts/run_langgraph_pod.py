@@ -184,6 +184,7 @@ async def run_demo(args: argparse.Namespace) -> int:
         get_mocks,
         make_mock_workdir,
     )
+    from shared.config import get_settings
 
     body = {
         "big_topic": args.topic,
@@ -259,7 +260,10 @@ async def run_demo(args: argparse.Namespace) -> int:
     print(f"  writer 呼叫次數 : {chat._writer_count}")
     print(f"  judge  呼叫次數 : {chat._judge_count}")
     print(f"  chat 總呼叫次數 : {chat._call_count}（writer + judge 累計）")
-    print(f"  rewrite_iterations cap = {2}（可在 Settings.max_rewrite_iterations 調）")
+    print(
+        f"  rewrite_iterations cap = {get_settings().max_rewrite_iterations}"
+        "（可在 Settings.max_rewrite_iterations 調）"
+    )
     print()
 
     # 印 final state dump

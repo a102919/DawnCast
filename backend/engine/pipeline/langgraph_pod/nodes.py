@@ -1972,11 +1972,35 @@ async def quality_judge_node(state: PodState, config: RunnableConfig) -> dict[st
     }
     if collector is not None:
         collector.set_research_summary(judge_scores=scores)
-    return {
+
+    result: dict[str, Any] = {
         "judge_scores": scores,
         "judge_feedback": verdict.feedback,
         "token_usage": [{"node": "judge", **usage}],
     }
+
+    result.update(_apply_best_draft_fallback(state, ctx, scores, script))
+    return result
+
+
+def _apply_best_draft_fallback(
+    state: PodState, ctx: dict[str, Any], scores: dict[str, float], script: Any
+) -> dict[str, Any]:
+    """best-draft 追蹤：用最弱一軸分數排名（呼應 _judge_passed 的 all-axes 門檻），
+    撞 max_rewrite_iterations 時若這輪反而比歷來最佳還差，發布最佳版而非最後一版。
+    """
+    best_scores = state.get("best_judge_scores")
+    best_min = min(best_scores.values()) if best_scores else -1.0
+    current_min = min(scores.values())
+    if current_min > best_min:
+        return {"best_script": script, "best_judge_scores": scores}
+
+    max_iter = int(ctx.get("max_rewrite_iterations", 1))
+    iterations = state.get("rewrite_iterations", 0)
+    best_script = state.get("best_script")
+    if iterations >= max_iter and best_script is not None:
+        return {"script": best_script, "judge_scores": best_scores}
+    return {}
 
 
 def _judge_passed(scores: dict[str, float], threshold: float) -> bool:
@@ -1993,7 +2017,7 @@ def judge_decision(state: PodState, config: RunnableConfig) -> Literal["upsert",
     """
     settings = _ctx(config)
     threshold = float(settings.get("quality_threshold", 0.6))
-    max_iter = int(settings.get("max_rewrite_iterations", 2))
+    max_iter = int(settings.get("max_rewrite_iterations", 1))
     scores = state.get("judge_scores") or {}
     iterations = state.get("rewrite_iterations", 0)
     verification = state.get("claim_verification")

@@ -304,7 +304,8 @@ async def test_judge_triggers_rewrite_then_passes() -> None:
 
 async def test_judge_rewrite_cap_respected() -> None:
     """judge 永遠給爛分 → max_rewrite_iterations 次後放行，不無限循環。"""
-    # 3 輪 full generation × (1 outline + 3 segments) = 12 writer + 3 judge = 15
+    # max_rewrite_iterations=1：round0 + 1 次 rewrite = 2 輪
+    # 2 輪 × (1 outline + 3 segments) = 8 writer + 2 judge = 10
     block = [_outline_json()] + [_segment_json(seg_index=i) for i in range(3)]
     chat = FakeChatModel(
         responses=block * 3,
@@ -322,8 +323,41 @@ async def test_judge_rewrite_cap_respected() -> None:
         renderer=renderer,
     )
     assert eid
-    assert chat._call_count == 15
-    # 不會到 21（不會無限循環）
+    assert chat._call_count == 10
+    # 不會到 15（不會無限循環，第 3 輪不會發生）
+
+
+async def test_judge_cap_publishes_best_draft_not_last() -> None:
+    """撞 cap 時若最後一輪比先前輪次還爛，發布歷史最佳版而非最後一版。"""
+    rounds = [
+        (0.5, "roundone"),  # 最佳（min=0.5）
+        (0.2, "roundtwo"),  # 最後一輪、也最爛（min=0.2）→ 撞 cap
+    ]
+    responses = []
+    for _, word in rounds:
+        responses.append(_outline_json(english_word=word))
+        responses.extend(_segment_json(seg_index=i, word=word) for i in range(3))
+    chat = FakeChatModel(
+        responses=responses,
+        judge_responses=[_judge_json(score, ["bad"]) for score, _ in rounds],
+    )
+    repo, r2, queue = get_mocks(reset=True)
+    renderer = MockRenderer(make_mock_workdir())
+
+    eid = await run_pod(
+        _body(),
+        chat=chat,
+        repo=repo,
+        r2=r2,
+        queue=queue,
+        renderer=renderer,
+    )
+    assert eid
+    episode = repo.get_episode(eid)
+    assert episode is not None and episode.script_json is not None
+    lines_text = " ".join(line["text"] for line in episode.script_json["script"])
+    assert "roundone" in lines_text
+    assert "roundtwo" not in lines_text
 
 
 # ── 3b. 字數低於 length_tier 下限 → 帶字數回饋重打 ───────────

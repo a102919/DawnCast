@@ -176,8 +176,10 @@ class Settings(BaseSettings):
     # LLM-as-judge 三軸都要達到的門檻（0-1 per axis）
     quality_threshold: float = 0.6
 
-    # judge 不及格 → 觸發 rewrite 的最大次數（cycle cap）
-    max_rewrite_iterations: int = 2
+    # judge 不及格 → 觸發 rewrite 的最大次數（cycle cap）。
+    # 實測第二輪重寫從未證明能修好被點名的軸，反而常讓分數更差；
+    # 下檔已有 best-draft fallback 兜底，1 次補救機會即可。
+    max_rewrite_iterations: int = 1
 
     # topic_type → 寫稿 tone（tone 寫進 prompt）
     tone_map: dict[str, str] = {

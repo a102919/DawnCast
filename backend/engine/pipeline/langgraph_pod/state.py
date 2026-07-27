@@ -67,6 +67,11 @@ class PodState(TypedDict, total=False):
     engine_used: str
     judge_scores: dict[str, float]
     judge_feedback: Annotated[list[str], _append]
+    # 撞 max_rewrite_iterations 前，歷來 judge 最弱一軸分數最高的那版稿子
+    # 與其對應分數（quality_judge_node 每輪都比較更新）；cap 時若最後一輪
+    # 反而更差，發布這版而非最後一輪，見 judge_decision 設計討論。
+    best_script: ScriptJSON
+    best_judge_scores: dict[str, float]
     # 每次 chat.ainvoke 都 append 一筆 {node, input_tokens, output_tokens}，
     # upsert_episode_node 彙總成一行 log，供成本核算（見 chat.py 的 usage_metadata）。
     token_usage: Annotated[list[dict[str, Any]], _append]
