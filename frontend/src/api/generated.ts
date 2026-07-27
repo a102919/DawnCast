@@ -942,6 +942,11 @@ export interface components {
              * @enum {string}
              */
             lengthTier: "short" | "medium" | "long";
+            /**
+             * Ready
+             * @default false
+             */
+            ready: boolean;
         };
         /** DictEntry */
         DictEntry: {

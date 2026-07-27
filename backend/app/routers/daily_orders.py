@@ -28,7 +28,11 @@ _SELECT = """
          to_char(created_at, 'YYYY-MM-DD"T"HH24:MI:SS"Z"') as created_at,
          to_char(updated_at, 'YYYY-MM-DD"T"HH24:MI:SS"Z"') as updated_at,
          to_char(played_at, 'YYYY-MM-DD"T"HH24:MI:SS"Z"') as played_at,
-         entry_mode, length_tier
+         entry_mode, length_tier,
+         exists (
+           select 1 from public.deliveries d
+           where d.user_id = daily_orders.user_id and d.deliver_date = daily_orders.order_date
+         ) as ready
   from public.daily_orders
 """
 

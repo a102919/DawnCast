@@ -207,6 +207,7 @@ const DailyOrderSchema = z.object({
   // 故不用再放寬——真的缺欄位應該讓 zod 直接炸，而不是默默補 undefined。
   entryMode: z.enum(['news', 'topic', 'knowledge', 'skill']),
   lengthTier: z.enum(['short', 'medium', 'long']),
+  ready: z.boolean(),
 }) satisfies z.ZodType<DailyOrder> & z.ZodType<components['schemas']['DailyOrder']>
 
 const DailyOrderListSchema = z.array(DailyOrderSchema)

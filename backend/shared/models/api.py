@@ -87,6 +87,10 @@ class DailyOrder(CamelModel):
     # Phase 4 新增：入口類型與長度 tier。預設值對齊 migration 0007 給舊列回退路徑。
     entry_mode: EntryMode = "topic"
     length_tier: LengthTier = "medium"
+    # status 只有 pending/queued/played 三態，queued→played 只在使用者實際按下播放才會翻，
+    # 內容其實早就生成完畢也一樣顯示 queued；ready 補上「deliveries 是否已有這天的集數」，
+    # 讓前端能把「生成中」跟「已生成待播放」分開顯示，見 StatusBadge.resolve()。
+    ready: bool = False
 
 
 class Cue(CamelModel):

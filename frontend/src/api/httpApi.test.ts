@@ -85,6 +85,7 @@ describe('httpApi envelope 解包', () => {
         playedAt: null,
         entryMode: 'topic',
         lengthTier: 'medium',
+        ready: false,
       },
     })
     await expect(
