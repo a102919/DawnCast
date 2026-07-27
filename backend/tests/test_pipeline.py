@@ -19,6 +19,7 @@ from typing import Any
 import pytest
 
 from engine.pipeline import generate_job, reuse
+from engine.pipeline.langgraph_pod import nodes
 from engine.pipeline.langgraph_pod.chat import FakeChatModel
 from engine.pipeline.langgraph_pod.mock import MockRenderer, make_mock_workdir
 from shared.errors import RateLimitError
@@ -88,6 +89,10 @@ class FakeRepo:
         self.deliveries.append((user_id, episode_id, deliver_date))
         return True
 
+    async def get_episode_meta(self, episode_id: str) -> dict[str, str]:
+        # reuse 路徑不驗通知文案，給 dummy 即可走完 notify_user 呼叫
+        return {"slug": "fake-slug", "title": "fake-title"}
+
 
 class FakeQueue:
     def __init__(self) -> None:
@@ -137,6 +142,46 @@ async def test_reuse_hit_only_delivers(monkeypatch: pytest.MonkeyPatch) -> None:
     assert result == "ep-123"
     assert repo.deliveries == [("u1", "ep-123", "2026-06-23")]
     assert q.sent == []  # 命中不排生成
+
+
+async def test_reuse_hit_survives_push_failure(monkeypatch: pytest.MonkeyPatch) -> None:
+    repo = FakeRepo(reusable="ep-123")
+    monkeypatch.setattr(reuse, "repo", repo)
+
+    async def _fail_notify(_user_id: str, _payload: dict[str, str]) -> int:
+        raise RuntimeError("push unavailable")
+
+    monkeypatch.setattr(reuse, "notify_user", _fail_notify)
+
+    result = await reuse.resolve_for_user(
+        user_id="u1", big_topic="ai", deliver_date="2026-06-23"
+    )
+
+    assert result == "ep-123"
+    assert repo.deliveries == [("u1", "ep-123", "2026-06-23")]
+
+
+async def test_insert_delivery_survives_push_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo = FakeRepo(reusable=None)
+
+    async def _fail_notify(_user_id: str, _payload: dict[str, str]) -> int:
+        raise RuntimeError("push unavailable")
+
+    monkeypatch.setattr(nodes, "notify_user", _fail_notify)
+
+    result = await nodes.insert_deliveries_node(
+        {
+            "user_ids": ["u1"],
+            "episode_id": "ep-123",
+            "deliver_date": "2026-06-23",
+        },
+        {"configurable": {"repo": repo}},
+    )
+
+    assert result == {}
+    assert repo.deliveries == [("u1", "ep-123", "2026-06-23")]
 
 
 async def test_reuse_miss_enqueues_generate(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -404,6 +449,10 @@ class _GenRepoSpy:
     async def insert_delivery(self, user_id: str, episode_id: str, deliver_date: str) -> bool:
         self.deliveries.append((user_id, episode_id, deliver_date))
         return True
+
+    async def get_episode_meta(self, episode_id: str) -> dict[str, str]:
+        # push payload 真正用得到的兩個欄位；測試不驗通知文案所以給 dummy 即可
+        return {"slug": "spy-slug", "title": "spy-title"}
 
     async def start_pipeline_run(self, idempotency_key: str, *, enqueued_at: Any) -> str:
         return "run-spy-id"

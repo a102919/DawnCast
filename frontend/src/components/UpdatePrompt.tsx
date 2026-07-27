@@ -28,6 +28,7 @@ export function UpdatePrompt() {
     const id = toast('有新版本可用', {
       description: '點擊「重新整理」套用新版本',
       duration: Infinity,
+      closeButton: true,
       action: {
         label: '重新整理',
         onClick: () => {

@@ -1,7 +1,7 @@
 import { Link } from 'react-router-dom'
 import { motion } from 'framer-motion'
 import { Play, Heart, Sparkles, Clock } from 'lucide-react'
-import { CEFR_COLOR, TOPIC_LABELS, formatTime } from '../../lib'
+import { CEFR_COLOR, TOPIC_LABELS, formatDateZhTW, formatTime } from '../../lib'
 import type { MockEpisode } from '../../lib'
 import { useFavorites } from '../../state'
 import { EpisodeCover } from '../shared/EpisodeCover'
@@ -87,6 +87,7 @@ export function TodayHeroCard({ ep, duration, today }: TodayHeroCardProps) {
                 · <Clock size={11} />
                 <span>{duration ? formatTime(duration) : '—'}</span>
               </span>
+              <span>· {formatDateZhTW(ep.publishedAt)}</span>
             </div>
 
             {/* CTA 列：雙鈕對齊下欄網格 50%/50% 與 gap-3 */}

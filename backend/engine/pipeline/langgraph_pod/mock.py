@@ -258,6 +258,17 @@ class MockRepo:
     def get_episode(self, episode_id: str) -> _EpisodeRow | None:
         return self.episodes.get(episode_id)
 
+    async def get_episode_meta(self, episode_id: str) -> dict[str, str] | None:
+        """鏡像 shared.db.repo.get_episode_meta：拿 slug + 中文顯示標題給 push payload。
+
+        跟 get_episode 共用 _EpisodeRow，但只回 push 真正用得到的兩個欄位，
+        並把 coalesce(title_zh, title) 的語意在 mock 端自己做完。
+        """
+        row = self.episodes.get(episode_id)
+        if row is None:
+            return None
+        return {"slug": row.slug, "title": row.title_zh or row.title}
+
 
 # ── MockR2 ─────────────────────────────────────────────────
 

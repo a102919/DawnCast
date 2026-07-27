@@ -8,6 +8,7 @@ import { GlobalAudioHost, MiniPlayer } from './components/player'
 import { HomeRoute, PlayerRoute, VocabRoute, FavoritesRoute, SettingsRoute, ProgressRoute, FlashcardRoute, DailyRoute, LoginRoute, AdminRoute } from './routes'
 import { useSprings } from './lib/motion'
 import { UpdatePrompt } from './components/UpdatePrompt'
+import { PushPrompt } from './components/PushPrompt'
 
 // 進入 PlayerRoute 用「往上推入」的位移感（呼應 Home 精選卡→播放頁的層級深入），
 // 其餘頁面互轉維持單純淡入淡出，避免非相關頁面切換也有位移感造成雜訊。
@@ -128,8 +129,21 @@ export default function App() {
       <AuthProvider>
         <AppShell />
       </AuthProvider>
-      <Toaster position="bottom-center" richColors />
+      <Toaster
+        position="top-right"
+        className="dc-toaster"
+        closeButton
+        offset={{ top: 'calc(4rem + env(safe-area-inset-top, 0px))', right: '1rem' }}
+        mobileOffset={{ top: 'calc(4rem + env(safe-area-inset-top, 0px))', left: '1rem', right: '1rem' }}
+        toastOptions={{
+          unstyled: true,
+          className: 'dc-toast',
+          descriptionClassName: 'dc-toast-description',
+          closeButtonAriaLabel: '關閉通知',
+        }}
+      />
       <UpdatePrompt />
+      <PushPrompt />
     </BrowserRouter>
   )
 }

@@ -5,7 +5,7 @@ import { springs } from '../../lib/motion'
 interface SheetProps {
   readonly isOpen: boolean
   readonly onClose: () => void
-  readonly variant: 'bottom' | 'side'
+  readonly variant: 'bottom' | 'side' | 'top'
   readonly children: ReactNode
   readonly ariaLabelledBy: string
   readonly maxHeight?: string
@@ -24,7 +24,8 @@ export function Sheet({
   dismissible = true,
 }: SheetProps) {
   const [exitVelocity, setExitVelocity] = useState(0)
-  const axis = variant === 'bottom' ? 'y' : 'x'
+  const axis = variant === 'side' ? 'x' : 'y'
+  const isTop = variant === 'top'
 
   useEffect(() => {
     if (!isOpen) return
@@ -38,7 +39,9 @@ export function Sheet({
   const handleDragEnd = (_: unknown, info: PanInfo) => {
     const offset = axis === 'y' ? info.offset.y : info.offset.x
     const velocity = axis === 'y' ? info.velocity.y : info.velocity.x
-    const shouldClose = velocity > 500 || (offset > 100 && velocity >= 0)
+    const shouldClose = isTop
+      ? velocity < -500 || (offset < -100 && velocity <= 0)
+      : velocity > 500 || (offset > 100 && velocity >= 0)
     if (shouldClose) {
       setExitVelocity(velocity)
       onClose()
@@ -64,23 +67,39 @@ export function Sheet({
             className={
               variant === 'bottom'
                 ? 'fixed bottom-nav-sheet left-0 right-0 z-50 material-regular rounded-t-xl border-t border-border shadow-lg flex flex-col'
-                : `fixed top-0 right-0 h-full z-50 material-regular shadow-lg flex flex-col ${widthClassName}`
+                : variant === 'top'
+                  ? 'fixed top-0 left-0 right-0 lg:left-auto lg:right-4 lg:w-[min(32rem,calc(100vw-2rem))] z-50 material-regular rounded-b-xl border-b border-border shadow-lg flex flex-col pt-[env(safe-area-inset-top,0px)]'
+                  : `fixed top-0 right-0 h-full z-50 material-regular shadow-lg flex flex-col ${widthClassName}`
             }
-            style={variant === 'bottom' ? { maxHeight } : undefined}
-            initial={variant === 'bottom' ? { y: '100%' } : { x: '100%' }}
+            style={variant === 'side' ? undefined : { maxHeight }}
+            initial={variant === 'bottom' ? { y: '100%' } : isTop ? { y: '-100%' } : { x: '100%' }}
             animate={
-              variant === 'bottom'
+              variant === 'bottom' || isTop
                 ? { y: 0, transition: springs.gentle }
                 : { x: 0, transition: springs.gentle }
             }
             exit={
               variant === 'bottom'
                 ? { y: '100%', transition: { ...springs.bouncy, velocity: exitVelocity } }
-                : { x: '100%', transition: { ...springs.bouncy, velocity: exitVelocity } }
+                : isTop
+                  ? { y: '-100%', transition: { ...springs.bouncy, velocity: exitVelocity } }
+                  : { x: '100%', transition: { ...springs.bouncy, velocity: exitVelocity } }
             }
             drag={dismissible ? axis : false}
-            dragConstraints={axis === 'y' ? { top: 0 } : { left: 0 }}
-            dragElastic={axis === 'y' ? { top: 0, bottom: 0.5 } : { left: 0, right: 0.5 }}
+            dragConstraints={
+              axis === 'y'
+                ? isTop
+                  ? { bottom: 0 }
+                  : { top: 0 }
+                : { left: 0 }
+            }
+            dragElastic={
+              axis === 'y'
+                ? isTop
+                  ? { top: 0.5, bottom: 0 }
+                  : { top: 0, bottom: 0.5 }
+                : { left: 0, right: 0.5 }
+            }
             onDragEnd={dismissible ? handleDragEnd : undefined}
           >
             {variant === 'bottom' && (

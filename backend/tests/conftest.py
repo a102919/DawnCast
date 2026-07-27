@@ -12,3 +12,11 @@ import os
 # import 時就讀 env，所以這行必須在所有 app / shared import 之前執行。
 os.environ["DEV_AUTH_BYPASS"] = "false"
 os.environ["DEV_USER_ID"] = ""
+
+# 把 VAPID 清空讓 shared.push.notify_user 在測試裡走 early-return 不打 DB。
+# 不想讓 pipeline / reuse 的測試跟 push 訂閱表的存在與否綁在一起——這些測試不
+# 驗通知行為。test_notifications.py 自己 monkeypatch get_settings 提供 VAPID，
+# 不受這個全域清空影響。
+os.environ["VAPID_PRIVATE_KEY"] = ""
+os.environ["VAPID_PUBLIC_KEY"] = ""
+os.environ["VAPID_SUBJECT"] = ""

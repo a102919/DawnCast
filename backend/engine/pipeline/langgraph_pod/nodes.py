@@ -2407,14 +2407,22 @@ async def insert_deliveries_node(state: PodState, config: RunnableConfig) -> dic
             # insert_delivery 回傳「是否首次寫入」，直接當推送的去重閘門——
             # pipeline 重投時 ON CONFLICT DO NOTHING 回 False，不會重複通知。
             if await repo.insert_delivery(uid, episode_id, deliver_date):
-                await notify_user(
-                    uid,
-                    {
-                        "title": "你的節目已生成",
-                        "body": "你點的內容做好了，點開就能聽。",
-                        "url": "/",
-                    },
-                )
+                # 拿這集的對外資訊（slug + 中文標題）拼通知 payload。
+                # get_episode_meta 回 None 表示 episode 已不存在（FK CASCADE
+                # 理論上不會發生，但守一下），沒有 slug 就不推。
+                meta = await repo.get_episode_meta(episode_id)
+                if meta:
+                    try:
+                        await notify_user(
+                            uid,
+                            {
+                                "title": f"「{meta['title']}」已製作完成",
+                                "body": "點開就能聽。",
+                                "url": f"/player/{meta['slug']}",
+                            },
+                        )
+                    except Exception as exc:
+                        logger.warning("交付已完成，但推播失敗（uid=%s）: %s", uid, exc)
         except ForeignKeyViolation:
             # 上游補償（update_episode_keys_node 的 DELETE-on-failure 或 worker
             # _compensate_generate_failure）已把這筆 episode row 刪掉 —

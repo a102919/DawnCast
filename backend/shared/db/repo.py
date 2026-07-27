@@ -576,8 +576,10 @@ async def delete_push_endpoints(endpoints: list[str]) -> None:
         await conn.commit()
 
 
-async def claim_daily_notifications(deliver_date: str, now_hhmm: str) -> list[str]:
-    """認領「出餐時間已到、還沒通知過」的交付，回傳該通知的 user_id（已去重）。
+async def claim_daily_notifications(
+    deliver_date: str, now_hhmm: str
+) -> list[dict[str, str]]:
+    """認領「出餐時間已到、還沒通知過」的交付，回傳每筆的 user_id + episode slug/title（已去重）。
 
     UPDATE ... WHERE notified_at is null 同時完成篩選與 atomic claim——cron 掃
     幾次都只會推一次，不需要額外的 marker 表。時間用 <= 而非分鐘精確比對：
@@ -586,13 +588,18 @@ async def claim_daily_notifications(deliver_date: str, now_hhmm: str) -> list[st
     left join + coalesce 讓「還沒有 user_settings 列」不是特殊情況（對齊
     app/routers/settings.py 的 _SELECT 做法）。沒有任何 push 訂閱的 user 直接
     排除，避免白認領（notified_at 被寫掉但沒人收到）。
+
+    inner join episodes 拿到 slug 跟顯示用標題（coalesce title_zh, title），
+    讓 caller 直接拼 payload 不用再多查一次。
     """
     async with connection() as conn, conn.cursor(row_factory=dict_row) as cur:
         await cur.execute(
             """
             with due as (
-              select d.id
+              select d.id, d.user_id, d.episode_id, e.slug,
+                     coalesce(e.title_zh, e.title) as title
               from public.deliveries d
+              join public.episodes e on e.id = d.episode_id
               left join public.user_settings us on us.user_id = d.user_id
               where d.deliver_date = %s
                 and d.notified_at is null
@@ -603,14 +610,42 @@ async def claim_daily_notifications(deliver_date: str, now_hhmm: str) -> list[st
             )
             update public.deliveries d
             set notified_at = now()
-            where d.id in (select id from due)
-            returning d.user_id::text as user_id
+            from due
+            where d.id = due.id
+            returning d.user_id::text as user_id, due.slug, due.title
             """,
             (deliver_date, now_hhmm),
         )
         rows = await cur.fetchall()
         await conn.commit()
-    return list(dict.fromkeys(r["user_id"] for r in rows))
+    seen: set[str] = set()
+    deduped: list[dict[str, str]] = []
+    for r in rows:
+        if r["user_id"] in seen:
+            continue
+        seen.add(r["user_id"])
+        deduped.append(
+            {"user_id": r["user_id"], "slug": r["slug"], "title": r["title"]}
+        )
+    return deduped
+
+
+async def get_episode_meta(episode_id: str) -> dict[str, str] | None:
+    """拿集數的對外顯示資訊（slug + 顯示用標題），給 push 通知拼 payload。
+
+    回 None 表示 episode 不存在（理論上 FK CASCADE 不會發生，caller 端要 guard）。
+    title 已經 coalesce title_zh → title，中文版優先。
+    """
+    async with connection() as conn, conn.cursor(row_factory=dict_row) as cur:
+        await cur.execute(
+            "select slug, coalesce(title_zh, title) as title "
+            "from public.episodes where id = %s",
+            (episode_id,),
+        )
+        row = await cur.fetchone()
+        if row is None:
+            return None
+        return {"slug": row["slug"], "title": row["title"]}
 
 
 async def undelivered_users(deliver_date: str) -> list[str]:

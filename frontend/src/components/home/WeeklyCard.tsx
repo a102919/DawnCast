@@ -1,6 +1,6 @@
 import { Link } from 'react-router-dom'
 import { Clock } from 'lucide-react'
-import { CEFR_COLOR, TOPIC_LABELS, formatTime } from '../../lib'
+import { CEFR_COLOR, TOPIC_LABELS, formatDateZhTW, formatTime } from '../../lib'
 import type { MockEpisode } from '../../lib'
 import { EpisodeCover } from '../shared/EpisodeCover'
 
@@ -49,6 +49,8 @@ export function WeeklyCard({ ep, duration, className = '' }: WeeklyCardProps) {
           <div className="mt-2 flex items-center gap-1 text-[11px] text-text-tertiary">
             <Clock size={11} />
             <span>{duration ? formatTime(duration) : '—'}</span>
+            <span>·</span>
+            <span>{formatDateZhTW(ep.publishedAt)}</span>
           </div>
         </div>
       </article>

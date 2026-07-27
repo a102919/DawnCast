@@ -101,21 +101,24 @@ async def _push_daily(deliver_date: str) -> None:
     去重在 SQL：claim_daily_notifications 認領 deliveries.notified_at is null 的列，
     所以這裡不需要任何狀態判斷，tick 幾次都只推一次。時區用 app_timezone 自己算，
     不依賴容器本機時鐘（通常 UTC）。
+
+    payload 帶當天集數的 slug 跟顯示用標題（從 claim JOIN episodes 一次拿），
+    點擊通知直接跳到那集的 player 頁。
     """
     now = datetime.now(ZoneInfo(get_settings().app_timezone))
-    user_ids = await repo.claim_daily_notifications(deliver_date, now.strftime("%H:%M"))
-    if not user_ids:
+    claimed = await repo.claim_daily_notifications(deliver_date, now.strftime("%H:%M"))
+    if not claimed:
         return
-    for uid in user_ids:
+    for row in claimed:
         await notify_user(
-            uid,
+            row["user_id"],
             {
-                "title": "今天的 DawnCast 到了",
-                "body": "早安，今天的節目已經準備好，點開就能聽。",
-                "url": "/",
+                "title": f"「{row['title']}」已製作完成",
+                "body": "點開就能聽。",
+                "url": f"/player/{row['slug']}",
             },
         )
-    logger.info("push_daily：通知 %d 位使用者（date=%s）", len(user_ids), deliver_date)
+    logger.info("push_daily：通知 %d 位使用者（date=%s）", len(claimed), deliver_date)
 
 
 async def _orchestrate(request_date: str) -> None:

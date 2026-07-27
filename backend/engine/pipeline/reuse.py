@@ -21,6 +21,7 @@ MVP：分桶單位＝big_topic 字面（大方向分桶）。向量聚類延後 
 
 from __future__ import annotations
 
+import logging
 from typing import Any
 
 from shared.db import queue, repo
@@ -28,6 +29,8 @@ from shared.models import ANGLES
 from shared.push import notify_user
 
 GENERATE_QUEUE = "generate"
+
+logger = logging.getLogger(__name__)
 
 # avoid_facts 上限：舊集 facts 每集 3-5 條，5 集封頂約 25 條，prompt 塞 12 條夠避重。
 _MAX_AVOID_FACTS = 12
@@ -104,14 +107,22 @@ async def resolve_for_user(
         # 重用命中就是「立刻有東西可聽」，跟新生成一樣要通知。
         # insert_delivery 的回傳值當去重閘門：重跑 orchestrate 不會重複推。
         if await repo.insert_delivery(user_id, episode_id, deliver_date):
-            await notify_user(
-                user_id,
-                {
-                    "title": "你的節目已生成",
-                    "body": "你點的內容做好了，點開就能聽。",
-                    "url": "/",
-                },
-            )
+            # 拿這集的對外資訊（slug + 中文標題）拼通知 payload。
+            # get_episode_meta 回 None 表示 episode 已不存在（FK CASCADE
+            # 理論上不會發生，但守一下），沒有 slug 就不推。
+            meta = await repo.get_episode_meta(episode_id)
+            if meta:
+                try:
+                    await notify_user(
+                        user_id,
+                        {
+                            "title": f"「{meta['title']}」已製作完成",
+                            "body": "點開就能聽。",
+                            "url": f"/player/{meta['slug']}",
+                        },
+                    )
+                except Exception as exc:
+                    logger.warning("重用交付已完成，但推播失敗（uid=%s）: %s", user_id, exc)
         return episode_id
 
     avoid_facts: list[str] = []

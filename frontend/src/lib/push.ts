@@ -86,3 +86,15 @@ export async function disablePush(): Promise<void> {
   await api.unsubscribePush(sub.endpoint)
   await sub.unsubscribe()
 }
+
+export type NotificationPermissionState =
+  | 'default'
+  | 'granted'
+  | 'denied'
+  | 'unsupported'
+
+/** 讀 Notification 當前權限，不觸發 prompt。給 banner 用，enablePush 內部自己會 requestPermission。 */
+export function getNotificationPermission(): NotificationPermissionState {
+  if (!('Notification' in window)) return 'unsupported'
+  return Notification.permission as NotificationPermissionState
+}

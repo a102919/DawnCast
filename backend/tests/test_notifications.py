@@ -232,3 +232,71 @@ async def test_notify_user_noop_without_vapid_keys(monkeypatch: pytest.MonkeyPat
     monkeypatch.setattr(push_mod, "webpush", _should_not_run)
     monkeypatch.setattr(repo, "list_push_subscriptions", _should_not_query)
     assert await push_mod.notify_user(USER_A, {"title": "t", "body": "b", "url": "/"}) == 0
+
+
+# ── (f) worker._push_daily 用 claim 回傳的 slug/title 拼 payload ─────────────
+
+
+async def test_push_daily_payload_uses_episode_slug_and_title(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """worker._push_daily 從 claim_daily_notifications 拿到的 slug/title 拼進 payload，
+    點擊通知要能直接跳到對應 player 頁。
+    """
+    from engine import worker
+
+    captured: list[dict[str, str]] = []
+
+    async def _fake_notify(user_id: str, payload: dict[str, str]) -> int:
+        captured.append({"user_id": user_id, **payload})
+        return 0
+
+    async def _fake_claim(_deliver_date: str, _hhmm: str) -> list[dict[str, str]]:
+        return [
+            {"user_id": USER_A, "slug": "ai-news-2026-07-28", "title": "AI 新聞週報"},
+            {"user_id": USER_B, "slug": "tech-trends-2026-07-28", "title": "科技趨勢速讀"},
+        ]
+
+    monkeypatch.setattr(worker.repo, "claim_daily_notifications", _fake_claim)
+    monkeypatch.setattr(worker, "notify_user", _fake_notify)
+
+    await worker._push_daily("2026-07-28")
+
+    assert captured == [
+        {
+            "user_id": USER_A,
+            "title": "「AI 新聞週報」已製作完成",
+            "body": "點開就能聽。",
+            "url": "/player/ai-news-2026-07-28",
+        },
+        {
+            "user_id": USER_B,
+            "title": "「科技趨勢速讀」已製作完成",
+            "body": "點開就能聽。",
+            "url": "/player/tech-trends-2026-07-28",
+        },
+    ]
+
+
+async def test_push_daily_skips_when_claim_empty(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """claim 回空清單 → 不該呼叫 notify_user（守住「沒人可推就早退」）。"""
+    from engine import worker
+
+    called = False
+
+    async def _should_not_call(*_: Any, **__: Any) -> int:
+        nonlocal called
+        called = True
+        return 0
+
+    async def _empty_claim(_deliver_date: str, _hhmm: str) -> list[dict[str, str]]:
+        return []
+
+    monkeypatch.setattr(worker.repo, "claim_daily_notifications", _empty_claim)
+    monkeypatch.setattr(worker, "notify_user", _should_not_call)
+
+    await worker._push_daily("2026-07-28")
+
+    assert called is False
