@@ -25,6 +25,7 @@ from typing import Any
 
 from shared.db import queue, repo
 from shared.models import ANGLES
+from shared.push import notify_user
 
 GENERATE_QUEUE = "generate"
 
@@ -100,7 +101,17 @@ async def resolve_for_user(
                 )
 
     if episode_id is not None:
-        await repo.insert_delivery(user_id, episode_id, deliver_date)
+        # 重用命中就是「立刻有東西可聽」，跟新生成一樣要通知。
+        # insert_delivery 的回傳值當去重閘門：重跑 orchestrate 不會重複推。
+        if await repo.insert_delivery(user_id, episode_id, deliver_date):
+            await notify_user(
+                user_id,
+                {
+                    "title": "你的節目已生成",
+                    "body": "你點的內容做好了，點開就能聽。",
+                    "url": "/",
+                },
+            )
         return episode_id
 
     avoid_facts: list[str] = []

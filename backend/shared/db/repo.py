@@ -521,6 +521,98 @@ async def insert_delivery(user_id: str, episode_id: str, deliver_date: str) -> b
     return row is not None
 
 
+async def upsert_push_subscription(user_id: str, endpoint: str, p256dh: str, auth: str) -> None:
+    """登錄 / 更新這台裝置的 push 訂閱。
+
+    endpoint 是 PK（push service 保證全域唯一）；do update 帶 user_id 條件，
+    避免有人拿別人的 endpoint 呼叫 subscribe 把該列搶過來。
+    """
+    async with connection() as conn, conn.cursor(row_factory=dict_row) as cur:
+        await cur.execute(
+            """
+            insert into public.push_subscriptions (user_id, endpoint, p256dh, auth)
+            values (%s, %s, %s, %s)
+            on conflict (endpoint) do update
+              set p256dh = excluded.p256dh, auth = excluded.auth
+              where push_subscriptions.user_id = %s
+            """,
+            (user_id, endpoint, p256dh, auth, user_id),
+        )
+        await conn.commit()
+
+
+async def delete_push_subscription(user_id: str, endpoint: str) -> None:
+    """關閉這台裝置的通知。找不到列不是錯誤（冪等）。"""
+    async with connection() as conn, conn.cursor(row_factory=dict_row) as cur:
+        await cur.execute(
+            "delete from public.push_subscriptions where user_id = %s and endpoint = %s",
+            (user_id, endpoint),
+        )
+        await conn.commit()
+
+
+async def list_push_subscriptions(user_id: str) -> list[dict[str, str]]:
+    """該 user 所有裝置的訂閱（endpoint + 加密金鑰）。"""
+    async with connection() as conn, conn.cursor(row_factory=dict_row) as cur:
+        await cur.execute(
+            "select endpoint, p256dh, auth from public.push_subscriptions where user_id = %s",
+            (user_id,),
+        )
+        rows = await cur.fetchall()
+    return [
+        {"endpoint": r["endpoint"], "p256dh": r["p256dh"], "auth": r["auth"]} for r in rows
+    ]
+
+
+async def delete_push_endpoints(endpoints: list[str]) -> None:
+    """清掉 push service 回 404/410 的失效訂閱。"""
+    if not endpoints:
+        return
+    async with connection() as conn, conn.cursor(row_factory=dict_row) as cur:
+        await cur.execute(
+            "delete from public.push_subscriptions where endpoint = any(%s)",
+            (endpoints,),
+        )
+        await conn.commit()
+
+
+async def claim_daily_notifications(deliver_date: str, now_hhmm: str) -> list[str]:
+    """認領「出餐時間已到、還沒通知過」的交付，回傳該通知的 user_id（已去重）。
+
+    UPDATE ... WHERE notified_at is null 同時完成篩選與 atomic claim——cron 掃
+    幾次都只會推一次，不需要額外的 marker 表。時間用 <= 而非分鐘精確比對：
+    worker 重啟或 cron 漂移不會讓使用者整天收不到。
+
+    left join + coalesce 讓「還沒有 user_settings 列」不是特殊情況（對齊
+    app/routers/settings.py 的 _SELECT 做法）。沒有任何 push 訂閱的 user 直接
+    排除，避免白認領（notified_at 被寫掉但沒人收到）。
+    """
+    async with connection() as conn, conn.cursor(row_factory=dict_row) as cur:
+        await cur.execute(
+            """
+            with due as (
+              select d.id
+              from public.deliveries d
+              left join public.user_settings us on us.user_id = d.user_id
+              where d.deliver_date = %s
+                and d.notified_at is null
+                and coalesce(us.default_delivery_time, '07:00'::time) <= %s::time
+                and exists (
+                  select 1 from public.push_subscriptions ps where ps.user_id = d.user_id
+                )
+            )
+            update public.deliveries d
+            set notified_at = now()
+            where d.id in (select id from due)
+            returning d.user_id::text as user_id
+            """,
+            (deliver_date, now_hhmm),
+        )
+        rows = await cur.fetchall()
+        await conn.commit()
+    return list(dict.fromkeys(r["user_id"] for r in rows))
+
+
 async def undelivered_users(deliver_date: str) -> list[str]:
     """當天還沒收到任何交付的 user（evergreen 兜底對象）。"""
     async with connection() as conn, conn.cursor(row_factory=dict_row) as cur:

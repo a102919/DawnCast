@@ -170,6 +170,15 @@ export type AdminTokenUsageResponse = {
   readonly items: readonly AdminTokenUsageItem[]
 }
 
+/** 瀏覽器 PushSubscription.toJSON() 的必要欄位（送給後端登錄推播訂閱）。 */
+export type PushSubscriptionInput = {
+  readonly endpoint: string
+  readonly keys: {
+    readonly p256dh: string
+    readonly auth: string
+  }
+}
+
 export interface Api {
   lookupDict(word: string): Promise<DictEntry | null>
   addVocab(item: Omit<VocabItem, 'id' | 'createdAt'>): Promise<VocabItem>
@@ -212,4 +221,7 @@ export interface Api {
   triggerAdminGenerate(input: AdminEpsGenerateInput): Promise<AdminEpsGenerateResponse>
   // Admin token 用量與分階段耗時總覽（同一組 X-Admin-Token 認證）。
   getAdminTokenUsage(): Promise<AdminTokenUsageResponse>
+  // Web Push：一台裝置一筆訂閱。「有沒有訂閱」就是通知開關狀態，沒有額外欄位。
+  subscribePush(subscription: PushSubscriptionInput): Promise<void>
+  unsubscribePush(endpoint: string): Promise<void>
 }

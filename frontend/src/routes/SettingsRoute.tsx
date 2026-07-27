@@ -1,15 +1,20 @@
-import { useState, type ReactNode } from 'react'
+import { useEffect, useState, type ReactNode } from 'react'
 import { AnimatePresence, motion } from 'framer-motion'
 import { Link, useNavigate } from 'react-router-dom'
+import { toast } from 'sonner'
 import { useSettings, useVocab, useAuth } from '../state'
 import { api, AppError } from '../api'
 import { supabase } from '../lib/supabaseClient'
 import { Toggle, Chip, SectionLabel } from '../components/primitives'
 import { AlertTriangle, ShieldCheck } from 'lucide-react'
-import { TOPIC_LABELS } from '../lib'
+import { TOPIC_LABELS, isPushSupported, getPushEnabled, enablePush, disablePush } from '../lib'
 import type { TopicKey } from '../lib'
 
 const TOPIC_CHOICES: readonly Exclude<TopicKey, 'all'>[] = ['tech', 'business', 'culture', 'science'] as const
+
+// 通知時間選項＝出餐時間（後端 settings.defaultDeliveryTime，同一個欄位）。
+// 不另設 notifyTime：兩個時間分開只會產生「出餐 07:00 但通知 09:00」的矛盾狀態。
+const NOTIFY_TIMES = ['07:00', '08:00', '09:00'] as const
 
 // CEFR 英文難度選項（與後端 Settings.cefr_level Literal 對齊）
 const CEFR_OPTIONS = [
@@ -31,6 +36,32 @@ export function SettingsRoute() {
   const [confirmDeleteAccount, setConfirmDeleteAccount] = useState(false)
   const [isDeletingAccount, setIsDeletingAccount] = useState(false)
   const [deleteError, setDeleteError] = useState<string | null>(null)
+  // 通知開關的真相來源是瀏覽器的 PushSubscription，不是後端欄位——所以這裡
+  // 用 state 鏡射非同步查詢結果，而不是從 settings 讀。
+  const [pushSupported] = useState(isPushSupported)
+  const [pushEnabled, setPushEnabled] = useState(false)
+  const [pushBusy, setPushBusy] = useState(false)
+
+  useEffect(() => {
+    void getPushEnabled().then(setPushEnabled)
+  }, [])
+
+  const handlePushToggle = async (next: boolean) => {
+    setPushBusy(true)
+    try {
+      if (next) {
+        await enablePush()
+      } else {
+        await disablePush()
+      }
+      setPushEnabled(next)
+    } catch (err) {
+      // 失敗時不動 toggle 狀態（維持真實狀態），把原因說給使用者聽。
+      toast.error(err instanceof Error ? err.message : '通知設定失敗，請稍後再試')
+    } finally {
+      setPushBusy(false)
+    }
+  }
 
   const RATES = [0.75, 1, 1.25, 1.5] as const
 
@@ -108,6 +139,40 @@ export function SettingsRoute() {
                   onClick={() => updateSettings({ theme: value })}
                 >
                   {label}
+                </Chip>
+              ))}
+            </div>
+          </SettingRow>
+        </SettingSection>
+
+        {/* 通知 */}
+        <SettingSection title="通知">
+          <SettingRow
+            label="推播通知"
+            description={
+              pushSupported
+                ? '節目準備好時通知你（關閉後這台裝置就不再收到）'
+                : '這台裝置不支援推播；iPhone 請先將 DawnCast 加到主畫面'
+            }
+          >
+            <Toggle
+              checked={pushEnabled}
+              disabled={!pushSupported || pushBusy}
+              onChange={handlePushToggle}
+            />
+          </SettingRow>
+          <SettingRow
+            label="通知時間"
+            description="每天這個時間提醒你今天的節目已備好"
+          >
+            <div className="flex gap-1.5">
+              {NOTIFY_TIMES.map(time => (
+                <Chip
+                  key={time}
+                  active={settings.defaultDeliveryTime === time}
+                  onClick={() => void updateSettings({ defaultDeliveryTime: time })}
+                >
+                  {time}
                 </Chip>
               ))}
             </div>

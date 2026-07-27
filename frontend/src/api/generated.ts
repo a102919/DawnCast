@@ -430,21 +430,25 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/notifications/pending": {
+    "/notifications/subscription": {
         parameters: {
             query?: never;
             header?: never;
             path?: never;
             cookie?: never;
         };
-        /**
-         * List Pending Notifications
-         * @description 目前該收到出餐通知的使用者清單（唯讀觀測，尚未接上實際寄送）。
-         */
-        get: operations["list_pending_notifications_notifications_pending_get"];
+        get?: never;
         put?: never;
-        post?: never;
-        delete?: never;
+        /**
+         * Subscribe Push
+         * @description 登錄這台裝置的訂閱（冪等 upsert）。
+         */
+        post: operations["subscribe_push_notifications_subscription_post"];
+        /**
+         * Unsubscribe Push
+         * @description 取消這台裝置的訂閱。找不到列也回成功（冪等）。
+         */
+        delete: operations["unsubscribe_push_notifications_subscription_delete"];
         options?: never;
         head?: never;
         patch?: never;
@@ -858,14 +862,6 @@ export interface components {
             data?: components["schemas"]["EpisodeListItem"][] | null;
             error?: components["schemas"]["ErrorBody"] | null;
         };
-        /** ApiResponse[list[PendingNotificationOut]] */
-        ApiResponse_list_PendingNotificationOut__: {
-            /** Ok */
-            ok: boolean;
-            /** Data */
-            data?: components["schemas"]["PendingNotificationOut"][] | null;
-            error?: components["schemas"]["ErrorBody"] | null;
-        };
         /** ApiResponse[list[VocabItem]] */
         ApiResponse_list_VocabItem__: {
             /** Ok */
@@ -1116,12 +1112,35 @@ export interface components {
             addLookupCount?: components["schemas"]["LookupCountDelta"] | null;
             lastPlayed?: components["schemas"]["LastPlayedInput"] | null;
         };
-        /** PendingNotificationOut */
-        PendingNotificationOut: {
-            /** Userid */
-            userId: string;
-            /** Deliverytime */
-            deliveryTime: string;
+        /**
+         * PushSubscribeBody
+         * @description 瀏覽器 PushSubscription.toJSON()（endpoint + keys）。
+         */
+        PushSubscribeBody: {
+            /** Endpoint */
+            endpoint: string;
+            keys: components["schemas"]["PushSubscriptionKeys"];
+        };
+        /**
+         * PushSubscriptionKeys
+         * @description PushSubscription.toJSON().keys —— payload 加密用的兩把金鑰。
+         *
+         *     刻意用 BaseModel 而非 CamelModel：欄位名由 W3C Push API 規格決定
+         *     （瀏覽器就是給 p256dh），套 to_camel 會變成 p256Dh 對不上。
+         */
+        PushSubscriptionKeys: {
+            /** P256Dh */
+            p256dh: string;
+            /** Auth */
+            auth: string;
+        };
+        /**
+         * PushUnsubscribeBody
+         * @description 取消訂閱只認 endpoint（PK）。
+         */
+        PushUnsubscribeBody: {
+            /** Endpoint */
+            endpoint: string;
         };
         /**
          * SaveDailyOrderBody
@@ -2314,16 +2333,20 @@ export interface operations {
             };
         };
     };
-    list_pending_notifications_notifications_pending_get: {
+    subscribe_push_notifications_subscription_post: {
         parameters: {
             query?: never;
             header?: {
-                "X-Admin-Token"?: string | null;
+                authorization?: string | null;
             };
             path?: never;
             cookie?: never;
         };
-        requestBody?: never;
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["PushSubscribeBody"];
+            };
+        };
         responses: {
             /** @description Successful Response */
             200: {
@@ -2331,7 +2354,42 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["ApiResponse_list_PendingNotificationOut__"];
+                    "application/json": components["schemas"]["ApiResponse_NoneType_"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    unsubscribe_push_notifications_subscription_delete: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["PushUnsubscribeBody"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiResponse_NoneType_"];
                 };
             };
             /** @description Validation Error */

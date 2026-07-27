@@ -519,4 +519,10 @@ export const mockApi: Api = {
   async getAdminTokenUsage(): Promise<AdminTokenUsageResponse> {
     throw new Error('mock 模式不支援管理員查詢，請將 VITE_USE_MOCK 設為 false')
   },
+
+  // Push 訂閱：mock 模式沒有後端可登錄，noop 即可（設定頁的 toggle 仍能操作
+  // 瀏覽器層的訂閱狀態，只是不會有人推送）。
+  async subscribePush(): Promise<void> {},
+
+  async unsubscribePush(): Promise<void> {},
 }

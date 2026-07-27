@@ -56,6 +56,7 @@ from shared.models import (
     SourceSnippet,
     VerifiedClaim,
 )
+from shared.push import notify_user
 
 from .metrics import MetricsCollector
 from .state import PodState
@@ -2403,7 +2404,17 @@ async def insert_deliveries_node(state: PodState, config: RunnableConfig) -> dic
 
     for uid in user_ids:
         try:
-            await repo.insert_delivery(uid, episode_id, deliver_date)
+            # insert_delivery 回傳「是否首次寫入」，直接當推送的去重閘門——
+            # pipeline 重投時 ON CONFLICT DO NOTHING 回 False，不會重複通知。
+            if await repo.insert_delivery(uid, episode_id, deliver_date):
+                await notify_user(
+                    uid,
+                    {
+                        "title": "你的節目已生成",
+                        "body": "你點的內容做好了，點開就能聽。",
+                        "url": "/",
+                    },
+                )
         except ForeignKeyViolation:
             # 上游補償（update_episode_keys_node 的 DELETE-on-failure 或 worker
             # _compensate_generate_failure）已把這筆 episode row 刪掉 —

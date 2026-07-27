@@ -19,6 +19,9 @@ dependencies = [
     "langgraph>=0.2",
     "langchain-core>=0.3",
     "piper-tts",
+    # Web Push：VAPID JWT 簽章 + RFC 8188 payload 加密。自己用 httpx 寫是 200 行
+    # crypto，不划算。
+    "pywebpush>=2.0.0",
 ]
 
 [dependency-groups]
@@ -52,6 +55,13 @@ python_version = "3.12"
 strict = true
 warn_unused_ignores = true
 plugins = ["pydantic.mypy"]
+
+# pywebpush 沒有 py.typed / stubs（上游至今未提供）。只放行這個模組的 import，
+# 其餘 strict 規則照舊；用 module override 而非在 shared/push.py 撒 ignore，
+# 是為了讓 push.py 內部的型別檢查維持嚴格。
+[[tool.mypy.overrides]]
+module = ["pywebpush.*"]
+ignore_missing_imports = true
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"

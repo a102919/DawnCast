@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from typing import Literal
 
-from pydantic import Field
+from pydantic import BaseModel, Field
 
 from shared.models import CamelModel, EntryMode, LengthTier, TopicType
 
@@ -105,6 +105,30 @@ class MarkPlayedBody(CamelModel):
     """markOrderPlayed(date, playedAt) 的 body 部分（date 走 path）。"""
 
     played_at: str = Field(min_length=1)
+
+
+class PushSubscriptionKeys(BaseModel):
+    """PushSubscription.toJSON().keys —— payload 加密用的兩把金鑰。
+
+    刻意用 BaseModel 而非 CamelModel：欄位名由 W3C Push API 規格決定
+    （瀏覽器就是給 p256dh），套 to_camel 會變成 p256Dh 對不上。
+    """
+
+    p256dh: str = Field(min_length=1)
+    auth: str = Field(min_length=1)
+
+
+class PushUnsubscribeBody(CamelModel):
+    """取消訂閱只認 endpoint（PK）。"""
+
+    # push service 網址一律 https；長度上限防呆，避免塞超長字串進 PK。
+    endpoint: str = Field(min_length=1, max_length=2048, pattern=r"^https://")
+
+
+class PushSubscribeBody(PushUnsubscribeBody):
+    """瀏覽器 PushSubscription.toJSON()（endpoint + keys）。"""
+
+    keys: PushSubscriptionKeys
 
 
 class AdminEpsGenerateBody(CamelModel):

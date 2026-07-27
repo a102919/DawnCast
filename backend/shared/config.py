@@ -214,6 +214,14 @@ class Settings(BaseSettings):
     google_fact_check_api_key: str = ""
     internet_archive_base_url: str = "https://archive.org"
 
+    # ── Web Push（VAPID）─────────────────────────────────────────
+    # 兩個 key 皆為 base64url（applicationServerKey 格式）。留空＝通知功能靜默
+    # 關閉（shared/push.py 的第一道 early return），不進 assert_secure：通知是
+    # 加值功能，缺 key 不該讓 prod 起不來，也讓 mock pipeline / 測試天然不碰 push。
+    vapid_public_key: str = ""
+    vapid_private_key: str = ""
+    vapid_subject: str = "mailto:ops@dawncast.app"
+
     def assert_secure(self) -> None:
         """上線防呆：prod 環境下拒絕不安全設定，啟動即 fail（fail closed）。
 

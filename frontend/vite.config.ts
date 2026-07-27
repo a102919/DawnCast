@@ -30,7 +30,13 @@ export default defineConfig({
       devOptions: { enabled: false },
       workbox: {
         // 只 precache build 產物必要副檔名，避免 install 卡大檔。
+        // push-sw.js 排除在 precache 外（它是 importScripts 進來的 SW 片段，
+        // 不該被當成頁面資源快取），改由下面 importScripts 併入 sw.js。
         globPatterns: ['**/*.{js,css,html,ico,png,svg,webmanifest}'],
+        globIgnores: ['**/push-sw.js'],
+        // Web Push 的 push / notificationclick handler（見 public/push-sw.js）。
+        // 維持 generateSW 策略：換 injectManifest 就得自己搬整套 runtimeCaching。
+        importScripts: ['/push-sw.js'],
         // SPA fallback：未知路徑回 index.html
         navigateFallback: '/index.html',
         // OAuth callback、API 路由不交給 SW，避免快取含 code/state 的網址。

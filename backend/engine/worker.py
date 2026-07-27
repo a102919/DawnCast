@@ -32,6 +32,7 @@ from shared.db import queue, repo
 from shared.db.pool import close_pool, open_pool
 from shared.db.queue import Msg
 from shared.idempotency import compute_idempotency_key
+from shared.push import notify_user
 
 logger = logging.getLogger(__name__)
 
@@ -88,8 +89,33 @@ async def _handle_control(body: dict[str, Any]) -> None:
         # duplicate control 只會回傳 0，不會重送 generate。
         n = await enqueue_daily_batch(anchor)
         logger.info("daily_podcast：送出 %d 筆 generate（date=%s）", n, anchor)
+    elif task == "push_daily":
+        await _push_daily(anchor)
     else:
         logger.warning("未知 control task=%r，略過", task)
+
+
+async def _push_daily(deliver_date: str) -> None:
+    """每 5 分鐘 tick（migration 0017）：推「今天的節目到了」給出餐時間已到的人。
+
+    去重在 SQL：claim_daily_notifications 認領 deliveries.notified_at is null 的列，
+    所以這裡不需要任何狀態判斷，tick 幾次都只推一次。時區用 app_timezone 自己算，
+    不依賴容器本機時鐘（通常 UTC）。
+    """
+    now = datetime.now(ZoneInfo(get_settings().app_timezone))
+    user_ids = await repo.claim_daily_notifications(deliver_date, now.strftime("%H:%M"))
+    if not user_ids:
+        return
+    for uid in user_ids:
+        await notify_user(
+            uid,
+            {
+                "title": "今天的 DawnCast 到了",
+                "body": "早安，今天的節目已經準備好，點開就能聽。",
+                "url": "/",
+            },
+        )
+    logger.info("push_daily：通知 %d 位使用者（date=%s）", len(user_ids), deliver_date)
 
 
 async def _orchestrate(request_date: str) -> None:

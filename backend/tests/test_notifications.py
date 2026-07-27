@@ -1,156 +1,76 @@
-"""出餐通知（T8）測試。
+"""Push 通知測試：router 授權/契約 + shared/push.py 的失效訂閱清理。
 
-範圍限縮：本專案目前沒有任何 email 套件 / 憑證（查過 shared/config.py 與
-.env.example 均無 SMTP/SendGrid/Resend/SES 欄位），故本次只做「到
-defaultDeliveryTime → 產生待寄通知記錄」的觸發邏輯，不假造外部寄信串接。
+驗證重點：
+  (a) subscribe / unsubscribe 無 JWT → 401，且完全不動資料
+  (b) happy path：upsert 冪等、unsubscribe 找不到列也回成功
+  (c) 授權收斂：unsubscribe 只能刪自己的 endpoint（router 漏 user_id 就會踩到 B 的）
+  (d) notify_user 遇 410/404 刪掉該筆訂閱；5xx 保留（一次抖動不該永久掉訂閱）
+  (e) 沒設 VAPID key 時 notify_user 直接 no-op，連 DB 都不碰
 
-純函式測試（should_notify / build_pending_notifications）完全不碰時鐘 / DB，
-時間全部用可控 datetime 參數注入，驗證觸發邏輯本身。
-另外補一段 router 授權邊界測試，沿用 test_admin.py 的 FakeConnection 模式。
+做法：router 與 push 都走 shared.db.repo，直接 monkeypatch repo 的函式，
+不重造 FakeConnection（比 test_favorites_router.py 的 fake cursor 更薄）。
 """
 
 from __future__ import annotations
 
-from collections.abc import AsyncIterator
-from contextlib import asynccontextmanager
-from datetime import datetime
 from typing import Any
-from zoneinfo import ZoneInfo
 
 import pytest
 from fastapi.testclient import TestClient
 
-from app.routers import admin as admin_router
-from app.routers import notifications as notifications_router
-from app.routers.notifications import (
-    PendingNotification,
-    UserDeliveryState,
-    build_pending_notifications,
-    should_notify,
-)
+from shared import push as push_mod
 from shared.config import Settings
+from shared.db import repo
 
-TAIPEI = ZoneInfo("Asia/Taipei")
-ADMIN_TOKEN = "test-admin-token"
+USER_A = "11111111-1111-1111-1111-111111111111"
+USER_B = "22222222-2222-2222-2222-222222222222"
 
+EP_A = "https://push.example/a"
+EP_B = "https://push.example/b"
 
-# ── should_notify ────────────────────────────────────────────────
-
-
-def test_should_notify_happy_path_exact_minute_match() -> None:
-    now = datetime(2026, 7, 16, 7, 0, tzinfo=TAIPEI)
-    assert should_notify(now, "07:00", has_delivery=True) is True
-
-
-def test_should_notify_before_delivery_time() -> None:
-    now = datetime(2026, 7, 16, 6, 59, tzinfo=TAIPEI)
-    assert should_notify(now, "07:00", has_delivery=True) is False
+# (user_id, endpoint, p256dh, auth)
+SUBS: list[tuple[str, str, str, str]] = []
 
 
-def test_should_notify_after_delivery_time_not_exact_minute() -> None:
-    """分鐘精確比對：時間已過但非整分命中，不應觸發（不是 >= 就一直發）。"""
-    now = datetime(2026, 7, 16, 8, 0, tzinfo=TAIPEI)
-    assert should_notify(now, "07:00", has_delivery=True) is False
+async def _fake_upsert(user_id: str, endpoint: str, p256dh: str, auth: str) -> None:
+    SUBS[:] = [s for s in SUBS if s[1] != endpoint]
+    SUBS.append((user_id, endpoint, p256dh, auth))
 
 
-def test_should_notify_no_delivery_yet_does_not_fire() -> None:
-    """時間到但新集還沒生成 → 不誤發。"""
-    now = datetime(2026, 7, 16, 7, 0, tzinfo=TAIPEI)
-    assert should_notify(now, "07:00", has_delivery=False) is False
+async def _fake_delete_for_user(user_id: str, endpoint: str) -> None:
+    SUBS[:] = [s for s in SUBS if not (s[0] == user_id and s[1] == endpoint)]
 
 
-@pytest.mark.parametrize("bad_time", ["", "25:99", "not-a-time", "7:00:00:00"])
-def test_should_notify_invalid_delivery_time_is_defensive(bad_time: str) -> None:
-    now = datetime(2026, 7, 16, 7, 0, tzinfo=TAIPEI)
-    assert should_notify(now, bad_time, has_delivery=True) is False
+async def _fake_delete_endpoints(endpoints: list[str]) -> None:
+    SUBS[:] = [s for s in SUBS if s[1] not in endpoints]
 
 
-def test_should_notify_is_timezone_independent_of_machine_clock() -> None:
-    """只看傳入 datetime 的牆鐘欄位，不依賴執行機器的本機時區 / 真實時鐘。"""
-    now_taipei = datetime(2026, 7, 16, 7, 0, tzinfo=TAIPEI)
-    now_utc_equivalent = now_taipei.astimezone(ZoneInfo("UTC"))
-    # 兩者代表同一個世界時刻，但牆鐘欄位不同（23:00 UTC 前一天）——
-    # should_notify 只看傳入物件自身的 hour/minute，不做時區轉換。
-    assert should_notify(now_taipei, "07:00", has_delivery=True) is True
-    assert should_notify(now_utc_equivalent, "07:00", has_delivery=True) is False
+async def _fake_list(user_id: str) -> list[dict[str, str]]:
+    return [{"endpoint": e, "p256dh": p, "auth": a} for u, e, p, a in SUBS if u == user_id]
 
 
-# ── build_pending_notifications ──────────────────────────────────
-
-
-def test_build_pending_notifications_filters_mixed_input() -> None:
-    now = datetime(2026, 7, 16, 7, 0, tzinfo=TAIPEI)
-    states = [
-        UserDeliveryState(user_id="user-a", delivery_time="07:00", has_delivery=True),
-        UserDeliveryState(user_id="user-b", delivery_time="07:00", has_delivery=False),
-        UserDeliveryState(user_id="user-c", delivery_time="08:00", has_delivery=True),
-    ]
-    result = build_pending_notifications(now, states)
-    assert result == [PendingNotification(user_id="user-a", delivery_time="07:00")]
-
-
-def test_build_pending_notifications_empty_input() -> None:
-    now = datetime(2026, 7, 16, 7, 0, tzinfo=TAIPEI)
-    assert build_pending_notifications(now, []) == []
-
-
-# ── router 授權邊界（沿用 test_admin.py 的 FakeConnection 模式）───
-
-
-_STATE_ROWS: list[dict[str, Any]] = [
-    {"user_id": "user-a", "default_delivery_time": "07:00", "has_delivery": True},
-    {"user_id": "user-b", "default_delivery_time": "07:00", "has_delivery": False},
-]
-
-
-class FakeCursor:
-    def __init__(self) -> None:
-        self._rows: list[dict[str, Any]] = []
-
-    async def __aenter__(self) -> FakeCursor:
-        return self
-
-    async def __aexit__(self, *_: object) -> None:
-        return None
-
-    async def execute(self, sql: str, params: tuple[Any, ...] = ()) -> None:
-        s = " ".join(sql.split())
-        if "user_settings" in s and "deliveries" in s:
-            self._rows = list(_STATE_ROWS)
-            return
-        self._rows = []
-        return
-
-    async def fetchall(self) -> list[dict[str, Any]]:
-        return self._rows
-
-
-class FakeConnection:
-    def cursor(self, **_: object) -> FakeCursor:
-        return FakeCursor()
-
-
-@asynccontextmanager
-async def fake_connection() -> AsyncIterator[FakeConnection]:
-    yield FakeConnection()
+def _settings(**over: Any) -> Settings:
+    base: dict[str, Any] = {
+        "environment": "dev",
+        "app_timezone": "Asia/Taipei",
+        "vapid_public_key": "BPublicKeyForTestOnly",
+        "vapid_private_key": "PrivateKeyForTestOnly",
+        "vapid_subject": "mailto:test@example.com",
+    }
+    return Settings(**{**base, **over})
 
 
 @pytest.fixture(autouse=True)
-def patch_notifications_db(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(notifications_router, "connection", fake_connection)
-    fake_settings = Settings(
-        environment="dev", admin_token=ADMIN_TOKEN, app_timezone="Asia/Taipei"
-    )
-    monkeypatch.setattr(notifications_router, "get_settings", lambda: fake_settings)
-    # require_admin_token 定義在 admin.py，用的是 admin 模組自己的 get_settings 參照，
-    # 兩套授權/設定各自 patch 才會一致（比照 admin.py 既有慣例，見 admin_token 檢查）。
-    monkeypatch.setattr(admin_router, "get_settings", lambda: fake_settings)
-    # 固定 now，讓 happy path 測試不依賴真實時鐘。
-    monkeypatch.setattr(
-        notifications_router,
-        "_now_taipei",
-        lambda: datetime(2026, 7, 16, 7, 0, tzinfo=TAIPEI),
-    )
+def patch_repo(monkeypatch: pytest.MonkeyPatch) -> None:
+    SUBS[:] = [
+        (USER_A, EP_A, "p-a", "auth-a"),
+        (USER_B, EP_B, "p-b", "auth-b"),
+    ]
+    monkeypatch.setattr(push_mod, "get_settings", _settings)
+    monkeypatch.setattr(repo, "upsert_push_subscription", _fake_upsert)
+    monkeypatch.setattr(repo, "delete_push_subscription", _fake_delete_for_user)
+    monkeypatch.setattr(repo, "list_push_subscriptions", _fake_list)
+    monkeypatch.setattr(repo, "delete_push_endpoints", _fake_delete_endpoints)
 
 
 @pytest.fixture
@@ -160,27 +80,155 @@ def client() -> TestClient:
     return TestClient(create_app(), raise_server_exceptions=False)
 
 
-def test_pending_no_token_returns_401_and_skips_db(
-    client: TestClient, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    called = False
+def _auth(user_id: str) -> dict[str, str]:
+    from tests._auth import sign_test_token
 
-    async def _spy_connection() -> AsyncIterator[FakeConnection]:
-        nonlocal called
-        called = True
-        yield FakeConnection()
+    return {"Authorization": f"Bearer {sign_test_token(user_id)}"}
 
-    monkeypatch.setattr(notifications_router, "connection", asynccontextmanager(_spy_connection))
 
-    res = client.get("/notifications/pending")
+_NEW_SUB: dict[str, Any] = {
+    "endpoint": "https://push.example/new",
+    "keys": {"p256dh": "p-new", "auth": "auth-new"},
+}
+
+
+# ── (a) 無 JWT → 401 ──────────────────────────────────────────
+
+
+def test_subscribe_no_jwt_returns_401_and_writes_nothing(client: TestClient) -> None:
+    before = list(SUBS)
+    res = client.post("/notifications/subscription", json=_NEW_SUB)
     assert res.status_code == 401
     assert res.json()["error"]["code"] == "unauthorized"
-    assert called is False
+    assert before == SUBS
 
 
-def test_pending_correct_token_returns_only_the_due_user(client: TestClient) -> None:
-    res = client.get("/notifications/pending", headers={"X-Admin-Token": ADMIN_TOKEN})
+def test_unsubscribe_no_jwt_returns_401_and_deletes_nothing(client: TestClient) -> None:
+    before = list(SUBS)
+    res = client.request("DELETE", "/notifications/subscription", json={"endpoint": EP_A})
+    assert res.status_code == 401
+    assert before == SUBS
+
+
+# ── (b) happy path ───────────────────────────────────────────
+
+
+def test_subscribe_stores_subscription(client: TestClient) -> None:
+    res = client.post("/notifications/subscription", json=_NEW_SUB, headers=_auth(USER_A))
     assert res.status_code == 200
-    body = res.json()
-    assert body["ok"] is True
-    assert body["data"] == [{"userId": "user-a", "deliveryTime": "07:00"}]
+    assert res.json()["ok"] is True
+    assert (USER_A, "https://push.example/new", "p-new", "auth-new") in SUBS
+
+
+def test_subscribe_is_idempotent(client: TestClient) -> None:
+    for _ in range(2):
+        res = client.post("/notifications/subscription", json=_NEW_SUB, headers=_auth(USER_A))
+        assert res.status_code == 200
+    assert sum(1 for _, e, _, _ in SUBS if e == "https://push.example/new") == 1
+
+
+def test_unsubscribe_removes_own_subscription(client: TestClient) -> None:
+    res = client.request(
+        "DELETE", "/notifications/subscription", json={"endpoint": EP_A}, headers=_auth(USER_A)
+    )
+    assert res.status_code == 200
+    assert all(e != EP_A for _, e, _, _ in SUBS)
+
+
+def test_unsubscribe_unknown_endpoint_still_ok(client: TestClient) -> None:
+    res = client.request(
+        "DELETE",
+        "/notifications/subscription",
+        json={"endpoint": "https://push.example/nope"},
+        headers=_auth(USER_A),
+    )
+    assert res.status_code == 200
+
+
+def test_subscribe_rejects_non_https_endpoint(client: TestClient) -> None:
+    res = client.post(
+        "/notifications/subscription",
+        json={**_NEW_SUB, "endpoint": "http://push.example/x"},
+        headers=_auth(USER_A),
+    )
+    # app 的 validation handler 把 Pydantic 422 統一轉成 400（見 app/main.py）
+    assert res.status_code == 400
+
+
+# ── (c) 授權收斂 ──────────────────────────────────────────────
+
+
+def test_unsubscribe_cannot_delete_other_users_endpoint(client: TestClient) -> None:
+    res = client.request(
+        "DELETE", "/notifications/subscription", json={"endpoint": EP_B}, headers=_auth(USER_A)
+    )
+    assert res.status_code == 200
+    # B 的訂閱必須還在——router 若漏掉 user_id 條件，這行會炸。
+    assert (USER_B, EP_B, "p-b", "auth-b") in SUBS
+
+
+# ── (d)(e) notify_user ───────────────────────────────────────
+
+
+class _FakeWebPushException(Exception):
+    def __init__(self, status: int) -> None:
+        super().__init__(f"status={status}")
+
+        class _Resp:
+            status_code = status
+
+        self.response = _Resp()
+
+
+def _patch_webpush_failure(monkeypatch: pytest.MonkeyPatch, status: int) -> None:
+    monkeypatch.setattr(push_mod, "WebPushException", _FakeWebPushException)
+
+    def _boom(**_: Any) -> None:
+        raise _FakeWebPushException(status)
+
+    monkeypatch.setattr(push_mod, "webpush", _boom)
+
+
+async def test_notify_user_sends_to_all_own_devices(monkeypatch: pytest.MonkeyPatch) -> None:
+    sent: list[str] = []
+
+    def _record(**kwargs: Any) -> None:
+        sent.append(kwargs["subscription_info"]["endpoint"])
+
+    monkeypatch.setattr(push_mod, "webpush", _record)
+    n = await push_mod.notify_user(USER_A, {"title": "t", "body": "b", "url": "/"})
+    assert n == 1
+    assert sent == [EP_A]
+
+
+async def test_notify_user_prunes_gone_subscription(monkeypatch: pytest.MonkeyPatch) -> None:
+    _patch_webpush_failure(monkeypatch, 410)
+    assert await push_mod.notify_user(USER_A, {"title": "t", "body": "b", "url": "/"}) == 0
+    assert all(e != EP_A for _, e, _, _ in SUBS)
+    # 別人的訂閱不受影響
+    assert any(u == USER_B for u, _, _, _ in SUBS)
+
+
+async def test_notify_user_keeps_subscription_on_transient_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _patch_webpush_failure(monkeypatch, 500)
+    assert await push_mod.notify_user(USER_A, {"title": "t", "body": "b", "url": "/"}) == 0
+    # 500 是暫時性錯誤，訂閱要留著（否則一次 provider 抖動就永久掉訂閱）
+    assert any(e == EP_A for _, e, _, _ in SUBS)
+
+
+async def test_notify_user_noop_without_vapid_keys(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        push_mod, "get_settings", lambda: _settings(vapid_public_key="", vapid_private_key="")
+    )
+
+    def _should_not_run(**_: Any) -> None:
+        raise AssertionError("沒設 VAPID key 時不該送出推播")
+
+    async def _should_not_query(_user_id: str) -> list[dict[str, str]]:
+        raise AssertionError("沒設 VAPID key 時不該查 DB")
+
+    monkeypatch.setattr(push_mod, "webpush", _should_not_run)
+    monkeypatch.setattr(repo, "list_push_subscriptions", _should_not_query)
+    assert await push_mod.notify_user(USER_A, {"title": "t", "body": "b", "url": "/"}) == 0

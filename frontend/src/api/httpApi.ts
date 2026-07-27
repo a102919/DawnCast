@@ -9,6 +9,7 @@ import type {
   DailyOrder,
   DailyOrderStatus,
   DictEntry,
+  PushSubscriptionInput,
   Settings,
   VocabItem,
 } from './types'
@@ -517,6 +518,25 @@ export const httpApi: Api = {
     return request<AdminTokenUsageResponse>('/admin/token-usage', {
       schema: AdminTokenUsageResponseSchema,
       extraHeaders: { 'X-Admin-Token': token },
+    })
+  },
+
+  async subscribePush(subscription: PushSubscriptionInput) {
+    // body 型別靠 satisfies 釘住後端契約；endpoint 由瀏覽器提供，不做前端加工。
+    const body = subscription satisfies components['schemas']['PushSubscribeBody']
+    await request<null>('/notifications/subscription', {
+      method: 'POST',
+      body,
+      schema: null,
+    })
+  },
+
+  async unsubscribePush(endpoint: string) {
+    const body = { endpoint } satisfies components['schemas']['PushUnsubscribeBody']
+    await request<null>('/notifications/subscription', {
+      method: 'DELETE',
+      body,
+      schema: null,
     })
   },
 }
