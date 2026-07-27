@@ -27,7 +27,7 @@ export function PlayerRoute() {
   const [loopCueIdx, setLoopCueIdx] = useState<number | null>(null)
   const [isVocabDrawerOpen, setIsVocabDrawerOpen] = useState(false)
   const [lookupError, setLookupError] = useState<string | null>(null)
-  const { currentTime, isPlaying, duration, seekTo, play, pause, videoRef, loadProgress, setPlaybackRate, setCurrentEpisode } = usePlayer()
+  const { currentTime, isPlaying, duration, seekTo, play, pause, videoRef, loadProgress, setPlaybackRate, currentEpisode, setCurrentEpisode } = usePlayer()
   const { settings } = useSettings()
   const { markPlayed } = useDailyOrder()
   const { addListenMinutes, addLookupCount, markListened } = useActivity()
@@ -95,7 +95,15 @@ export function PlayerRoute() {
   useEffect(() => {
     if (!episode || initialSeekAppliedRef.current) return
     const episodeId = episode.id
-    const expectedSrc = new URL(episode.audioUrl, window.location.href).href
+    const expectedSrc = new URL(currentEpisode?.id === episodeId ? currentEpisode.audioUrl : episode.audioUrl, window.location.href).href
+    // 全域 <audio> 已經在播這集（例：從 MiniPlayer 點回播放頁）→ 元素上的
+    // currentTime 才是事實。localStorage 進度是節流快照，會落後幾百毫秒到 1 秒，
+    // 拿它去 seek 就是使用者看到的「點進來倒退一下」。只有冷啟動才需要續播定位。
+    if (currentEpisode?.id === episodeId && (videoRef.current?.currentTime ?? 0) > 0) {
+      initialSeekAppliedRef.current = true
+      loadProgress(episodeId) // 副作用：綁定 provider 的 currentEpisodeIdRef，續存進度
+      return
+    }
     const progress = loadProgress(episodeId)
     if (!progress.exists) return
 
@@ -120,7 +128,7 @@ export function PlayerRoute() {
         initialSeekTimerRef.current = null
       }
     }
-  }, [episode, loadProgress, seekTo, videoRef])
+  }, [episode, currentEpisode, loadProgress, seekTo, videoRef])
 
   useEffect(() => {
     if (!episode || duration <= 0 || hasMarkedListened.current) return

@@ -19,7 +19,7 @@ export function PlayerProvider({ children }: { readonly children: ReactNode }) {
   const [isPlaying, setIsPlaying] = useState(false)
   const [duration, setDuration] = useState(0)
   const [playbackRate, setPlaybackRateState] = useState(1)
-  const [currentEpisode, setCurrentEpisode] = useState<Episode | null>(null)
+  const [currentEpisode, setCurrentEpisodeState] = useState<Episode | null>(null)
   const progressTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const animationFrameRef = useRef<number | null>(null)
   const lastSavedTimeRef = useRef<number>(0)
@@ -181,6 +181,12 @@ export function PlayerProvider({ children }: { readonly children: ReactNode }) {
     if (videoRef.current) {
       videoRef.current.playbackRate = rate
     }
+  }, [])
+
+  // 同一集重複推入（例：從 MiniPlayer 點回播放頁，PlayerRoute 重新 fetch 拿到
+  // 新的簽章 audioUrl）時保留舊物件 — 換 <audio src> 會觸發 reload 把播放中斷。
+  const setCurrentEpisode = useCallback((episode: Episode | null) => {
+    setCurrentEpisodeState(prev => (prev && episode && prev.id === episode.id ? prev : episode))
   }, [])
 
   const loadProgress = useCallback((episodeId: string) => {
