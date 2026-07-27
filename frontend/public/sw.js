@@ -1,4 +1,4 @@
-const CACHE_NAME = 'dawncast-v1';
+const CACHE_NAME = 'dawncast-v2';
 const STATIC_ASSETS = [
   '/',
   '/index.html',
