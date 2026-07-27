@@ -107,7 +107,6 @@ describe('DailyOrderProvider.setOrder 觸發鏈（T1）', () => {
     const input: DailyOrderInput = {
       selectedTopics: ['tech'],
       specificRequest: 'AI',
-      deliveryTime: '07:00',
       entryMode: 'topic',
       lengthTier: 'medium',
     }
@@ -137,7 +136,6 @@ describe('DailyOrderProvider.setOrder 觸發鏈（T1）', () => {
     await act(async () => {
       await setOrder('2026-07-16', {
         selectedTopics: ['tech'],
-        deliveryTime: '07:00',
       })
     })
 
@@ -154,7 +152,6 @@ describe('DailyOrderProvider.setOrder 觸發鏈（T1）', () => {
     // 用微任務 + act 包起來，確保 fire-and-forget 的 promise 真的被吃下 catch。
     const captured = await act(async () => setOrder('2026-07-16', {
       selectedTopics: ['tech'],
-      deliveryTime: '07:00',
     }))
     // 再讓 microtask 清乾淨（catch handler 會跑）
     await act(async () => {
@@ -181,7 +178,6 @@ describe('DailyOrderProvider.setOrder 觸發鏈（T1）', () => {
       await expect(
         setOrder('2026-07-16', {
           selectedTopics: ['tech'],
-          deliveryTime: '07:00',
         }),
       ).rejects.toThrow('PUT /daily-orders 500')
     })

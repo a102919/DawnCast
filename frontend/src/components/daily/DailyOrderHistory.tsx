@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import { useNavigate } from 'react-router-dom'
 import { motion, AnimatePresence } from 'framer-motion'
 import { ChevronDown, Play } from 'lucide-react'
 import { Button, SectionLabel } from '../primitives'
@@ -127,7 +128,9 @@ function OrderRow({
   readonly selected: boolean
   readonly onClick: () => void
 }) {
+  const navigate = useNavigate()
   const locked = isOrderLocked(order)
+  const playable = order.status === 'played' || (order.status === 'queued' && order.ready === true)
   const topicSummary = order.selectedTopics
     .map(t => TOPIC_LABELS[t as keyof typeof TOPIC_LABELS] ?? null)
     .filter((s): s is string => s !== null)
@@ -136,7 +139,7 @@ function OrderRow({
   return (
     <button
       type="button"
-      onClick={onClick}
+      onClick={() => (playable ? navigate(`/player?date=${order.date}`) : onClick())}
       className={`w-full text-left px-4 py-3 transition-colors duration-fast ease-apple hover:bg-bg-secondary focus-visible:outline-none focus-visible:bg-bg-secondary ${
         selected ? 'bg-accent/5' : ''
       }`}
@@ -154,7 +157,6 @@ function OrderRow({
             <span className="text-sm text-text-primary truncate">{topicSummary}</span>
           </div>
           <div className="flex items-center gap-2 mt-1 text-[11px] text-text-tertiary">
-            <span>出餐 {order.deliveryTime}</span>
             <StatusBadge order={order} locked={locked} display="text" />
           </div>
         </div>

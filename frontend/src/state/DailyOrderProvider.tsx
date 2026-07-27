@@ -57,7 +57,7 @@ export function DailyOrderProvider({ children }: { readonly children: ReactNode 
           ? { specificRequest: input.specificRequest }
           : {}),
         status: input.status ?? previous?.status ?? 'pending',
-        deliveryTime: input.deliveryTime || DEFAULT_DELIVERY_TIME,
+        deliveryTime: previous?.deliveryTime ?? DEFAULT_DELIVERY_TIME,
         createdAt: previous?.createdAt ?? now,
         updatedAt: now,
         entryMode: input.entryMode ?? previous?.entryMode ?? 'topic',

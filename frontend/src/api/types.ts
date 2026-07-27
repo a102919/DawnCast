@@ -76,6 +76,8 @@ export type DailyOrder = {
   readonly entryMode?: EntryMode
   /** Phase 4：長度 tier，舊 localStorage 訂單會是 undefined，由 provider 補預設 'medium' */
   readonly lengthTier?: LengthTier
+  /** queued 狀態下內容是否已生成完畢；舊 localStorage 訂單無此欄位 */
+  readonly ready?: boolean
 }
 
 /** 寫入時不需要 date / createdAt / updatedAt / playedAt，provider 補齊 */
@@ -83,7 +85,6 @@ export type DailyOrderInput = {
   readonly selectedTopics: readonly string[]
   readonly specificRequest?: string | null
   readonly status?: DailyOrderStatus
-  readonly deliveryTime: string
   readonly entryMode?: EntryMode
   readonly lengthTier?: LengthTier
 }

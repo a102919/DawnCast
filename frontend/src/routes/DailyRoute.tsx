@@ -1,19 +1,18 @@
 import { useEffect, useMemo, useState } from 'react'
 import { toast } from 'sonner'
 import { CalendarDays, Play } from 'lucide-react'
-import { useDailyOrder, useSettings } from '../state'
+import { useDailyOrder } from '../state'
 import { TOPIC_LABELS, formatDateZhTW } from '../lib'
 import type { MockEpisode } from '../lib'
 import { api } from '../api'
 import { DailyCalendar } from '../components/daily/DailyCalendar'
 import { DailyOrderForm, type DailyOrderFormSubmitResult } from '../components/daily/DailyOrderForm'
 import { DailyOrderHistory } from '../components/daily/DailyOrderHistory'
-import { DEFAULT_DELIVERY_TIME, nextNDays, toIsoDate } from '../lib/dailyOrderDate'
+import { nextNDays, toIsoDate } from '../lib/dailyOrderDate'
 import { SectionLabel } from '../components/primitives/SectionLabel'
 
 export function DailyRoute() {
   const { todayDate, orders, getOrder, setOrder, deleteOrder } = useDailyOrder()
-  const { settings } = useSettings()
   const [userSelectedDate, setUserSelectedDate] = useState<string>(todayDate)
   const [formExpanded, setFormExpanded] = useState<boolean>(false)
   const [busy, setBusy] = useState(false)
@@ -61,7 +60,6 @@ export function DailyRoute() {
       await setOrder(selectedDate, {
         selectedTopics: result.selectedTopics,
         ...(result.specificRequest ? { specificRequest: result.specificRequest } : {}),
-        deliveryTime: result.deliveryTime,
         // Phase 4：把表單選的入口類型與長度 tier 帶到 setOrder。
         entryMode: result.entryMode,
         lengthTier: result.lengthTier,
@@ -117,7 +115,6 @@ export function DailyRoute() {
         busy={busy}
         collapsed={!formExpanded}
         onExpand={() => setFormExpanded(true)}
-        defaultDeliveryTime={settings.defaultDeliveryTime ?? DEFAULT_DELIVERY_TIME}
         onSubmit={r => void handleSubmit(r)}
       />
 

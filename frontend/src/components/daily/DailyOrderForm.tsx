@@ -8,7 +8,6 @@ import {
   AlertTriangle,
   Clock,
   ChevronDown,
-  SlidersHorizontal,
   Newspaper,
   MessageSquare,
   BookOpen,
@@ -20,15 +19,7 @@ import { StatusBadge } from './StatusBadge'
 import { TOPIC_LABELS, formatDateZhTW } from '../../lib'
 import type { TopicKey } from '../../lib'
 import type { DailyOrder, EntryMode, LengthTier } from '../../api'
-import {
-  DELIVERY_TIME_OPTIONS,
-  formatCountdown,
-  isOrderLocked,
-  isPast,
-  isToday,
-  msUntilLock,
-  getWeekdayLabel,
-} from '../../lib/dailyOrderDate'
+import { isOrderLocked, isPast, getWeekdayLabel } from '../../lib/dailyOrderDate'
 
 type TopicChoice = Exclude<TopicKey, 'all'>
 
@@ -89,7 +80,6 @@ export type DailyOrderFormSubmitResult =
       kind: 'submit'
       selectedTopics: readonly TopicChoice[]
       specificRequest: string
-      deliveryTime: string
       entryMode: EntryMode
       lengthTier: LengthTier
     }
@@ -97,7 +87,6 @@ export type DailyOrderFormSubmitResult =
       kind: 'update'
       selectedTopics: readonly TopicChoice[]
       specificRequest: string
-      deliveryTime: string
       entryMode: EntryMode
       lengthTier: LengthTier
     }
@@ -110,8 +99,6 @@ interface DailyOrderFormProps {
   readonly busy: boolean
   readonly collapsed: boolean
   readonly onExpand: () => void
-  /** 從 settings 來的預設出餐時間,新訂單帶入；既有訂單優先讀 existing.deliveryTime */
-  readonly defaultDeliveryTime: string
 }
 
 export function DailyOrderForm({
@@ -121,17 +108,12 @@ export function DailyOrderForm({
   busy,
   collapsed,
   onExpand,
-  defaultDeliveryTime,
 }: DailyOrderFormProps) {
   const locked = existing ? isOrderLocked(existing) : false
   const isDateInPast = isPast(date)
-  const isDateToday = isToday(date)
 
   const [topics, setTopics] = useState<readonly TopicChoice[]>(() => initialTopics(existing))
   const [request, setRequest] = useState<string>(() => existing?.specificRequest ?? '')
-  const [deliveryTime, setDeliveryTime] = useState<string>(
-    () => existing?.deliveryTime ?? defaultDeliveryTime,
-  )
   // Phase 4 新增：入口類型與長度 tier。existing 沒帶時是 undefined（舊 localStorage），
   // 這時依現況退回 'topic' / 'medium'；切換 entryMode 不會自動覆寫 lengthTier，
   // 避免覆蓋使用者已手動選的值，僅在「使用者從未動過 lengthTier」時補預設值。
@@ -155,8 +137,6 @@ export function DailyOrderForm({
   const [lengthTierTouched, setLengthTierTouched] = useState<boolean>(
     () => !!existing?.lengthTier,
   )
-  // 「指定內容 + 出餐時間」折進進階區塊,預設收合
-  const [advancedOpen, setAdvancedOpen] = useState<boolean>(false)
 
   const toggleTopic = (key: TopicChoice) => {
     if (locked) return
@@ -181,7 +161,6 @@ export function DailyOrderForm({
     const payload = {
       selectedTopics: topics,
       specificRequest: request.trim(),
-      deliveryTime,
       entryMode,
       lengthTier,
     }
@@ -197,7 +176,7 @@ export function DailyOrderForm({
   const canSubmit = topics.length > 0 && !locked && !isDateInPast
 
   // 摺疊狀態：顯示精簡摘要卡，點按鈕才展開編輯。
-  // 元件實例不卸載,topics / request / deliveryTime 內部狀態得以保留。
+  // 元件實例不卸載,topics / request 內部狀態得以保留。
   if (collapsed) {
     return (
       <CollapsedSummaryCard
@@ -221,13 +200,11 @@ export function DailyOrderForm({
         <p className="text-xs text-text-secondary leading-relaxed">
           {isDateInPast
             ? '過去日期的訂單僅供查看，如要補點會建立新訂單。'
-            : isDateToday
-              ? '今天的餐可在送出後到「出餐前 6 小時」之前修改。'
-              : '提前點餐可在送出後到「出餐前 6 小時」之前修改。'}
+            : '送出後立即開始生成，無法再修改。'}
         </p>
       </header>
 
-      {locked && existing?.status !== 'queued' && <LockedBanner existing={existing} />}
+      {locked && <LockedBanner existing={existing} />}
 
       {/* Phase 4：三分頁入口選擇 */}
       <div className="space-y-2">
@@ -292,75 +269,21 @@ export function DailyOrderForm({
         )}
       </div>
 
-      {/* 進階區塊觸發器:展開/收合指定內容 + 出餐時間。
-          右側永遠顯示目前選到的出餐時間,讓使用者沒展開也不失憶。 */}
-      <button
-        type="button"
-        onClick={() => setAdvancedOpen(o => !o)}
-        aria-expanded={advancedOpen}
-        aria-controls="daily-order-advanced"
-        className="w-full flex items-center justify-between gap-2 px-3 py-2.5 rounded-md border border-dashed border-border bg-bg-secondary/40 text-xs text-text-secondary hover:border-accent/40 hover:text-text-primary transition-colors duration-fast min-h-[44px] disabled:opacity-50 disabled:cursor-not-allowed"
-        disabled={locked}
-      >
-        <span className="inline-flex items-center gap-1.5">
-          <SlidersHorizontal size={12} aria-hidden />
-          {advancedOpen ? '收合進階選項' : '顯示進階選項'}
-        </span>
-        <span className="inline-flex items-center gap-2">
-          <span className="text-[11px] text-text-tertiary">出餐 {deliveryTime}</span>
-          <ChevronDown
-            size={14}
-            aria-hidden
-            className={`transition-transform duration-fast ${advancedOpen ? 'rotate-180' : ''}`}
-          />
-        </span>
-      </button>
-
-      {/* 進階區塊內容:指定內容 + 出餐時間 */}
-      {advancedOpen && (
-        <div id="daily-order-advanced" className="space-y-5" aria-hidden={!advancedOpen}>
-          {/* 指定內容 */}
-          <div className="space-y-2">
-            <label
-              htmlFor="daily-request"
-              className="text-xs font-medium text-text-tertiary block"
-            >
-              想特別學的內容 <span className="text-text-tertiary/70">（選填）</span>
-            </label>
-            <textarea
-              id="daily-request"
-              value={request}
-              onChange={e => setRequest(e.target.value)}
-              placeholder="例如：科技面試常見問答、餐廳點餐用語..."
-              rows={3}
-              disabled={locked}
-              className="w-full px-3 py-2.5 text-sm bg-bg-secondary border border-border rounded-md text-text-primary placeholder:text-text-tertiary resize-none focus:outline-none focus:border-accent transition-colors duration-fast disabled:opacity-50 disabled:cursor-not-allowed"
-            />
-          </div>
-
-          {/* 出餐時間 chips */}
-          <div className="space-y-2">
-            <div className="text-xs font-medium text-text-tertiary flex items-center gap-1">
-              <Clock size={12} aria-hidden />
-              出餐時間
-            </div>
-            <div className="flex gap-1.5 flex-wrap">
-              {DELIVERY_TIME_OPTIONS.map(opt => (
-                <Chip
-                  key={opt.value}
-                  active={deliveryTime === opt.value}
-                  onClick={() => !locked && setDeliveryTime(opt.value)}
-                >
-                  {opt.label}
-                </Chip>
-              ))}
-            </div>
-            {!isDateInPast && (
-              <CountdownText existing={existing} deliveryTime={deliveryTime} date={date} />
-            )}
-          </div>
-        </div>
-      )}
+      {/* 指定內容 */}
+      <div className="space-y-2">
+        <label htmlFor="daily-request" className="text-xs font-medium text-text-tertiary block">
+          想特別學的內容 <span className="text-text-tertiary/70">（選填）</span>
+        </label>
+        <textarea
+          id="daily-request"
+          value={request}
+          onChange={e => setRequest(e.target.value)}
+          placeholder="例如：科技面試常見問答、餐廳點餐用語..."
+          rows={3}
+          disabled={locked}
+          className="w-full px-3 py-2.5 text-sm bg-bg-secondary border border-border rounded-md text-text-primary placeholder:text-text-tertiary resize-none focus:outline-none focus:border-accent transition-colors duration-fast disabled:opacity-50 disabled:cursor-not-allowed"
+        />
+      </div>
 
       {/* 操作列 */}
       <div className="flex items-center justify-between gap-2 pt-1">
@@ -420,35 +343,7 @@ function LockedBanner({ existing }: { readonly existing: DailyOrder | null }) {
   return (
     <div className="flex items-start gap-2 p-3 rounded-md bg-warning/5 border border-warning/20 text-xs text-text-secondary">
       <AlertTriangle size={14} className="text-warning shrink-0 mt-0.5" aria-hidden />
-      <span>已過截止時間（出餐前 6 小時），這一餐無法再編輯。</span>
-    </div>
-  )
-}
-
-function CountdownText({
-  existing,
-  deliveryTime,
-  date,
-}: {
-  readonly existing: DailyOrder | null
-  readonly deliveryTime: string
-  readonly date: string
-}) {
-  // 模擬一個 "現在訂單" 用來算截止倒數（既有的用 existing 的 deliveryTime，新的用當前 UI 選的）
-  const synthetic = existing ?? {
-    date,
-    selectedTopics: [],
-    status: 'pending' as const,
-    deliveryTime,
-    createdAt: new Date().toISOString(),
-    updatedAt: new Date().toISOString(),
-  }
-  const ms = msUntilLock({ ...synthetic, deliveryTime })
-  const text = formatCountdown(ms)
-  return (
-    <div className="text-[11px] text-text-tertiary flex items-center gap-1">
-      <Clock size={10} aria-hidden />
-      截止倒數：{text}
+      <span>已送出，正在生成中，無法再編輯。</span>
     </div>
   )
 }
@@ -507,7 +402,6 @@ function CollapsedSummaryCard({
                 {modeAndTier && <span>{modeAndTier}</span>}
                 {modeAndTier && <span className="text-text-tertiary"> · </span>}
                 <span>{topicSummary}</span>
-                <span className="text-text-tertiary"> · {existing.deliveryTime} 出餐</span>
               </>
             ) : (
               <span className="text-text-tertiary">還沒點餐</span>

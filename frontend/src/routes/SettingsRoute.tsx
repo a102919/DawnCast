@@ -8,7 +8,6 @@ import { Toggle, Chip, SectionLabel } from '../components/primitives'
 import { AlertTriangle, ShieldCheck } from 'lucide-react'
 import { TOPIC_LABELS } from '../lib'
 import type { TopicKey } from '../lib'
-import { DELIVERY_TIME_OPTIONS } from '../lib/dailyOrderDate'
 
 const TOPIC_CHOICES: readonly Exclude<TopicKey, 'all'>[] = ['tech', 'business', 'culture', 'science'] as const
 
@@ -128,8 +127,8 @@ export function SettingsRoute() {
           </SettingRow>
         </SettingSection>
 
-        {/* 播放與出餐設定 */}
-        <SettingSection title="播放與出餐">
+        {/* 播放設定 */}
+        <SettingSection title="播放設定">
           <SettingRow
             label="預設語速"
             description="調整節目的預設播放速度"
@@ -146,24 +145,6 @@ export function SettingsRoute() {
               ))}
             </div>
           </SettingRow>
-
-          <div className="px-4 py-4">
-            <div className="text-sm font-medium text-text-primary">預設出餐時間</div>
-            <p className="text-xs text-text-secondary mt-0.5 mb-3">
-              每天點餐時預先帶入的時段，仍可在下單卡手動切換
-            </p>
-            <div className="flex gap-1.5 flex-wrap">
-              {DELIVERY_TIME_OPTIONS.map(opt => (
-                <Chip
-                  key={opt.value}
-                  active={settings.defaultDeliveryTime === opt.value}
-                  onClick={() => updateSettings({ defaultDeliveryTime: opt.value })}
-                >
-                  {opt.label}
-                </Chip>
-              ))}
-            </div>
-          </div>
         </SettingSection>
 
         {/* 學習偏好 */}

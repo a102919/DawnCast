@@ -40,83 +40,15 @@ export function isToday(iso: string, now: Date = new Date()): boolean {
   return iso === toIsoDate(now)
 }
 
-// ─── 出餐時間 'HH:MM' helpers ─────────────────────────────────────────────
-
-const HHMM_RE = /^(\d{1,2}):(\d{2})$/
-
-export function isValidHhmm(s: string): boolean {
-  const m = HHMM_RE.exec(s)
-  if (!m) return false
-  const h = Number(m[1])
-  const min = Number(m[2])
-  return h >= 0 && h <= 23 && min >= 0 && min <= 59
-}
-
-/** 合併 YYYY-MM-DD + 'HH:MM' 為本地時區的 Date。 */
-export function combineDateTime(iso: string, hhmm: string): Date {
-  const m = HHMM_RE.exec(hhmm)
-  if (!m) return parseIsoDate(iso)
-  const d = parseIsoDate(iso)
-  d.setHours(Number(m[1]), Number(m[2]), 0, 0)
-  return d
-}
-
-/** 截止時間 = 出餐時間 - CUTOFF_HOURS_BEFORE_DELIVERY 小時。 */
-export function cutoffTime(iso: string, hhmm: string): Date {
-  const delivery = combineDateTime(iso, hhmm)
-  delivery.setHours(delivery.getHours() - CUTOFF_HOURS_BEFORE_DELIVERY)
-  return delivery
-}
-
 // ─── 預設值與常數 ─────────────────────────────────────────────────────────
 
-export const CUTOFF_HOURS_BEFORE_DELIVERY = 6
 export const DEFAULT_DELIVERY_TIME = '07:00'
-
-export const DELIVERY_TIME_OPTIONS: readonly { readonly value: string; readonly label: string }[] = [
-  { value: '06:00', label: '06:00 早起' },
-  { value: '07:00', label: '07:00 通勤' },
-  { value: '08:00', label: '08:00 早餐' },
-  { value: '12:00', label: '12:00 午休' },
-  { value: '18:00', label: '18:00 下班' },
-  { value: '21:00', label: '21:00 睡前' },
-] as const
-
-/** 6 個出餐時段的字串值集合，給 isDeliveryTime 守衛用。 */
-export const DELIVERY_TIME_VALUES: readonly string[] = DELIVERY_TIME_OPTIONS.map(o => o.value)
-
-/** 是否為 6 個出餐時段之一（比 isValidHhmm 更嚴，限定只能從 chips 選）。 */
-export function isDeliveryTime(s: string): boolean {
-  return (DELIVERY_TIME_VALUES as readonly string[]).includes(s) && isValidHhmm(s)
-}
 
 // ─── 訂單鎖定判斷 ─────────────────────────────────────────────────────────
 
-/**
- * 訂單是否鎖定：
- * - 已 played：永久鎖
- * - 現在時間 >= 出餐前 6 小時（截止時間）：鎖
- * - 其他：可編輯
- */
-export function isOrderLocked(order: DailyOrder, now: Date = new Date()): boolean {
-  if (order.status === 'played') return true
-  return now.getTime() >= cutoffTime(order.date, order.deliveryTime).getTime()
-}
-
-/** 還剩多久鎖定（毫秒）。已鎖定回 0。負數代表已過截止。 */
-export function msUntilLock(order: DailyOrder, now: Date = new Date()): number {
-  if (order.status === 'played') return 0
-  return cutoffTime(order.date, order.deliveryTime).getTime() - now.getTime()
-}
-
-/** 把毫秒轉成 "X 小時 Y 分鐘" / "Y 分鐘" 形式。負數回 "已過截止"。 */
-export function formatCountdown(ms: number): string {
-  if (ms <= 0) return '已過截止'
-  const totalMin = Math.floor(ms / 60_000)
-  const h = Math.floor(totalMin / 60)
-  const m = totalMin % 60
-  if (h > 0) return `${h} 小時 ${m} 分鐘`
-  return `${m} 分鐘`
+/** 訂單是否鎖定：送出後（status 離開 pending）立即開始生成，不可再編輯。 */
+export function isOrderLocked(order: DailyOrder): boolean {
+  return order.status !== 'pending'
 }
 
 // ─── 行事曆輔助 ───────────────────────────────────────────────────────────
