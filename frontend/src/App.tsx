@@ -7,6 +7,7 @@ import { TopBar, BottomNav } from './components/layout'
 import { GlobalAudioHost, MiniPlayer } from './components/player'
 import { HomeRoute, PlayerRoute, VocabRoute, FavoritesRoute, SettingsRoute, ProgressRoute, FlashcardRoute, DailyRoute, LoginRoute, AdminRoute } from './routes'
 import { useSprings } from './lib/motion'
+import { UpdatePrompt } from './components/UpdatePrompt'
 
 // 進入 PlayerRoute 用「往上推入」的位移感（呼應 Home 精選卡→播放頁的層級深入），
 // 其餘頁面互轉維持單純淡入淡出，避免非相關頁面切換也有位移感造成雜訊。
@@ -128,6 +129,7 @@ export default function App() {
         <AppShell />
       </AuthProvider>
       <Toaster position="bottom-center" richColors />
+      <UpdatePrompt />
     </BrowserRouter>
   )
 }
