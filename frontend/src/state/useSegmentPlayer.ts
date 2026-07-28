@@ -70,6 +70,7 @@ export function useSegmentPlayer(): SegmentPlayer {
   const ctxRef = useRef<AudioContext | null>(null)
   const mainGainRef = useRef<GainNode | null>(null)
   const segmentGainRef = useRef<GainNode | null>(null)
+  const audioElRef = useRef<HTMLAudioElement | null>(null)
   const cache = useBufferCache()
   const episodeRef = useRef<Episode | null>(null)
   const activeRef = useRef<ActiveSource | null>(null)
@@ -102,11 +103,22 @@ export function useSegmentPlayer(): SegmentPlayer {
     const mainGain = ctx.createGain()
     const segGain = ctx.createGain()
     segGain.gain.value = 1
-    segGain.connect(ctx.destination)
     mainGain.connect(segGain)
     ctxRef.current = ctx
     mainGainRef.current = mainGain
     segmentGainRef.current = segGain
+
+    // 輸出不接 ctx.destination，改接一個真的在播放的隱藏 <audio> 元素（透過
+    // MediaStreamAudioDestinationNode）。iOS Safari 對純 Web Audio API 輸出不會
+    // 認成合法的背景播放 session：光設 mediaSession metadata 沒用，沒有實際在播的
+    // <audio>/<video> 元素，動態島/鎖屏不會顯示，背景切走也會被系統直接掛起 AudioContext。
+    const streamDest = ctx.createMediaStreamDestination()
+    segGain.connect(streamDest)
+    const audioEl = new Audio()
+    audioEl.srcObject = streamDest.stream
+    audioEl.play().catch(() => undefined)
+    audioElRef.current = audioEl
+
     return ctx
   }, [])
 
@@ -178,6 +190,8 @@ export function useSegmentPlayer(): SegmentPlayer {
     isPlayingRef.current = true
     setIsPlaying(true)
     void ctx.resume()
+    // 背景切回來/鎖屏按播放時，隱藏 <audio> 可能已被系統暫停，這裡跟著重啟。
+    void audioElRef.current?.play().catch(() => undefined)
     const remaining = durationSec !== undefined ? Math.min(durationSec, buf.duration - offsetSec) : undefined
     source.start(0, offsetSec, remaining)
     source.onended = () => {
@@ -282,6 +296,7 @@ export function useSegmentPlayer(): SegmentPlayer {
 
   const unlock = useCallback(async () => {
     const ctx = ensureContext()
+    void audioElRef.current?.play().catch(() => undefined)
     if (ctx.state === 'suspended') await ctx.resume()
   }, [ensureContext])
 

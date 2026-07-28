@@ -44,6 +44,7 @@ interface FakeAudioContext {
   decodeAudioData: ReturnType<typeof vi.fn>
   createBufferSource: () => FakeBufferSourceNode
   createGain: () => FakeGainNode
+  createMediaStreamDestination: ReturnType<typeof vi.fn>
   resume: ReturnType<typeof vi.fn>
 }
 
@@ -99,9 +100,14 @@ function setupGlobalMocks() {
       gains.push(g)
       return g
     },
+    createMediaStreamDestination: vi.fn(() => ({ stream: {}, connect: vi.fn() })),
     resume: vi.fn(async () => undefined),
   }
   ;(window as unknown as { AudioContext: unknown }).AudioContext = vi.fn(() => fakeCtx)
+  ;(window as unknown as { Audio: unknown }).Audio = vi.fn(() => ({
+    srcObject: null,
+    play: vi.fn(async () => undefined),
+  }))
   realFetch = global.fetch
   global.fetch = vi.fn(async () => ({
     ok: true,
