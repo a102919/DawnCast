@@ -166,10 +166,14 @@ def _segment_metadata_from_script(script_json: Any) -> list[dict[str, Any]]:
     ]
 
 
-@router.get("/{slug}", response_model=ApiResponse[Episode])
-async def get_episode(slug: str, user_id: str = Depends(get_current_user)) -> ApiResponse[Episode]:
-    async with connection() as conn, conn.cursor(row_factory=dict_row) as cur:
-        row = await _fetch_authorized(cur, slug, user_id)
+def build_episode(slug: str, row: dict[str, Any]) -> Episode:
+    """把 DB row 組成對外 Episode（含 segments 批次簽章）。
+
+    GET /{slug} 與 /daily-orders/{date}/episode 共用同一份組裝邏輯，避免
+    兩條路徑各自組 Episode 時漏簽 segments（後者曾經漏掉，導致該路徑進來的
+    集數完全播不了但無任何錯誤訊息——segments 空 list 對前端是合法的「舊集
+    未 backfill」狀態，不會報錯，只是靜音）。
+    """
     script_j = row.get("script_json")
     cover_icon_val = (
         script_j.get("cover_icon")
@@ -213,7 +217,7 @@ async def get_episode(slug: str, user_id: str = Depends(get_current_user)) -> Ap
         except Exception:
             logger.exception("legacy audio_r2_key 簽章失敗 slug=%s", slug)
 
-    episode = Episode(
+    return Episode(
         id=row["slug"],
         title=row["title"],
         title_zh=row["title_zh"],
@@ -226,7 +230,13 @@ async def get_episode(slug: str, user_id: str = Depends(get_current_user)) -> Ap
         cues=_cues(script_j),
         references=_references_from_sources(row.get("sources")),
     )
-    return ok(episode)
+
+
+@router.get("/{slug}", response_model=ApiResponse[Episode])
+async def get_episode(slug: str, user_id: str = Depends(get_current_user)) -> ApiResponse[Episode]:
+    async with connection() as conn, conn.cursor(row_factory=dict_row) as cur:
+        row = await _fetch_authorized(cur, slug, user_id)
+    return ok(build_episode(slug, row))
 
 
 # Phase G：移除 GET /{slug}/url 端點。前端吃 Episode.segments[] 陣列，

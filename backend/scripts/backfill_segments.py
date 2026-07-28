@@ -29,7 +29,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from shared.db.pool import close_pool, connection, open_pool
+from shared.db.pool import close_pool, connection
 from shared.storage import r2
 
 logger = logging.getLogger(__name__)
@@ -170,11 +170,7 @@ async def _run(limit: int, slug: str | None, dry_run: bool) -> tuple[int, int]:
                 dict(zip([d.name for d in cur.description] if cur.description else [], row))
             ]
     else:
-        await open_pool()
-        try:
-            rows = await _list_legacy_episodes(limit)
-        finally:
-            await close_pool()
+        rows = await _list_legacy_episodes(limit)
     if not rows:
         return 0, 0
     with tempfile.TemporaryDirectory(prefix="dc_backfill_") as td:
@@ -195,18 +191,21 @@ def _amain() -> None:
     p.add_argument("--slug", type=str, default=None, help="指定單集 slug（忽略 --limit）")
     p.add_argument("--dry-run", action="store_true", help="只列計畫，不上傳、不寫 DB")
     a = p.parse_args()
-    try:
-        plan, ok = asyncio.run(_run(a.limit, a.slug, a.dry_run))
-        if a.dry_run:
-            print(f"DRY-RUN: 計畫切 {plan} 段，0 段實際上傳")
-        else:
-            print(f"DONE: 切 {plan} 段，上傳 {ok} 段")
-    finally:
-        # _run 內已 close_pool，但 slug 模式不會開；保險起見再關一次（no-op 若已關）
+
+    async def _main() -> tuple[int, int]:
+        # pool 的背景 worker task 綁在建立當下的 event loop；close_pool() 若跑在
+        # 另一個 asyncio.run() 開的新 loop 會撞 CancelledError。open/use/close
+        # 全部包在同一個 coroutine、同一次 asyncio.run() 內才安全。
         try:
-            asyncio.run(close_pool())
-        except Exception:  # noqa: BLE001
-            pass
+            return await _run(a.limit, a.slug, a.dry_run)
+        finally:
+            await close_pool()
+
+    plan, ok = asyncio.run(_main())
+    if a.dry_run:
+        print(f"DRY-RUN: 計畫切 {plan} 段，0 段實際上傳")
+    else:
+        print(f"DONE: 切 {plan} 段，上傳 {ok} 段")
 
 
 if __name__ == "__main__":

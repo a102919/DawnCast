@@ -23,7 +23,6 @@ from fastapi.testclient import TestClient
 
 from app.routers import daily_orders as daily_orders_router
 from shared.db import repo as db_repo
-from shared.models import Episode
 
 USER_A = "11111111-1111-1111-1111-111111111111"
 USER_B = "22222222-2222-2222-2222-222222222222"
@@ -262,17 +261,25 @@ async def fake_connection() -> AsyncIterator[FakeConnection]:
 
 async def fake_find_delivered_episode(
     user_id: str, deliver_date: str
-) -> Episode | None:
-    """簡化：USER_A 在 2026-07-15 有交付，其他都 null。"""
+) -> dict[str, Any] | None:
+    """簡化：USER_A 在 2026-07-15 有交付，其他都 null。
+
+    回傳原始 row（不是 Episode）：router 層改用 build_episode() 組裝，
+    跟 repo.find_delivered_episode() 的真實回傳型別一致。
+    """
     if user_id == USER_A and deliver_date == "2026-07-15":
-        return Episode(
-            id="ep-a-only",
-            title="T-A",
-            title_zh=None,
-            topic="tech",
-            cefr_level="B1",
-            is_free=False,
-        )
+        return {
+            "slug": "ep-a-only",
+            "title": "T-A",
+            "title_zh": None,
+            "topic": "tech",
+            "cefr_level": "B1",
+            "is_free": False,
+            "script_json": None,
+            "sources": None,
+            "audio_r2_key": None,
+            "audio_r2_keys": None,
+        }
     return None
 
 

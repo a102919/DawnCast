@@ -15,7 +15,7 @@ from typing import Any
 from psycopg.rows import dict_row
 
 from shared.db.pool import connection
-from shared.models import Cue, Episode
+from shared.models import Cue
 
 
 async def project_orders_to_requests(request_date: str) -> int:
@@ -765,18 +765,14 @@ async def transition_order_to_queued(user_id: str, order_date: str) -> bool:
         return cur.rowcount > 0
 
 
-def _cues_from_script_json(script_json: Any) -> list[Cue]:
-    """script_json 可能是 {cues:[...]} 或直接 [...]，皆容錯。"""
-    if not script_json:
-        return []
-    raw = script_json.get("cues") if isinstance(script_json, dict) else script_json
-    if not isinstance(raw, list):
-        return []
-    return [Cue.model_validate(c) for c in raw]
+async def find_delivered_episode(user_id: str, deliver_date: str) -> dict[str, Any] | None:
+    """取當天交付給該 user 的集數原始 row，找不到回 None。
 
-
-async def find_delivered_episode(user_id: str, deliver_date: str) -> Episode | None:
-    """取當天交付給該 user 的集數，找不到回 None。
+    刻意回傳原始 row 而非組好的 Episode：segments 簽章要呼叫 R2（I/O），
+    交給 router 層的 build_episode() 統一組——跟 GET /episodes/{slug} 共用
+    同一份組裝邏輯，避免這條路徑漏簽 segments（之前發生過：這裡自己組了一份
+    沒帶 segments 的 Episode，前端拿到空 segments 當「舊集未 backfill」處理，
+    不報錯但完全靜音，難排查）。
 
     undelivered_users 的 NOT EXISTS 邏輯保證同 user+date 至多一列；
     deliveries 表本身沒有 created_at，故不加 ORDER BY（Postgres 取任意列即可）。
@@ -785,7 +781,7 @@ async def find_delivered_episode(user_id: str, deliver_date: str) -> Episode | N
         await cur.execute(
             """
             select e.slug, e.title, e.title_zh, e.topic, e.cefr_level,
-                   e.is_free, e.script_json, e.mp4_r2_key,
+                   e.is_free, e.script_json, e.sources,
                    e.audio_r2_key, e.audio_r2_keys
             from public.deliveries d
             join public.episodes e on e.id = d.episode_id
@@ -795,14 +791,4 @@ async def find_delivered_episode(user_id: str, deliver_date: str) -> Episode | N
             (user_id, deliver_date),
         )
         row = await cur.fetchone()
-    if row is None:
-        return None
-    return Episode(
-        id=row["slug"],
-        title=row["title"],
-        title_zh=row["title_zh"],
-        topic=row["topic"],
-        cefr_level=row["cefr_level"],
-        is_free=row["is_free"],
-        cues=_cues_from_script_json(row["script_json"]),
-    )
+    return dict(row) if row else None

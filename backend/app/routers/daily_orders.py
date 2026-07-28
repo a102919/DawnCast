@@ -14,6 +14,7 @@ from psycopg.rows import dict_row
 
 from app.deps import get_current_user
 from app.response import ApiResponse, ok
+from app.routers.episodes import build_episode
 from app.schemas import MarkPlayedBody, SaveDailyOrderBody
 from shared.db import repo
 from shared.db.pool import connection
@@ -155,4 +156,5 @@ async def get_daily_order_episode(
     URL 語意：daily_order 是主資源，episode 是其子資源（解決 PlayerRoute 點 ?date=
     連結時不知道播哪集的問題）。
     """
-    return ok(await repo.find_delivered_episode(user_id, date))
+    row = await repo.find_delivered_episode(user_id, date)
+    return ok(build_episode(row["slug"], row) if row else None)
