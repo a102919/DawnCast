@@ -62,6 +62,19 @@ export default defineConfig({
             handler: 'NetworkFirst',
             options: { cacheName: 'dawncast-pages', networkTimeoutSeconds: NAV_TIMEOUT_SECONDS },
           },
+          // 每行 mp3 segment：R2 簽章 URL 帶 query string（每次請求新簽），用
+          // CacheFirst 把已播過的 segment 離線快取，下次聽同集直接命中。
+          // 不快取 .srt：srt 由 Episode.segments metadata 取代，整集 mp3 不再生產。
+          {
+            urlPattern: ({ url }) => url.pathname.endsWith('.mp3'),
+            handler: 'CacheFirst',
+            options: {
+              cacheName: 'dawncast-segments',
+              expiration: { maxEntries: 200, maxAgeSeconds: 7 * 24 * 60 * 60 },
+              cacheableResponse: { statuses: [0, 200] },
+              rangeRequests: true,
+            },
+          },
         ],
       },
     }),

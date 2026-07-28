@@ -26,6 +26,16 @@ function highlightWord(sentence: string, word: string): ReactNode {
   )
 }
 
+/** 字在 cue 文字內的「段內秒偏移」：(charOffset/text.length) * (cue.end - cue.start)。
+ *  player.playSegment 第二參數是該段 mp3 內的 offset，從 segment 起點算。 */
+function wordOffsetInCue(sentence: string, word: string, cue: Cue): number {
+  if (!sentence || !word) return 0
+  const idx = sentence.toLowerCase().indexOf(word.toLowerCase())
+  if (idx < 0) return 0
+  const dur = Math.max(0, cue.end - cue.start)
+  return (idx / sentence.length) * dur
+}
+
 interface WordCardPanelProps {
   readonly isOpen: boolean
   readonly word: string | null
@@ -80,7 +90,19 @@ export function WordCardPanel({ isOpen, word, entry, lookupError, onRetry, activ
             </h3>
             {entry && (
               <div className="flex items-center gap-2 mt-0.5">
-                <PronounceButton audioUrl={entry.audioUrl} text={word} />
+                <PronounceButton
+                  audioUrl={entry.audioUrl}
+                  text={word}
+                  {...(activeCue && activeCueIdx >= 0 && word
+                    ? {
+                        playSegmentRequest: {
+                          cueIdx: activeCueIdx,
+                          offsetSec: wordOffsetInCue(activeCue.text, word, activeCue),
+                          durationSec: 0.6,
+                        },
+                      }
+                    : {})}
+                />
                 {entry.ipa && (
                   <span className="text-xs text-text-tertiary font-mono">{entry.ipa}</span>
                 )}

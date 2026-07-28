@@ -102,6 +102,22 @@ class Cue(CamelModel):
     end: float
 
 
+class Segment(CamelModel):
+    """單行 mp3 對外契約：index + 已簽章的 audioUrl + 真實時長 + 在該集的時間區段。
+
+    新方案下 audioUrl 為整集簽章時不適用（整集不再產），segments 才是前端
+    Web Audio API 串接播的承載。index / start / end 對齊 Cue，duration 是
+    trim 後 mp3 真實時長（秒）。前端用 index 對 Cue.binary search 結果定位
+    segment、用 start / end 算 currentTime。
+    """
+
+    index: int
+    audio_url: str
+    duration: float
+    start: float
+    end: float
+
+
 class SourceReference(CamelModel):
     """對前端暴露的來源引用：只帶 id / title / url，不暴露 text / published_at。
 
@@ -115,7 +131,12 @@ class SourceReference(CamelModel):
 
 
 class Episode(CamelModel):
-    """前端播放頁需要的集數內容。audioUrl 由服務層產簽章 URL 後填入。"""
+    """前端播放頁需要的集數內容。segments 由服務層一次簽章後填入。
+
+    audio_url：新方案下整集 mp3 不再產，audio_url 對 episode 永遠為 None（保留
+    欄位給 1 版本向後相容——舊 client 可能還在讀，frontend 用 audioUrl?: string |
+    null 容錯；Phase G 後才完全移除）。
+    """
 
     id: str  # 對外用 slug
     title: str
@@ -125,6 +146,10 @@ class Episode(CamelModel):
     cover_icon: str | None = None
     is_free: bool = False
     audio_url: str | None = None
+    # 新路徑：每行 mp3 一個 segment，前端 Web Audio API 串接播。空 list 表示
+    # 舊集未 backfill（Phase H 才處理）——前端 fallback 整集 mp3，但 audioUrl
+    # 已是 None，需要讀 segments 判斷模式。Phase H 跑完後新集一律非空。
+    segments: list[Segment] = Field(default_factory=list)
     cues: list[Cue] = Field(default_factory=list)
     # 來源引用：來自 DB episodes.sources（jsonb），router 過濾 http/https URL 後填入。
     # 沒來源（未 grounded 或無 provider）的集數預設空 list（不是 None，前端易處理）。

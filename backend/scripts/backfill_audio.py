@@ -1,23 +1,21 @@
-"""為 dict_cache 補 audio_url（Layer 1，Piper TTS）。
+"""⚠️ DEPRECATED：方案 B 上線後前端不再吃 dict_cache.audio_url。
 
-流程：
-  1. 撈 dict_cache where audio_url is null（--limit 控制批大小）
-  2. 對每個 word 呼叫 engine.media.dict_audio.synthesize_word_audio
-     （單一 source of truth；同步合成 + R2/本地發佈）
-  3. UPDATE dict_cache.audio_url；失敗保留 null，待下批補。
+播放路徑改走 player.playSegment 從該行 AudioBuffer 抽樣播（見
+frontend/src/components/wordcard/PronounceButton.tsx 與
+frontend/src/components/flashcard/ReplayAudioButton.tsx），
+dict_cache.audio_url 變成 dead column。
 
-合成 / 發佈細節見 engine/media/dict_audio.py；本 script 只負責批次排程與 CLI 入口。
+此 script 保留 import 路徑以防誤刪破壞舊 deploy；若仍有線上客戶端吃到 audio_url
+可暫跑補完；新部署請直接刪除此檔並執行 scripts/backfill_segments.py 處理
+舊集音檔切段（見 plan/mighty-coalescing-wall.md Phase H）。
 
-授權：Piper 為 MIT（espeak-ng 採 dynamic linking，不污染自有程式碼授權）。
-自合 mp3 不繼承上游 share-alike，完整 DawnCast 所有權。
-
-執行（後台跑）：
-  uv run python -m scripts.backfill_audio --limit 500
-
-Piper 安裝：
+Piper 安裝（若仍要跑）：
   pip install piper-tts
   python -m piper.download_voices en_US-amy-medium
   # 模型預設路徑 ~/.local/share/piper/{voice}.onnx + .onnx.json
+
+執行（後台跑；DEPRECATED）：
+  uv run python -m scripts.backfill_audio --limit 500
 """
 
 from __future__ import annotations

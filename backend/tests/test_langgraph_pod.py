@@ -265,8 +265,22 @@ async def test_pod_happy_path() -> None:
     # 分類以最終稿為準；輸入 big_topic 是「科技」，Quantum 稿仍應寫成 science。
     assert episode.topic == "science"
     assert len(repo.deliveries) == 2  # u1, u2
-    assert len(r2.objects) == 2  # mp3 / srt
+    # R2 物件 = N 個 segments + 1 srt。動態從 outline 算 segments 數（_make_passing_chat
+    # 預設 3 但 outline 結構會擴展成更多 line），不寫死避免 fixture 變動壞。
+    script_line_count = episode.script_json["script"].__len__() if episode.script_json else 0
+    assert len(r2.objects) == script_line_count + 1
     assert chat._call_count == 5  # 1 outline + 3 segments + 1 judge
+    # 每行 mp3 真的走「episodes/{uuid}/segments/{idx:03d}.mp3」路徑上傳，
+    # 且最後一個 key 是 srt；DB row 也真的收到對應長度的 audio_keys list（向後相容
+    # audio_r2_key 也帶第一個）。回歸鎖：若有人改回整集 mp3，這裡會立刻炸。
+    segment_keys = [k for k in r2.objects if "/segments/" in k]
+    srt_keys = [k for k in r2.objects if k.endswith(".srt")]
+    assert len(segment_keys) == script_line_count
+    assert len(srt_keys) == 1
+    for idx, key in enumerate(sorted(segment_keys)):
+        assert key.endswith(f"/segments/{idx:03d}.mp3"), key
+    assert episode.audio_keys == sorted(segment_keys)
+    assert episode.audio_key == sorted(segment_keys)[0]  # legacy back-compat field
 
 
 # ── 2. judge 不及格 → rewrite → 及格 ──────────────────────
@@ -456,8 +470,10 @@ async def test_idempotent_second_call_skips_render() -> None:
         queue=queue,
         renderer=renderer,
     )
-    # 第一次：2 個 R2 物件 (mp3 + srt)
-    assert len(r2.objects) == 2
+    # 第一次：N 個 segments + 1 srt（動態算 segments 數）
+    ep1 = repo.get_episode(eid1)
+    line_count_1 = ep1.script_json["script"].__len__() if ep1 and ep1.script_json else 0
+    assert len(r2.objects) == line_count_1 + 1
     # 第二次同 body：already_rendered=True → 跳過 render + upload
     eid2 = await run_pod(
         _body(),
@@ -469,7 +485,7 @@ async def test_idempotent_second_call_skips_render() -> None:
     )
     assert eid1 == eid2
     # 第二次沒新增 R2 物件
-    assert len(r2.objects) == 2
+    assert len(r2.objects) == line_count_1 + 1
     # MockRepo insert_delivery 模擬 ON CONFLICT DO NOTHING → 同 (user, ep, date)
     # 第二次不會新增。所以最終只有 2 筆（u1, u2 各一）。
     assert len(repo.deliveries) == 2
@@ -479,6 +495,16 @@ async def test_idempotent_second_call_skips_render() -> None:
 
 
 async def test_r2_failure_falls_back_to_local_keys_null() -> None:
+    """新方案下 segments 多檔沒本地 fallback：R2 失敗直接 dead_letter → DELETE row。
+
+    舊行為：R2 失敗 → safe_local_fallback 寫整集 mp3 → update_episode_keys 帶 null key
+    仍落庫 → 仍交付。新方案：segments 難以多檔 fallback，R2 失敗直接走
+    storage_decision 的 dead_letter 分支清 row（跟 test_r2_failure_with_no_local_fallback
+    語意一致，只是這個不走 settings.local_media_dir=None 的顯式路徑）。
+
+    保留這個測試名稱對照舊意圖，但斷言改為「row 被刪、無交付」，避免和
+    test_r2_failure_with_no_local_fallback_deletes_row 完全重複因此註解說明。
+    """
     chat = _make_passing_chat()
     repo, _, queue = get_mocks(reset=True)
     r2 = MockR2()
@@ -493,13 +519,12 @@ async def test_r2_failure_falls_back_to_local_keys_null() -> None:
         queue=queue,
         renderer=renderer,
     )
+    # 仍回傳 episode_id（graceful END 不是例外）
     assert eid
-    ep = repo.get_episode(eid)
-    assert ep is not None
-    assert ep.audio_key is None
-    assert ep.srt_key is None
-    # 仍交付
-    assert len(repo.deliveries) == 2
+    # row 被補償清掉、沒交付（新方案：segments 沒 fallback 路徑 → dead_letter）
+    assert len(repo.episodes) == 0
+    assert len(repo.by_idem) == 0
+    assert repo.deliveries == []
 
 
 # ── 5b. R2 失敗 + 本機 fallback 也失敗 → DELETE row + raise ────

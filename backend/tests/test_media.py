@@ -75,41 +75,32 @@ def test_build_timeline_chapter邊界用長停頓() -> None:
     assert [(c.start, c.end) for c in cues] == [(0.0, 2.0), (2.7, 5.7)]
 
 
-def test_build_timeline_target_duration縮放對齊尾端() -> None:
-    """target_duration 提供且偏差 ≥ 0.1% → cues 等比例縮放，cues[-1].end 對齊該值。"""
-    segs = [
-        _seg(0, "Alex", "hi", "嗨", 2.0),
-        _seg(1, "Sarah", "world", "世界", 3.0),
-    ]
-    # 原始 cues[-1].end = 2.0 + 0.3 + 3.0 = 5.3；scale = 5.198 / 5.3 = 0.98075
-    cues = build_timeline(segs, pause_sec=0.3, target_duration=5.198)
-    assert abs(cues[-1].end - 5.198) < 0.01
-    assert abs(cues[0].end - 1.962) < 0.01
-    assert abs(cues[1].start - 2.256) < 0.01
-    # 段間靜音仍存在（相對位置保留）
-    assert cues[1].start > cues[0].end
-    assert abs(cues[1].start - cues[0].end - 0.3 * 0.98075) < 0.01
+def test_build_timeline_不再scale以mp3物理時長校正() -> None:
+    """新方案下 build_timeline 不再吃 target_duration、不做 _align_to_duration 等比縮放。
 
-
-def test_build_timeline_target_duration差小於門檻不scale() -> None:
-    """target_duration 跟現有 end 差 < 0.1% → 不 scale，避免浮點誤差累積。"""
-    segs = [
-        _seg(0, "Alex", "hi", "嗨", 2.0),
-        _seg(1, "Sarah", "world", "世界", 3.0),
-    ]
-    cues = build_timeline(segs, pause_sec=0.3, target_duration=5.302)
-    # 5.302 / 5.3 = 1.000377 → 偏差 0.0377% < 0.1% → 不動
-    assert [(c.start, c.end) for c in cues] == [(0.0, 2.0), (2.3, 5.3)]
-
-
-def test_build_timeline_target_duration_None向後相容() -> None:
-    """target_duration=None → 走原本 cursor 邏輯，跟舊版行為完全一致。"""
+    每行 mp3 由前端 Web Audio API 自行串接播，cue 時間軸即 ground truth，
+    不需要再用最終 mp3 物理時長反向校正（舊 LAME frame alignment overhead
+    飄移從源頭消失）。target_duration 參數已從 build_timeline 簽章移除。
+    """
     segs = [
         _seg(0, "Alex", "hi", "嗨", 2.0),
         _seg(1, "Sarah", "world", "世界", 3.0),
     ]
     cues = build_timeline(segs, pause_sec=0.3)
+    # 原始 cursor 累積：seg[0]=2.0, pause=0.3, seg[1]=3.0 → cues[-1].end=5.3
     assert [(c.start, c.end) for c in cues] == [(0.0, 2.0), (2.3, 5.3)]
+
+
+def test_build_timeline_長停頓邊界仍有效() -> None:
+    """拿掉 target_duration 後 long_pause_sec 邊界處理仍正常（別被簡化破壞）。"""
+    segs = [
+        _seg(0, "Nova", "chapter one", "第一章", 2.0),
+        _seg(1, "Nova", "chapter two", "第二章", 3.0, pause_before=True),
+        _seg(2, "Nova", "chapter three", "第三章", 1.5, pause_before=True),
+    ]
+    cues = build_timeline(segs, pause_sec=0.3, long_pause_sec=0.9)
+    # seg[0]=2.0, long_pause=0.9 → seg[1].start=2.9, seg[1]=3.0, long_pause=0.9 → seg[2].start=6.8
+    assert [(c.start, c.end) for c in cues] == [(0.0, 2.0), (2.9, 5.9), (6.8, 8.3)]
 
 
 def test_write_srt_格式_en上zh下逗號時戳() -> None:

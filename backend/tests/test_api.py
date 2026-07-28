@@ -4,7 +4,7 @@
   (a) 無 JWT → 401
   (b) 授權收斂：A 的 token 只讀得到 A 的 vocab，讀不到 B 的
   (c) ApiResponse envelope 形狀正確（{ok, data, error}）
-  (d) episodes/{slug}/url 對無權集回 403、有權/免費集回簽章 URL
+  (d) episodes/{slug} 對無權集回 403、segments[] 簽章 + cues 對齊
 
 做法：不連真 DB。用 FakeConnection 攔截參數化 SQL，依關鍵字 +
 user_id 參數回傳預置的 in-memory 列。重點驗 router 邏輯與授權收斂，
@@ -80,18 +80,21 @@ EPISODES: dict[str, dict[str, Any]] = {
         "is_free": True,
         "deliveries": set(),
         "key": "media/ep-free.mp3",
+        "keys": ["media/ep-free/segments/000.mp3"],
         "sources": [],
     },
     "ep-a-only": {
         "is_free": False,
         "deliveries": {USER_A},
         "key": "media/ep-a.mp3",
+        "keys": ["media/ep-a/segments/000.mp3"],
         "sources": [],
     },
     "ep-locked": {
         "is_free": False,
         "deliveries": set(),
         "key": "media/ep-locked.mp3",
+        "keys": [],
         "sources": [],
     },
 }
@@ -144,6 +147,7 @@ class FakeCursor:
                     "is_free": ep["is_free"],
                     "script_json": None,
                     "audio_r2_key": ep["key"],
+                    "audio_r2_keys": ep.get("keys", []),
                     "sources": ep.get("sources", []),
                     "has_delivery": user_id in ep["deliveries"],
                 }
@@ -169,6 +173,7 @@ class FakeCursor:
                         "is_free": ep["is_free"],
                         "script_json": None,
                         "audio_r2_key": ep["key"],
+                        "audio_r2_keys": ep.get("keys", []),
                     }
                 )
             return
@@ -241,6 +246,11 @@ def patch_db(monkeypatch: pytest.MonkeyPatch) -> None:
         episodes_router.r2,
         "presigned_get_url",
         lambda key, ttl=None: f"https://signed.example/{key}",
+    )
+    monkeypatch.setattr(
+        episodes_router.r2,
+        "presigned_get_urls",
+        lambda keys, ttl=None: {k: f"https://signed.example/{k}" for k in keys},
     )
 
 
@@ -318,43 +328,7 @@ def test_envelope_shape_error(client: TestClient) -> None:
     assert set(body["error"].keys()) == {"code", "message"}
 
 
-# ── (d) episodes/{slug}/url 授權 ──────────────────────────────────
-
-
-def test_episode_url_free_ok(client: TestClient) -> None:
-    res = client.get("/episodes/ep-free/url", headers=_auth(USER_A))
-    assert res.status_code == 200
-    body = res.json()
-    assert body["ok"] is True
-    assert body["data"].startswith("https://signed.example/")
-
-
-def test_episode_url_delivered_ok(client: TestClient) -> None:
-    res = client.get("/episodes/ep-a-only/url", headers=_auth(USER_A))
-    assert res.status_code == 200
-    assert res.json()["ok"] is True
-
-
-def test_episode_url_locked_forbidden(client: TestClient) -> None:
-    # A 對沒授權的集回 403
-    res = client.get("/episodes/ep-locked/url", headers=_auth(USER_A))
-    assert res.status_code == 403
-    body = res.json()
-    assert body["ok"] is False
-    assert body["error"]["code"] == "forbidden"
-
-
-def test_episode_url_delivered_to_other_forbidden(client: TestClient) -> None:
-    # ep-a-only 只授權給 A；B 取應 403
-    res = client.get("/episodes/ep-a-only/url", headers=_auth(USER_B))
-    assert res.status_code == 403
-    assert res.json()["error"]["code"] == "forbidden"
-
-
-def test_episode_url_unknown_slug_404(client: TestClient) -> None:
-    res = client.get("/episodes/no-such-ep/url", headers=_auth(USER_A))
-    assert res.status_code == 404
-    assert res.json()["error"]["code"] == "not_found"
+# ── (d) episodes/{slug}/url 端點已於 Phase G 移除 ──────────
 
 
 # ── (e) /daily-orders/{date}/episode ──────────────────────────────
@@ -685,3 +659,74 @@ def test_get_episode_references_empty_when_sources_null(client: TestClient) -> N
     res = client.get("/episodes/ep-free", headers=_auth(USER_A))
     assert res.status_code == 200
     assert res.json()["data"]["references"] == []
+
+
+# ── (h) /episodes/{slug}：per-line segments 簽章 + 對齊 cues ──────────
+
+
+def test_get_episode_returns_signed_segments_aligned_with_cues(client: TestClient) -> None:
+    """新集 audio_r2_keys + script_json.cues → segments 一次簽齊、index/start/end 對齊 cues。"""
+    cues: list[dict[str, Any]] = []
+    t = 0.0
+    for i in range(5):
+        cues.append({
+            "index": i,
+            "speaker": "Alex" if i % 2 == 0 else "Sarah",
+            "text": f"line {i}",
+            "zh": f"第 {i} 行",
+            "start": t,
+            "end": t + 4.0,
+        })
+        t += 4.3
+    EPISODES["ep-free"]["keys"] = [f"episodes/ep-free/segments/{i:03d}.mp3" for i in range(5)]
+
+    def user_id_in_ep(ep: dict[str, Any]) -> bool:
+        return USER_A in ep["deliveries"]
+
+    original_execute = FakeCursor.execute
+
+    async def execute_with_cues(self: FakeCursor, sql: str, params: tuple[Any, ...] = ()) -> None:
+        s = " ".join(sql.split())
+        if "from public.episodes e where e.slug = %s" in s:
+            slug = params[1]
+            ep = EPISODES.get(slug)
+            if ep is None:
+                self._rows = []
+                return
+            self._rows = [
+                {
+                    "id": f"uuid-{slug}",
+                    "slug": slug,
+                    "title": "T",
+                    "title_zh": None,
+                    "topic": "tech",
+                    "cefr_level": "B1",
+                    "is_free": ep["is_free"],
+                    "script_json": {"cues": cues},
+                    "audio_r2_key": ep["key"],
+                    "audio_r2_keys": ep.get("keys", []),
+                    "sources": ep.get("sources", []),
+                    "has_delivery": user_id_in_ep(ep),
+                }
+            ]
+            return
+        await original_execute(self, sql, params)
+
+    monkeypatch_setattr = pytest.MonkeyPatch()
+    monkeypatch_setattr.setattr(FakeCursor, "execute", execute_with_cues)
+    try:
+        res = client.get("/episodes/ep-free", headers=_auth(USER_A))
+        assert res.status_code == 200
+        payload = res.json()["data"]
+        segs = payload["segments"]
+        cset = payload["cues"]
+        assert len(segs) == 5
+        assert len(segs) == len(cset)
+        for s, c in zip(segs, cset, strict=True):
+            assert s["audioUrl"].startswith("https://signed.example/episodes/ep-free/segments/")
+            assert s["index"] == c["index"]
+            assert s["start"] == c["start"]
+            assert s["end"] == c["end"]
+        assert payload["audioUrl"] is None
+    finally:
+        monkeypatch_setattr.undo()

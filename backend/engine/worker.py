@@ -185,7 +185,8 @@ async def _compensate_generate_failure(body: dict[str, Any]) -> None:
     """generate job 失敗 compensation：用 body 算 idempotency_key 砍半完成 row。
 
     只對 generate 佇列有意義（其他佇列 body 沒有 idempotency 欄位）。
-    delete_episode_by_idem 內部已加 audio_r2_key IS NULL 條件，不會誤殺健康 row。
+    delete_episode_by_idem 內部已加 audio_r2_key IS NULL 且 audio_r2_keys 為空
+    雙條件，不會誤殺健康 row（含舊集只有 audio_r2_key 沒 audio_r2_keys）。
     """
     idem = compute_idempotency_key(
         cluster_id=body.get("cluster_id"),
@@ -217,7 +218,7 @@ async def _process(
     """跑 handler；成功 delete，失敗依 read_ct 決定 archive 或留給 vt 重投。
 
     generate 失敗時先做 idempotency-based DELETE compensation，避免 render 階段
-    掛掉後留下 audio_r2_key IS NULL 的殭屍 row。
+    掛掉後留下 audio_r2_key IS NULL 且 audio_r2_keys 為空的殭屍 row。
     """
     try:
         await handler(msg.body)

@@ -84,7 +84,8 @@ class PodState(TypedDict, total=False):
 
     # ── 媒體成品 ─────────────────────────────────────────────
     artifacts: EpisodeArtifacts
-    audio_key: str | None
+    audio_key: str | None  # legacy：向後相容舊 client；新方案取 audio_keys[0]
+    audio_keys: list[str]  # per-line mp3 keys（新方案；空 list 表示尚未上傳或全部失敗）
     srt_key: str | None
 
     # ── control / 錯誤 ───────────────────────────────────────

@@ -1,108 +1,54 @@
-import { useEffect, useRef, useState } from 'react'
-import { Play, Loader2 } from 'lucide-react'
+import { Play } from 'lucide-react'
+import { usePlayer } from '../../state'
 import { api } from '../../api'
 import { AppError } from '../../api/httpApi'
 
 interface ReplayAudioButtonProps {
   readonly episodeSlug: string
+  /** 該單字在源集 cue 內的「全球播放位置」（秒） */
   readonly timestamp: number
 }
 
-const REPLAY_DURATION_MS = 5000
-const METADATA_TIMEOUT_MS = 8000
-// 後端 presign 預設 TTL 7200s，保守一點預留緩衝：剩不到 5 分鐘就重新簽章，
-// 避免在 catch 吞錯且 cache 不清→同集永遠重播失敗。
-const URL_TTL_SAFETY_MS = 5 * 60 * 1000
-interface CachedUrl {
-  readonly url: string
-  readonly expiresAt: number
-}
-const audioUrlCache = new Map<string, CachedUrl>()
-
-function waitForMetadata(audio: HTMLAudioElement): Promise<void> {
-  if (audio.readyState >= 1) return Promise.resolve()
-  return new Promise((resolve, reject) => {
-    const cleanup = () => {
-      audio.removeEventListener('loadedmetadata', onLoaded)
-      audio.removeEventListener('error', onError)
-      window.clearTimeout(timer)
-    }
-    const onLoaded = () => {
-      cleanup()
-      resolve()
-    }
-    const onError = () => {
-      cleanup()
-      reject(new AppError('audio_load_failed', 'audio load failed', 0))
-    }
-    const timer = window.setTimeout(() => {
-      cleanup()
-      reject(new AppError('audio_load_timeout', 'audio metadata load timeout', 0))
-    }, METADATA_TIMEOUT_MS)
-    audio.addEventListener('loadedmetadata', onLoaded, { once: true })
-    audio.addEventListener('error', onError, { once: true })
-  })
-}
-
-/** 獨立於 PlayerContext 的迷你播放器：複習時重聽單字出現的那句原音（雙碼理論：語境句+聽覺同時觸發）。
- *
- * 刻意不接 PlayerProvider——離開 /player 後 AudioPlayer 會 unmount 並把 videoRef 設回 null，
- * 這裡呼叫 seekTo 會靜默無效果（見 VocabEntryCard 既有的「跳到」按鈕同樣的競態問題）。
- * episodeSlug 換 audioUrl 走獨立的 api.getEpisode，不牽動任何全域播放狀態。
- */
+/** 從 PlayerProvider 的 useSegmentPlayer 抽樣播：player 知道現在載入的 episode、
+ *  decoded segments，主音 ducking 後播這一段，保證跟 cue 對齊。
+ * 不再走獨立的 new Audio() + audioUrlCache，因為：
+ * - 整集 mp3 已不生產（Phase A 之後），原 url 端點 deprecated。
+ * - per-segment AudioBuffer 已是 truth source，從 source.start 抽樣等於「從
+ *   該行的真實音檔」播，發音/語氣跟主集完全一致。 */
 export function ReplayAudioButton({ episodeSlug, timestamp }: ReplayAudioButtonProps) {
-  const audioRef = useRef<HTMLAudioElement | null>(null)
-  const timerRef = useRef<number | null>(null)
-  const [isLoading, setIsLoading] = useState(false)
+  const player = usePlayer()
+  const playSegment = player.playSegment
+  const currentEpisode = player.currentEpisode
 
-  // unmount 時清掉 pause timer 並停止 audio，避免背景繼續播 + 舊 timer 觸發後續暫停。
-  useEffect(() => {
-    return () => {
-      if (timerRef.current !== null) {
-        window.clearTimeout(timerRef.current)
-        timerRef.current = null
-      }
-      const audio = audioRef.current
-      if (audio) {
-        audio.pause()
-        audio.src = ''
-      }
-    }
-  }, [])
-
+  // 重播時若 player 還沒載到該 episode → 走 api.getEpisode 補抓並 setCurrentEpisode，
+  // 然後 wait loadState 變 ready 再 playSegment。
   const handleClick = async () => {
-    if (isLoading) return
-    setIsLoading(true)
     try {
-      const now = Date.now()
-      let cached = audioUrlCache.get(episodeSlug)
-      if (!cached || cached.expiresAt - now < URL_TTL_SAFETY_MS) {
-        const episode = await api.getEpisode(episodeSlug)
-        if (!episode.audioUrl) return
-        cached = { url: episode.audioUrl, expiresAt: now + URL_TTL_SAFETY_MS }
-        audioUrlCache.set(episodeSlug, cached)
+      let ep = currentEpisode
+      if (!ep || ep.id !== episodeSlug) {
+        ep = await api.getEpisode(episodeSlug)
+        player.setCurrentEpisode(ep)
       }
-      const targetUrl = cached.url
-      const audio = audioRef.current ?? new Audio()
-      // React Compiler 對 audioRef.current 的追蹤會誤判 src mutation：實務上只是把
-      // audio 的 src 設成新 URL 讓瀏覽器重抓媒體，並沒有破壞任何 React invariant。
-      // eslint-disable-next-line react-hooks/immutability
-      if (audio.src !== targetUrl) audio.src = targetUrl
-      audioRef.current = audio
-      await waitForMetadata(audio)
-      audio.currentTime = timestamp
-      await audio.play()
-      // 既有舊 timer 還在跑就清掉，避免後續 play 被它提前 pause。
-      if (timerRef.current !== null) window.clearTimeout(timerRef.current)
-      timerRef.current = window.setTimeout(() => {
-        audio.pause()
-        timerRef.current = null
-      }, REPLAY_DURATION_MS)
-    } catch {
-      // best-effort：播放失敗不阻擋複習流程；TTL 過期或 4xx 已在 catch 內回傳 AppError 給呼叫端 log
-      audioUrlCache.delete(episodeSlug)
-    } finally {
-      setIsLoading(false)
+      if (!ep) return
+      // binary search cue（同一段邏輯抽出來）
+      const cues = ep.cues
+      let lo = 0, hi = cues.length - 1, idx = 0
+      while (lo <= hi) {
+        const mid = (lo + hi) >> 1
+        const cue = cues[mid]
+        if (!cue) break
+        if (timestamp < cue.start) hi = mid - 1
+        else if (timestamp > cue.end) { idx = mid; lo = mid + 1 }
+        else { idx = mid; break }
+      }
+      const cue = cues[idx]
+      if (!cue) return
+      const offsetSec = Math.max(0, Math.min(timestamp - cue.start, cue.end - cue.start))
+      playSegment(idx, offsetSec, 0.6)
+    } catch (e) {
+      if (e instanceof AppError) {
+        console.warn('[ReplayAudioButton] 載入失敗', e.message)
+      }
     }
   }
 
@@ -110,10 +56,9 @@ export function ReplayAudioButton({ episodeSlug, timestamp }: ReplayAudioButtonP
     <button
       type="button"
       onClick={() => void handleClick()}
-      disabled={isLoading}
-      className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-medium bg-bg-secondary text-text-secondary hover:text-accent hover:bg-accent/10 transition-colors duration-fast disabled:opacity-50"
+      className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-medium bg-bg-secondary text-text-secondary hover:text-accent hover:bg-accent/10 transition-colors duration-fast"
     >
-      {isLoading ? <Loader2 size={13} className="animate-spin" /> : <Play size={13} />}
+      <Play size={13} />
       重播原音
     </button>
   )

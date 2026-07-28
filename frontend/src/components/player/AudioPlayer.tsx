@@ -1,49 +1,16 @@
-import { useEffect, useRef, useState } from 'react'
-import { Headphones } from 'lucide-react'
+/** Audio-only player：無 <audio> 元素，改用 useSegmentPlayer hook。
+ *
+ * AudioPlayer 純粹負責 iOS Safari gesture unlock 入口（首次 play() 必須在 click
+ * handler 同步路徑內 ctx.resume() 才能解鎖發聲）；實際 AudioContext 與 buffer
+ * cache 在 PlayerProvider → useSegmentPlayer 內。
+ * PlayerRoute / GlobalAudioHost 透過 Provider play() 觸發播放，AudioPlayer 不再
+ * 持有 ref 或 DOM。
+ */
 import { usePlayer } from '../../state'
 
-interface AudioPlayerProps {
-  readonly audioUrl: string
-  readonly onEnded?: () => void
-}
-
-/** Audio-only player：不顯示影片畫面，只用 <audio> 撐時間軸來源（cue 同步高亮）。
- *
- * Ponytail：player 層只負責 setVideoRef 餵 PlayerProvider；視覺外殼在 PlayerRoute 組合
- * （標題/封面/歌詞）。這元件刻意輸出極簡 — Apple Music 風的「看不到播放器，只有內容」感。
- */
-export function AudioPlayer({ audioUrl, onEnded }: AudioPlayerProps) {
-  const audioRef = useRef<HTMLAudioElement>(null)
-  const { setVideoRef, playbackRate } = usePlayer()
-  const [hasError, setHasError] = useState(false)
-
-  useEffect(() => {
-    setVideoRef(audioRef.current)
-    return () => setVideoRef(null)
-  }, [setVideoRef])
-
-  useEffect(() => {
-    if (audioRef.current) {
-      audioRef.current.playbackRate = playbackRate
-    }
-  }, [playbackRate])
-
-  return (
-    <div className="relative">
-      {hasError && (
-        <div className="flex items-center justify-center gap-2 py-3 text-text-tertiary text-xs">
-          <Headphones size={14} />
-          <span>音檔載入失敗，請稍後再試</span>
-        </div>
-      )}
-      <audio
-        ref={audioRef}
-        src={audioUrl}
-        preload="metadata"
-        onError={() => setHasError(true)}
-        onEnded={onEnded}
-        className="hidden"
-      />
-    </div>
-  )
+export function AudioPlayer() {
+  // mount 時不做事：PlayerProvider 已建好 AudioContext；首次播放 unlock 由
+  // PlayerControls / LyricsView 的 play button 在 click handler 內觸發。
+  usePlayer()
+  return null
 }

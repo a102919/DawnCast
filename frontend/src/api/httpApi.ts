@@ -14,7 +14,7 @@ import type {
   VocabItem,
 } from './types'
 import type { components } from './generated'
-import type { Cue, Episode, SourceReference } from '../types/episode'
+import type { Cue, SourceReference } from '../types/episode'
 import type { MockEpisode } from '../lib/episode'
 import { getAccessToken } from '../lib/supabaseClient'
 
@@ -224,6 +224,16 @@ export const CueSchema = z.object({
   end: z.number(),
 }) satisfies z.ZodType<Cue> & z.ZodType<components['schemas']['Cue']>
 
+/** 單行 mp3 對前端契約：index + 已簽章 audioUrl + 真實時長 + 在該集的時間區段。
+ *  mock 模式 consumer（mockApi）也用這份，避免重複定義 schema 導致型別漂移。 */
+export const SegmentSchema = z.object({
+  index: z.number(),
+  audioUrl: z.string(),
+  duration: z.number(),
+  start: z.number(),
+  end: z.number(),
+}) satisfies z.ZodType<components['schemas']['Segment']>
+
 /** 資料來源連結 schema。 */
 export const SourceReferenceSchema = z.object({
   id: z.string(),
@@ -231,9 +241,9 @@ export const SourceReferenceSchema = z.object({
   url: z.string(),
 }) satisfies z.ZodType<SourceReference> & z.ZodType<components['schemas']['SourceReference']>
 
-// audioUrl 由 /episodes/{slug}/url 補上，list 內容沒有 cues。
-// server get_episode Episode model 沒設 audioUrl 欄位會回 null（不是 undefined），
-// 故 .nullable() 否則 zod 在 null 時拋 schema_mismatch。
+// audioUrl 來自舊 audio_r2_key 簽章（新方案下後端可能 null）；segments 才是
+// 新路徑，前端 useSegmentPlayer hook 用 segments 串接播。兩欄都收、後端 null
+// 或空 list 都 graceful（前端 consumer 各自判斷）。
 // titleZh/topic/cefrLevel/isFree 後端本來就會送（見 shared/models.py Episode），
 // 前端目前用不到但要收進來，不然 satisfies 抓不到後端這幾欄之後改型別/改名。
 // references 後端尚未合併（見 SourceReferenceSchema 註解），optional 對齊。
@@ -246,12 +256,14 @@ const EpisodeContentSchema = z.object({
   isFree: z.boolean(),
   audioUrl: z.string().nullable().optional(),
   coverIcon: z.string().nullable().optional(),
+  segments: z.array(SegmentSchema).default([]),
   cues: z.array(CueSchema),
   references: z.array(SourceReferenceSchema).optional(),
 }) satisfies z.ZodType<components['schemas']['Episode']>
 
 // server /episodes/{slug}/url 的 data 是字串網址本身（不是 {url: ...} 物件）。
-const SignedUrlSchema = z.string()
+// 新方案下不再使用此端點（EpisodeContentSchema 一次回齊 segments[] 簽章 URL）；
+// 函式 fetchSignedUrl 已移除，避免 Phase G 之前還有人誤用舊路徑。
 
 const MockEpisodeSchema = z.object({
   id: z.string(),
@@ -428,16 +440,17 @@ export const httpApi: Api = {
   },
 
   async getEpisode(slug) {
-    // 先取 cues，audioUrl 再以簽章 URL 補上（兩次請求合併）。
+    // 新方案下回應一次帶齊 segments[]（每行已 R2 簽章），不再二次請求 url 端點。
+    // audioUrl 來自舊 audio_r2_key 簽章（向後相容）；segments 為新路徑，兩者並行回傳。
     const content = await request<z.infer<typeof EpisodeContentSchema>>(
       `/episodes/${encodeURIComponent(slug)}`,
       { schema: EpisodeContentSchema },
     )
-    const audioUrl = content.audioUrl ?? (await fetchSignedUrl(slug))
-    const episode: Episode = {
+    return {
       id: content.id,
       title: content.title,
-      audioUrl,
+      audioUrl: content.audioUrl ?? null,
+      segments: content.segments,
       cues: content.cues,
       // 「無來源」語意對齊：後端沒送 references、或送空陣列 → 不帶欄位，
       // UI 一律靠 `episode.references?.length > 0` 判斷，避免下游做兩種判斷。
@@ -445,7 +458,6 @@ export const httpApi: Api = {
         ? { references: content.references }
         : {}),
     }
-    return episode
   },
 
   async getDeliveredEpisode(date) {
@@ -456,11 +468,11 @@ export const httpApi: Api = {
       { schema: EpisodeContentSchema, nullable: true },
     )
     if (content === null) return null
-    const audioUrl = content.audioUrl ?? (await fetchSignedUrl(content.id))
     return {
       id: content.id,
       title: content.title,
-      audioUrl,
+      audioUrl: content.audioUrl ?? null,
+      segments: content.segments,
       cues: content.cues,
       ...(content.references && content.references.length > 0
         ? { references: content.references }
@@ -539,13 +551,4 @@ export const httpApi: Api = {
       schema: null,
     })
   },
-}
-
-async function fetchSignedUrl(slug: string): Promise<string> {
-  // server 回 "data" 是字串網址本身；signed 就是那個字串。
-  const signed = await request<string>(
-    `/episodes/${encodeURIComponent(slug)}/url`,
-    { schema: SignedUrlSchema },
-  )
-  return signed
 }

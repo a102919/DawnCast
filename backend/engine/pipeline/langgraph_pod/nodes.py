@@ -2179,10 +2179,10 @@ async def render_episode_node(state: PodState, config: RunnableConfig) -> dict[s
         if not isinstance(renderer, MockRenderer):
             raise TypeError("renderer 不是 MockRenderer")
         script_payload = script.model_dump()
-        mp3, srt, cues = renderer.render(script_payload)
+        segments, srt, cues = renderer.render(script_payload)
         return {
             "artifacts": EpisodeArtifacts(
-                mp3_path=mp3,
+                segments=segments,
                 srt=srt,
                 vtt="",  # mock 不產
                 cues=[__import__("shared.models", fromlist=["Cue"]).Cue(**c) for c in cues],
@@ -2190,8 +2190,8 @@ async def render_episode_node(state: PodState, config: RunnableConfig) -> dict[s
         }
 
     # production 路徑
-    # workdir 不能用 auto-cleanup 的 TemporaryDirectory：mp3/mp4 檔要活到
-    # upload_artifacts_node（下一個 node）讀完才能刪，見 upload_artifacts_node 的 finally。
+    # workdir 不能用 auto-cleanup 的 TemporaryDirectory：每行 mp3 檔要活到
+    # upload_artifacts_node（下一個 node）讀完才能刪，見 upload_artifacts_node 的 cleanup。
     _settings: Settings = ctx["settings"]  # noqa: F841  預留觀測 / 後續設定接入
     workdir = make_job_workdir()
     artifacts = await render_episode(script, workdir, cefr=state.get("cefr") or "B1")
@@ -2265,55 +2265,57 @@ async def dead_letter_node(state: PodState, config: RunnableConfig) -> dict[str,
 async def upload_artifacts_node(state: PodState, config: RunnableConfig) -> dict[str, Any]:
     ctx = _ctx(config)
     r2 = ctx.get("r2")
-    settings: Settings = ctx["settings"]
 
     episode_id = state["episode_id"]
-    slug = state["slug"]
     art: EpisodeArtifacts = state["artifacts"]
 
     prefix = f"episodes/{episode_id}"
-    audio_key = f"{prefix}/episode.mp3"
     srt_key = f"{prefix}/episode.srt"
 
     is_production = r2 is None  # mock 路徑會注入 MockR2；production 沒有才走真 R2
 
     storage_failed = False
+    audio_keys: list[str] = []
+
+    # 逐行 segment 上傳：新路徑沒有「整集 mp3」，每行一個 mp3 各自上 R2。
+    # 前端 Web Audio API 串接播，字幕 cue 與 segment 一一對應，數學上對齊。
     try:
         if r2 is not None:
-            r2.put_object(audio_key, art.mp3_path.read_bytes(), "audio/mpeg")
+            for seg in art.segments:
+                key = f"{prefix}/segments/{seg.index:03d}.mp3"
+                r2.put_object(key, seg.audio_path.read_bytes(), "audio/mpeg")
+                audio_keys.append(key)
             r2.put_object(srt_key, art.srt.encode("utf-8"), "application/x-subrip")
         else:
             from shared.storage import r2 as real_r2  # noqa: PLC0415
 
-            real_r2.put_object(audio_key, art.mp3_path.read_bytes(), "audio/mpeg")
+            for seg in art.segments:
+                key = f"{prefix}/segments/{seg.index:03d}.mp3"
+                real_r2.put_object(key, seg.audio_path.read_bytes(), "audio/mpeg")
+                audio_keys.append(key)
             real_r2.put_object(srt_key, art.srt.encode("utf-8"), "application/x-subrip")
     except Exception as exc:  # 包括 StorageError 與 MockR2 forced failure
         logger.warning(
-            "upload_artifacts 失敗（%s），走本地 fallback episode_id=%s",
+            "upload_artifacts 失敗（%s）episode_id=%s partial=%d",
             exc,
             episode_id,
+            len(audio_keys),
         )
-        audio_key = srt_key = None  # type: ignore[assignment]
+        audio_keys = []
         storage_failed = True
 
-    # 本地 fallback
-    media_dir = settings.local_media_dir
+    # 本地 fallback 取消：segments 多檔難以一份一份 fallback；R2 失敗就讓
+    # storage_decision 走 dead_letter，避免半殘 row 污染同 slug 舊檔。
     local_fallback_written = False
-    if media_dir and art.mp3_path.exists():
-        from .mock import safe_local_fallback  # noqa: PLC0415
-
-        local_fallback_written = safe_local_fallback(art.mp3_path, slug, media_dir)
-        if not local_fallback_written:
-            logger.warning("寫本地 fallback 失敗 slug=%s", slug)
 
     # render_episode_node 用 make_job_workdir()（不會自動清）產出這些檔案，
-    # 讀完（R2 上傳 + 本地 fallback 都做完）就是清掉的時機。
-    if is_production:
-        shutil.rmtree(art.mp3_path.parent, ignore_errors=True)
+    # 讀完就是清掉的時機。
+    if is_production and art.segments:
+        shutil.rmtree(art.segments[0].audio_path.parent, ignore_errors=True)
 
     return {
-        "audio_key": audio_key,
-        "srt_key": srt_key,
+        "audio_keys": audio_keys,
+        "srt_key": srt_key if not storage_failed else None,
         "storage_failed": storage_failed,
         "local_fallback_written": local_fallback_written,
     }
@@ -2371,7 +2373,8 @@ async def update_episode_keys_node(state: PodState, config: RunnableConfig) -> d
     # repo 是 MockRepo 或 shared.db.repo 模組，surface 相同——直接呼叫，不做 hasattr 分派。
     await repo.update_episode_keys(
         state["episode_id"],
-        audio_key=state.get("audio_key"),
+        audio_key=state.get("audio_keys", [None])[0] if state.get("audio_keys") else None,
+        audio_keys=state.get("audio_keys"),
         srt_key=state.get("srt_key"),
         script_json=script.model_dump(by_alias=False),
         cues=art.cues,

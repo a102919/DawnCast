@@ -239,8 +239,9 @@ def _freshness_for(topic_type: str) -> str:
 async def update_episode_keys(
     episode_id: str,
     *,
-    audio_key: str | None,
-    srt_key: str | None,
+    audio_key: str | None = None,
+    audio_keys: list[str] | None = None,
+    srt_key: str | None = None,
     script_json: dict[str, Any],
     cues: list[Cue],
     extracted_facts: list[dict[str, Any]] | None = None,
@@ -250,6 +251,10 @@ async def update_episode_keys(
     gen_metrics: dict[str, Any] | None = None,
 ) -> None:
     """渲染完成後回填媒體 key 與內容。script_json 內含 cues（前端播放頁吃這個）。
+
+    audio_key / audio_keys：新方案用 audio_keys（list[str]，每行 mp3 一個 key）；
+    舊 audio_key 欄位保留寫 audio_keys[0] 給向後相容（admin / 部分 router 仍會讀）。
+    兩者皆 None 時不更新（測試 / escape hatch）。
 
     sources：可選；非 None 時覆寫 episodes.sources。傳 None 表示保留既有值
     （避免 update_episode_keys_node 在還沒拿到 retrieve_sources 結果時誤清空）。
@@ -266,11 +271,24 @@ async def update_episode_keys(
     gen_metrics_json: str | None = (
         json.dumps(gen_metrics, ensure_ascii=False) if gen_metrics is not None else None
     )
+    audio_keys_json = (
+        json.dumps(audio_keys, ensure_ascii=False) if audio_keys is not None else None
+    )
+    # audio_r2_key 舊欄位：寫 audio_keys[0] 給向後相容（admin / 部分 router 仍讀）。
+    # audio_keys 為空 list 或 None 時 audio_r2_key 也保持 None。
+    legacy_audio_key: str | None
+    if audio_keys:
+        legacy_audio_key = audio_keys[0]
+    elif audio_key is not None:
+        legacy_audio_key = audio_key
+    else:
+        legacy_audio_key = None
     async with connection() as conn, conn.cursor(row_factory=dict_row) as cur:
         await cur.execute(
             """
             update public.episodes
-            set audio_r2_key = %s,
+            set audio_r2_key = coalesce(%s, audio_r2_key),
+                audio_r2_keys = coalesce(%s::jsonb, audio_r2_keys),
                 srt_r2_key = %s,
                 script_json = %s::jsonb,
                 extracted_facts = %s::jsonb,
@@ -281,7 +299,8 @@ async def update_episode_keys(
             where id = %s
             """,
             (
-                audio_key,
+                legacy_audio_key,
+                audio_keys_json,
                 srt_key,
                 json.dumps(payload, ensure_ascii=False),
                 json.dumps(extracted_facts, ensure_ascii=False)
@@ -299,14 +318,17 @@ async def update_episode_keys(
 async def delete_episode_by_idem(idempotency_key: str) -> int:
     """compensation：用 idempotency_key 刪除半完成 episode row。
 
-    只刪 audio_r2_key IS NULL 的列，避免 worker 重試在 race condition 下誤殺
-    已正常完成的 row。回傳實際刪除列數。
+    只刪 audio_r2_key IS NULL 且 audio_r2_keys 為空 list 的列，避免 worker 重試
+    在 race condition 下誤殺已正常完成的 row（含舊集只有 audio_r2_key 沒
+    audio_r2_keys、backfill 已跑過的集）。回傳實際刪除列數。
     """
     async with connection() as conn, conn.cursor() as cur:
         await cur.execute(
             """
             delete from public.episodes
-            where idempotency_key = %s and audio_r2_key is null
+            where idempotency_key = %s
+              and audio_r2_key is null
+              and audio_r2_keys = '[]'::jsonb
             """,
             (idempotency_key,),
         )
@@ -677,7 +699,10 @@ async def pick_evergreen_episode(big_topic: str | None) -> str | None:
             from public.episodes e
             where e.freshness_class = 'evergreen'
               and (e.expires_at is null or now() < e.expires_at)
-              and e.audio_r2_key is not null
+              and (
+                e.audio_r2_keys <> '[]'::jsonb
+                or e.audio_r2_key is not null
+              )
             order by (e.big_topic is not distinct from %(big_topic)s) desc,
                      e.created_at desc
             limit 1
@@ -760,7 +785,8 @@ async def find_delivered_episode(user_id: str, deliver_date: str) -> Episode | N
         await cur.execute(
             """
             select e.slug, e.title, e.title_zh, e.topic, e.cefr_level,
-                   e.is_free, e.script_json, e.mp4_r2_key, e.audio_r2_key
+                   e.is_free, e.script_json, e.mp4_r2_key,
+                   e.audio_r2_key, e.audio_r2_keys
             from public.deliveries d
             join public.episodes e on e.id = d.episode_id
             where d.user_id = %s and d.deliver_date = %s

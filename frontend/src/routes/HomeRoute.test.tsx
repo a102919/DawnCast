@@ -23,7 +23,8 @@ const listEpisodes = vi.fn(async (): Promise<readonly MockEpisode[]> => EPISODES
 const getEpisode = vi.fn(async (id: string): Promise<Episode> => ({
   id,
   title: EPISODES.find(episode => episode.id === id)?.title ?? id,
-  audioUrl: `https://example.com/${id}.mp3`,
+  audioUrl: null,
+  segments: [],
   cues: [],
 }))
 // 預設無今日 delivery；個別測試會 override
@@ -148,7 +149,8 @@ describe('HomeRoute Hero 區塊', () => {
     getDeliveredEpisode.mockResolvedValue({
       id: EPISODES[0]!.id,
       title: EPISODES[0]!.title,
-      audioUrl: 'https://example.com/x.mp3',
+      audioUrl: null,
+      segments: [],
       cues: [],
     })
     const { root, container } = await renderRoute()

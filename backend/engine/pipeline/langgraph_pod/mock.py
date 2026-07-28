@@ -22,6 +22,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+from engine.media import SegmentArtifact
 from shared.errors import StorageError
 
 # ── MockRepo ────────────────────────────────────────────────
@@ -47,6 +48,7 @@ class _EpisodeRow:
     output_tokens: int = 0
     is_free: bool = True
     audio_key: str | None = None
+    audio_keys: list[str] = field(default_factory=list)
     srt_key: str | None = None
     script_json: dict[str, Any] | None = None
     cues: list[dict[str, Any]] | None = None
@@ -199,8 +201,9 @@ class MockRepo:
         self,
         episode_id: str,
         *,
-        audio_key: str | None,
-        srt_key: str | None,
+        audio_key: str | None = None,
+        audio_keys: list[str] | None = None,
+        srt_key: str | None = None,
         script_json: dict[str, Any],
         cues: list[Any],
         extracted_facts: list[dict[str, Any]] | None = None,
@@ -212,8 +215,12 @@ class MockRepo:
         row = self.episodes.get(episode_id)
         if row is None:
             raise RuntimeError(f"mock: episode {episode_id} not found")
-        row.audio_key = audio_key
-        row.srt_key = srt_key
+        if audio_key is not None:
+            row.audio_key = audio_key
+        if audio_keys is not None:
+            row.audio_keys = list(audio_keys)
+        if srt_key is not None:
+            row.srt_key = srt_key
         row.script_json = script_json
         row.cues = [c.model_dump() if hasattr(c, "model_dump") else c for c in cues]
         row.extracted_facts = extracted_facts
@@ -240,16 +247,17 @@ class MockRepo:
         return True
 
     async def delete_episode_by_idem(self, idempotency_key: str) -> int:
-        """補償用：刪除 audio_key 還 NULL 的 row（鏡像 real repo 的 WHERE 條件）。
+        """補償用：刪除音檔 key 還沒寫齊的 row（鏡像 real repo 的 WHERE 條件）。
 
-        真實 repo 用 `where idempotency_key = %s and audio_r2_key is null`，
-        mock 端用 `audio_key is None` 表達同一語意。
+        真實 repo 用 `where idempotency_key = %s and audio_r2_key is null
+        and audio_r2_keys = '[]'::jsonb`，mock 端用「audio_key is None 且
+        audio_keys 為空」表達同一語意，避免誤殺已正常完成的 row。
         """
         eid = self.by_idem.get(idempotency_key)
         if eid is None or self.episodes.get(eid) is None:
             return 0
         row = self.episodes[eid]
-        if row.audio_key is not None:
+        if row.audio_key is not None or row.audio_keys:
             return 0  # 已渲染完成的 row 不砍
         del self.episodes[eid]
         del self.by_idem[idempotency_key]
@@ -299,6 +307,16 @@ class MockR2:
     def presigned_get_url(self, key: str, ttl: int | None = None) -> str:
         return f"https://mock-r2.local/{key}?ttl={ttl or 7200}"
 
+    def presigned_get_urls(
+        self, keys: list[str], ttl: int | None = None
+    ) -> dict[str, str]:
+        """批次簽章 mock URL；個別 key 沒上傳過就略過（鏡像 production 簽章失敗行為）。"""
+        out: dict[str, str] = {}
+        for key in keys:
+            if key in self.objects:
+                out[key] = self.presigned_get_url(key, ttl)
+        return out
+
 
 # ── Mock queue（dict_translate 後處理用，可選）────────────────
 
@@ -326,22 +344,29 @@ class MockQueue:
 
 @dataclass
 class MockRenderer:
-    """模擬 render_episode：產空白 mp3 placeholder + cues 從 script 計算。
+    """模擬 render_episode：產 per-line mp3 placeholder + cues 從 script 計算。
 
-    用 tempfile 寫實際檔案讓 mp3_path 真實存在（pod 寫到 workdir）。
+    用 tempfile 寫實際檔案讓 audio_path 真實存在（pod 寫到 workdir）。
+    回傳 SegmentArtifact list（鏡像 production render_episode 新 schema）。
     """
 
     workdir: Path
 
-    def render(self, script_payload: dict[str, Any]) -> tuple[Path, str, list[dict[str, Any]]]:
+    def render(
+        self, script_payload: dict[str, Any]
+    ) -> tuple[list[SegmentArtifact], str, list[dict[str, Any]]]:
         self.workdir.mkdir(parents=True, exist_ok=True)
-        mp3 = self.workdir / "episode.mp3"
-        mp3.write_bytes(b"\x00" * 64)  # mock：64 bytes
+        segments: list[SegmentArtifact] = []
         cues: list[dict[str, Any]] = []
         t = 0.0
         pause = 0.3
         line_dur = 3.5  # mock 平均行長
         for i, line in enumerate(script_payload.get("script", [])):
+            seg_path = self.workdir / f"line_{i:03d}_{line['speaker']}.mp3"
+            seg_path.write_bytes(b"\x00" * 64)  # mock 64 bytes per segment
+            segments.append(
+                SegmentArtifact(index=i, audio_path=seg_path, duration=line_dur)
+            )
             cues.append(
                 {
                     "index": i,
@@ -354,7 +379,7 @@ class MockRenderer:
             )
             t += line_dur + pause
         srt = self._to_srt(cues)
-        return mp3, srt, cues
+        return segments, srt, cues
 
     @staticmethod
     def _to_srt(cues: list[dict[str, Any]]) -> str:

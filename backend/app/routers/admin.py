@@ -62,7 +62,7 @@ _EPISODES_SQL = """
     to_char(created_at, 'YYYY-MM-DD"T"HH24:MI:SS"Z"') as created_at,
     freshness_class,
     to_char(expires_at, 'YYYY-MM-DD"T"HH24:MI:SS"Z"') as expires_at,
-    (audio_r2_key is not null) as has_audio
+    (audio_r2_keys <> '[]'::jsonb or audio_r2_key is not null) as has_audio
   from public.episodes
   order by created_at desc
   limit 50

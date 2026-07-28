@@ -1,4 +1,4 @@
-import { useEffect, useCallback, useState, useRef } from 'react'
+import { useEffect, useCallback, useRef } from 'react'
 import { Play, Pause, Repeat1, Volume2, VolumeX } from 'lucide-react'
 import { usePlayer } from '../../state'
 import { formatTime } from '../../lib'
@@ -14,11 +14,11 @@ interface PlayerControlsProps {
 const RATES = [0.75, 1, 1.25, 1.5] as const
 
 export function PlayerControls({ duration, isCueLooping, canLoopCue, onCueLoopToggle }: PlayerControlsProps) {
-  const { currentTime, isPlaying, seekTo, play, pause, playbackRate, setPlaybackRate, videoRef } = usePlayer()
-  const [isMuted, setIsMuted] = useState(false)
-  const volumeRef = useRef(1)
-  const [volume, setVolumeState] = useState(1)
-  const setVolume = (v: number) => { volumeRef.current = v; setVolumeState(v) }
+  const { currentTime, isPlaying, seekTo, play, pause, playbackRate, setPlaybackRate, volume, setVolume } = usePlayer()
+  // mute 是「上次音量記憶」UI 概念：toggle 把 volume 在 0 ↔ prevVolume 間切換。
+  // hook 內 volume=0 等於 mute（segmentGain.gain=0），所以實際行為直接看 hook.volume。
+  const lastNonZeroVolumeRef = useRef(1)
+  const isMuted = volume === 0
 
   const handleSeek = (e: React.ChangeEvent<HTMLInputElement>) => {
     seekTo(Number(e.target.value))
@@ -26,29 +26,14 @@ export function PlayerControls({ duration, isCueLooping, canLoopCue, onCueLoopTo
 
   const handleVolumeChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const val = Number(e.target.value)
+    if (val > 0) lastNonZeroVolumeRef.current = val
     setVolume(val)
-    const video = videoRef.current
-    if (video) {
-      video.volume = val
-      video.muted = val === 0
-    }
-    setIsMuted(val === 0)
   }
 
   const toggleMute = useCallback(() => {
-    setIsMuted(prev => {
-      const next = !prev
-      const video = videoRef.current
-      if (video) {
-        video.muted = next
-        if (!next && volumeRef.current === 0) {
-          setVolume(0.7)
-          video.volume = 0.7
-        }
-      }
-      return next
-    })
-  }, [videoRef])
+    if (isMuted) setVolume(lastNonZeroVolumeRef.current || 0.7)
+    else { lastNonZeroVolumeRef.current = volume; setVolume(0) }
+  }, [isMuted, volume, setVolume])
 
   // 鍵盤快捷鍵
   useEffect(() => {

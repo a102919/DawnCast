@@ -241,29 +241,6 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/episodes/{slug}/url": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /**
-         * Get Episode Url
-         * @description 產 R2 簽章 URL。先驗授權（免費或有 delivery），通過才 presign。
-         *
-         *     本機 fallback：當 R2 key 為 NULL 且 LOCAL_MEDIA_DIR 設定時，回 /media/{slug}.mp3
-         *     （router 只關 mp3，不再產 mp4）。
-         */
-        get: operations["get_episode_url_episodes__slug__url_get"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
     "/dict/lookup": {
         parameters: {
             query?: never;
@@ -878,14 +855,6 @@ export interface components {
             data?: string[] | null;
             error?: components["schemas"]["ErrorBody"] | null;
         };
-        /** ApiResponse[str] */
-        ApiResponse_str_: {
-            /** Ok */
-            ok: boolean;
-            /** Data */
-            data?: string | null;
-            error?: components["schemas"]["ErrorBody"] | null;
-        };
         /** Cue */
         Cue: {
             /** Index */
@@ -967,7 +936,11 @@ export interface components {
         };
         /**
          * Episode
-         * @description 前端播放頁需要的集數內容。audioUrl 由服務層產簽章 URL 後填入。
+         * @description 前端播放頁需要的集數內容。segments 由服務層一次簽章後填入。
+         *
+         *     audio_url：新方案下整集 mp3 不再產，audio_url 對 episode 永遠為 None（保留
+         *     欄位給 1 版本向後相容——舊 client 可能還在讀，frontend 用 audioUrl?: string |
+         *     null 容錯；Phase G 後才完全移除）。
          */
         Episode: {
             /** Id */
@@ -992,6 +965,8 @@ export interface components {
             isFree: boolean;
             /** Audiourl */
             audioUrl?: string | null;
+            /** Segments */
+            segments?: components["schemas"]["Segment"][];
             /** Cues */
             cues?: components["schemas"]["Cue"][];
             /** References */
@@ -1178,6 +1153,27 @@ export interface components {
              * @enum {string}
              */
             lengthTier: "short" | "medium" | "long";
+        };
+        /**
+         * Segment
+         * @description 單行 mp3 對外契約：index + 已簽章的 audioUrl + 真實時長 + 在該集的時間區段。
+         *
+         *     新方案下 audioUrl 為整集簽章時不適用（整集不再產），segments 才是前端
+         *     Web Audio API 串接播的承載。index / start / end 對齊 Cue，duration 是
+         *     trim 後 mp3 真實時長（秒）。前端用 index 對 Cue.binary search 結果定位
+         *     segment、用 start / end 算 currentTime。
+         */
+        Segment: {
+            /** Index */
+            index: number;
+            /** Audiourl */
+            audioUrl: string;
+            /** Duration */
+            duration: number;
+            /** Start */
+            start: number;
+            /** End */
+            end: number;
         };
         /** Settings */
         Settings: {
@@ -1965,39 +1961,6 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ApiResponse_Episode_"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    get_episode_url_episodes__slug__url_get: {
-        parameters: {
-            query?: never;
-            header?: {
-                authorization?: string | null;
-            };
-            path: {
-                slug: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ApiResponse_str_"];
                 };
             };
             /** @description Validation Error */

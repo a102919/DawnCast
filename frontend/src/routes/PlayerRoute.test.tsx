@@ -30,7 +30,8 @@ function mockEpisodeFor(id: string): Episode {
   return {
     id,
     title: `Episode ${id}`,
-    audioUrl: `https://example.com/${id}.mp3`,
+    audioUrl: null,
+    segments: [],
     cues: [{ index: 0, speaker: 'Alex', text: 'Hello', zh: '你好', start: 0, end: 1 }],
   }
 }
@@ -80,15 +81,21 @@ vi.mock('../state', () => ({
     isPlaying: playerIsPlaying,
     duration: 0,
     playbackRate: 1,
-    videoRef: { current: null },
+    volume: 1,
+    loadState: 'ready',
     currentEpisode: null,
     seekTo,
-    setVideoRef: vi.fn(),
     play,
     pause,
     setPlaybackRate: vi.fn(),
+    setVolume: vi.fn(),
     loadProgress: () => ({ currentTime: 0, exists: false }),
     setCurrentEpisode: vi.fn(),
+    playSegment: vi.fn(),
+    getSegmentPlayer: () => ({
+      unlock: vi.fn(async () => undefined),
+      playSegment: vi.fn(),
+    }),
   }),
   useSettings: () => ({
     settings: {
@@ -392,7 +399,8 @@ describe('PlayerRoute：單句循環', () => {
     getEpisode.mockResolvedValueOnce({
       id: 'ep-2',
       title: 'Episode ep-2',
-      audioUrl: 'https://example.com/ep-2.mp3',
+      audioUrl: null,
+      segments: [],
       cues: [
         { index: 0, speaker: 'Alex', text: 'Hello', zh: '你好', start: 0, end: 1 },
         { index: 1, speaker: 'Sam', text: 'World', zh: '世界', start: 1, end: 2 },

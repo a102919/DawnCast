@@ -34,7 +34,8 @@ vi.mock('../../state', () => ({
 const EPISODE: Episode = {
   id: 'ep-1',
   title: '測試集數標題',
-  audioUrl: 'https://example.com/ep-1.mp3',
+  audioUrl: null,
+  segments: [],
   cues: [],
 }
 

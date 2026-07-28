@@ -27,7 +27,7 @@ export function PlayerRoute() {
   const [loopCueIdx, setLoopCueIdx] = useState<number | null>(null)
   const [isVocabDrawerOpen, setIsVocabDrawerOpen] = useState(false)
   const [lookupError, setLookupError] = useState<string | null>(null)
-  const { currentTime, isPlaying, duration, seekTo, play, pause, videoRef, loadProgress, setPlaybackRate, currentEpisode, setCurrentEpisode } = usePlayer()
+  const { currentTime, isPlaying, duration, seekTo, play, pause, loadProgress, setPlaybackRate, loadState, currentEpisode, setCurrentEpisode, getSegmentPlayer } = usePlayer()
   const { settings } = useSettings()
   const { markPlayed } = useDailyOrder()
   const { addListenMinutes, addLookupCount, markListened } = useActivity()
@@ -36,7 +36,6 @@ export function PlayerRoute() {
   const hasMarkedListened = useRef(false)
   const hasMarkedDailyPlayed = useRef(false)
   const initialSeekAppliedRef = useRef(false)
-  const initialSeekTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const hasNotifiedDueRef = useRef(false)
   const resumePlaybackAfterWordCardRef = useRef(false)
 
@@ -95,11 +94,10 @@ export function PlayerRoute() {
   useEffect(() => {
     if (!episode || initialSeekAppliedRef.current) return
     const episodeId = episode.id
-    const expectedSrc = new URL(currentEpisode?.id === episodeId ? currentEpisode.audioUrl : episode.audioUrl, window.location.href).href
-    // 全域 <audio> 已經在播這集（例：從 MiniPlayer 點回播放頁）→ 元素上的
-    // currentTime 才是事實。localStorage 進度是節流快照，會落後幾百毫秒到 1 秒，
+    // 全域 PlayerProvider 已在播這集（例：從 MiniPlayer 點回播放頁）→ currentTime
+    // 才是事實。localStorage 進度是節流快照，會落後幾百毫秒到 1 秒，
     // 拿它去 seek 就是使用者看到的「點進來倒退一下」。只有冷啟動才需要續播定位。
-    if (currentEpisode?.id === episodeId && (videoRef.current?.currentTime ?? 0) > 0) {
+    if (currentEpisode?.id === episodeId && currentTime > 0) {
       initialSeekAppliedRef.current = true
       loadProgress(episodeId) // 副作用：綁定 provider 的 currentEpisodeIdRef，續存進度
       return
@@ -107,28 +105,11 @@ export function PlayerRoute() {
     const progress = loadProgress(episodeId)
     if (!progress.exists) return
 
-    let cancelled = false
-    const trySeek = () => {
-      if (cancelled || initialSeekAppliedRef.current || episodeIdRef.current !== episodeId) return
-      const v = videoRef.current
-      if (v && v.readyState >= 1 && v.currentSrc === expectedSrc) {
-        initialSeekTimerRef.current = null
-        initialSeekAppliedRef.current = true
-        seekTo(progress.currentTime)
-        return
-      }
-      initialSeekTimerRef.current = setTimeout(trySeek, 100)
-    }
-
-    trySeek()
-    return () => {
-      cancelled = true
-      if (initialSeekTimerRef.current !== null) {
-        clearTimeout(initialSeekTimerRef.current)
-        initialSeekTimerRef.current = null
-      }
-    }
-  }, [episode, currentEpisode, loadProgress, seekTo, videoRef])
+    // 等 hook loadState === 'ready'（segments decode 完成）才能 seek，否則會定位到 0。
+    if (loadState !== 'ready') return
+    initialSeekAppliedRef.current = true
+    seekTo(progress.currentTime)
+  }, [episode, currentEpisode, currentTime, loadProgress, loadState, seekTo])
 
   useEffect(() => {
     if (!episode || duration <= 0 || hasMarkedListened.current) return
@@ -178,6 +159,13 @@ export function PlayerRoute() {
     }
   }
 
+  // iOS Safari gesture unlock：必須在 click handler 同步路徑內 ctx.resume() 才有效。
+  // 包成 helper 讓所有「play」入口（cue click / next / replay）都走同一條路徑。
+  const playWithUnlock = useCallback(() => {
+    void getSegmentPlayer().unlock()
+    void play()
+  }, [play, getSegmentPlayer])
+
   const handleWordClick = async (word: string, cue: Cue) => {
     if (!settings.popupEnabled) return
     resumePlaybackAfterWordCardRef.current = isPlaying
@@ -192,8 +180,8 @@ export function PlayerRoute() {
     const shouldResume = resumePlaybackAfterWordCardRef.current
     resumePlaybackAfterWordCardRef.current = false
     setIsWordCardOpen(false)
-    if (shouldResume) play()
-  }, [play])
+    if (shouldResume) playWithUnlock()
+  }, [playWithUnlock])
 
   const handleReplayCue = () => {
     if (!episode || !selectedCue) return
@@ -210,8 +198,8 @@ export function PlayerRoute() {
       if (cueIdx >= 0) setLoopCueIdx(cueIdx)
     }
     seekTo(cue.start)
-    play()
-  }, [episode, loopCueIdx, seekTo, play])
+    playWithUnlock()
+  }, [episode, loopCueIdx, seekTo, playWithUnlock])
 
   const handleCueLoopToggle = useCallback(() => {
     if (loopCueIdx !== null) {
@@ -223,8 +211,8 @@ export function PlayerRoute() {
     if (!cue) return
     setLoopCueIdx(activeCueIdx)
     seekTo(cue.start)
-    play()
-  }, [activeCueIdx, episode, loopCueIdx, play, seekTo])
+    playWithUnlock()
+  }, [activeCueIdx, episode, loopCueIdx, playWithUnlock, seekTo])
 
   const handleNextCue = useCallback(() => {
     if (!episode) return

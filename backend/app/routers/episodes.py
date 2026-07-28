@@ -1,13 +1,16 @@
-"""集數 router：list / get(slug) / 簽章 URL。
+"""集數 router：list / get(slug)。
 
-授權：免費集（is_free）或該 user 有 delivery 授權才可取內容 / URL。
-對外用 slug 當 id。cues 從 episodes.script_json 取。
+授權：免費集（is_free）或該 user 有 delivery 授權才可取內容。
+對外用 slug 當 id。cues 從 episodes.script_json 取。segments 從
+episodes.audio_r2_keys jsonb 取，r2.presigned_get_urls 一次簽 N 個。
+
+新方案下整集 mp3 不再生產，audioUrl 對 episode 永遠 None；
+舊 GET /{slug}/url 端點已於 Phase G 移除（前端全部改吃 segments[]）。
 """
 
 from __future__ import annotations
 
 import logging
-from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
 
@@ -16,10 +19,9 @@ from psycopg.rows import dict_row
 
 from app.deps import get_current_user
 from app.response import ApiResponse, ok
-from shared.config import get_settings
 from shared.db.pool import connection
 from shared.errors import ForbiddenError, NotFoundError
-from shared.models import Cue, Episode, EpisodeListItem, SourceReference
+from shared.models import Cue, Episode, EpisodeListItem, Segment, SourceReference
 from shared.storage import r2
 
 logger = logging.getLogger(__name__)
@@ -127,7 +129,8 @@ async def _fetch_authorized(cur: Any, slug: str, user_id: str) -> dict[str, Any]
     await cur.execute(
         """
         select e.id, e.slug, e.title, e.title_zh, e.topic, e.cefr_level,
-               e.is_free, e.script_json, e.audio_r2_key, e.sources,
+               e.is_free, e.script_json, e.audio_r2_key, e.audio_r2_keys,
+               e.sources,
                exists (
                  select 1 from public.deliveries d
                  where d.episode_id = e.id and d.user_id = %s
@@ -144,6 +147,25 @@ async def _fetch_authorized(cur: Any, slug: str, user_id: str) -> dict[str, Any]
     return dict(row)
 
 
+def _segment_metadata_from_script(script_json: Any) -> list[dict[str, Any]]:
+    """從 script_json.cues 算每行 segment 對齊 metadata（duration, start, end）。
+
+    新方案下每行 mp3 對應一個 segment，duration 從該行 cue 實際時長推得。
+    如果 script_json 沒有 cues（舊集沒存），回空 list——此時 segments 留空，
+    前端走 audioUrl fallback（雖然 audioUrl 為 null，舊 client 會 graceful 失敗）。
+    """
+    cues = _cues(script_json)
+    return [
+        {
+            "index": i,
+            "duration": max(0.0, cue.end - cue.start),
+            "start": cue.start,
+            "end": cue.end,
+        }
+        for i, cue in enumerate(cues)
+    ]
+
+
 @router.get("/{slug}", response_model=ApiResponse[Episode])
 async def get_episode(slug: str, user_id: str = Depends(get_current_user)) -> ApiResponse[Episode]:
     async with connection() as conn, conn.cursor(row_factory=dict_row) as cur:
@@ -154,6 +176,43 @@ async def get_episode(slug: str, user_id: str = Depends(get_current_user)) -> Ap
         if isinstance(script_j, dict)
         else None
     )
+
+    # 簽章 segments：audio_r2_keys 為 jsonb list（per-line mp3 keys）。
+    # 對齊 script_json.cues 順序，前端用 index 跟 Cue 對齊。
+    audio_keys: list[str] = list(row.get("audio_r2_keys") or [])
+    segment_meta = _segment_metadata_from_script(script_j)
+    segments: list[Segment] = []
+    if audio_keys and len(audio_keys) == len(segment_meta):
+        try:
+            signed = r2.presigned_get_urls(audio_keys)
+        except Exception:
+            logger.exception("segments 批次簽章失敗 slug=%s", slug)
+            signed = {}
+        for key, meta in zip(audio_keys, segment_meta, strict=True):
+            url = signed.get(key)
+            if url is None:
+                continue
+            segments.append(
+                Segment(
+                    index=meta["index"],
+                    audio_url=url,
+                    duration=meta["duration"],
+                    start=meta["start"],
+                    end=meta["end"],
+                )
+            )
+
+    # ponytail: 整集 mp3 不再產，audioUrl 永遠 None；保留欄位給向後相容。
+    audio_url: str | None = None
+    legacy_key = row.get("audio_r2_key")
+    if legacy_key and not segments:
+        # 舊集未 backfill：用舊 audio_r2_key 簽章回 audioUrl 給仍吃舊路徑的 client。
+        # 1 版本後 Phase G 移除。
+        try:
+            audio_url = r2.presigned_get_url(legacy_key)
+        except Exception:
+            logger.exception("legacy audio_r2_key 簽章失敗 slug=%s", slug)
+
     episode = Episode(
         id=row["slug"],
         title=row["title"],
@@ -162,39 +221,14 @@ async def get_episode(slug: str, user_id: str = Depends(get_current_user)) -> Ap
         cefr_level=row["cefr_level"],
         cover_icon=cover_icon_val,
         is_free=row["is_free"],
-        cues=_cues(row["script_json"]),
+        audio_url=audio_url,
+        segments=segments,
+        cues=_cues(script_j),
         references=_references_from_sources(row.get("sources")),
     )
     return ok(episode)
 
 
-@router.get("/{slug}/url", response_model=ApiResponse[str])
-async def get_episode_url(slug: str, user_id: str = Depends(get_current_user)) -> ApiResponse[str]:
-    """產 R2 簽章 URL。先驗授權（免費或有 delivery），通過才 presign。
-
-    本機 fallback：當 R2 key 為 NULL 且 LOCAL_MEDIA_DIR 設定時，回 /media/{slug}.mp3
-    （router 只關 mp3，不再產 mp4）。
-    """
-    async with connection() as conn, conn.cursor(row_factory=dict_row) as cur:
-        row = await _fetch_authorized(cur, slug, user_id)
-    key = row["audio_r2_key"]
-    if not key:
-        settings = get_settings()
-        media_dir = settings.local_media_dir
-        if media_dir:
-            mp3_local = Path(media_dir) / f"{slug}.mp3"
-            if mp3_local.is_file():
-                # ponytail: 回相對路徑讓 vite proxy / 同源 origin 處理，
-                # 不寫死 host（devtunnel 是 HTTPS，localhost:8000 會被瀏覽器擋）。
-                return ok(f"/media/{slug}.mp3")
-            # ponytail: 半完成 record 偵測——有 .mp4 但無 .mp3 多半是早期 pipeline stub，
-            # 留著會 silent fail（player 整頁炸、log 無線索），主動 log + 明確錯誤訊息。
-            mp4_local = Path(media_dir) / f"{slug}.mp4"
-            if mp4_local.is_file():
-                logger.warning(
-                    "半完成 episode：%s 有 .mp4 stub 但無 .mp3 / R2 key（size=%d bytes）",
-                    slug, mp4_local.stat().st_size,
-                )
-                raise NotFoundError("此集數媒體尚未完成轉檔（找到 .mp4 stub）")
-        raise NotFoundError("此集數尚無媒體檔")
-    return ok(r2.presigned_get_url(key))
+# Phase G：移除 GET /{slug}/url 端點。前端吃 Episode.segments[] 陣列，
+# 不再需要整集 mp3 簽章 URL；改 audioUrl 欄位於 Episode 永遠 None。
+# 若之後真的需要回舊行為，重新開路由並從 episodes.audio_r2_key[0] 簽即可。

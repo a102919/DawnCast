@@ -10,13 +10,13 @@ import logging
 import os
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from pathlib import Path
 from typing import Any
 
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
-from fastapi.staticfiles import StaticFiles
+from fastapi.responses import FileResponse, JSONResponse
 
 from app.middleware import RateLimitMiddleware
 from app.response import err
@@ -154,18 +154,28 @@ def create_app() -> FastAPI:
     app.include_router(jobs.router)
     app.include_router(notifications.router)
 
-    # 本機 fallback：當 R2 未設且 LOCAL_MEDIA_DIR 指向本地資料夾時，
-    # 把整個目錄掛到 /media/* 讓前端視訊標籤能直接 src=。
-    # 沒設 → 不掛（prod 預期走 R2 presign，本機才需要）。
-    from pathlib import Path
-
-    media_dir = settings.local_media_dir
-    if media_dir and Path(media_dir).is_dir():
-        app.mount("/media", StaticFiles(directory=media_dir), name="media")
+    # 新方案下不再有整集 mp3 落地（每行 mp3 各自上 R2 / 全 R2 only），
+    # /media static mount 取消；舊集 backfill 期間也只走 R2 segments。
 
     @app.get("/health")
     async def health() -> dict[str, str]:
         return {"status": "ok"}
+
+    # ── dev-only：mock R2 本地檔案服務（generate_one --mock 上傳到這路徑）──
+    # 僅 ENVIRONMENT=dev 才掛；prod 不會暴露任何 mock 檔案路徑。
+    if settings.environment == "dev":
+        mock_r2_root = Path(os.environ.get("MOCK_R2_DIR", "/tmp/dc_mock_r2"))
+
+        @app.get("/mock-r2/{key:path}", include_in_schema=False)
+        async def _serve_mock_r2(key: str) -> FileResponse:
+            # 防 path traversal：解析後必須仍在 mock_r2_root 內
+            target = (mock_r2_root / key).resolve()
+            if not target.is_relative_to(mock_r2_root.resolve()):
+                raise HTTPException(status_code=400, detail="invalid key")
+            if not target.is_file():
+                raise HTTPException(status_code=404, detail="not found")
+            ct = "audio/mpeg" if key.endswith(".mp3") else "application/octet-stream"
+            return FileResponse(target, media_type=ct)
 
     return app
 

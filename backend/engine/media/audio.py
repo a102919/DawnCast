@@ -1,13 +1,10 @@
-"""音訊串接：把逐行 mp3 串成單一 episode.mp3，行間插靜音。
+"""音訊工具：concat_segments（保留 export 但不主流程呼叫）、cut_segment（backfill 用）。
 
-搬 POC concat 邏輯：過 wav 統一取樣率（mp3 concat demuxer 對不同來源不可靠）、
-行間插 pause_sec 靜音、用絕對路徑寫 concat list → libmp3lame 128k。
-臨時 wav 寫在傳入的 workdir，結束清掉。
+concat_segments 留著是給舊測試 / mock 路徑當 escape hatch 仍可產整集 mp3；
+新流程（render_episode）不再呼叫，由前端 Web Audio API 自行串接逐行 mp3。
 
-回傳最終 mp3 物理時長（秒）：trim 後 mp3 decode → WAV → libmp3lame 重編碼
-會引入 LAME frame alignment overhead（每段 ~50ms），ffprobe 量出來的實際時長
-跟 sum(seg.duration + pauses) 不一致；caller 拿去當 build_timeline 的 target_duration
-做等比例縮放對齊尾端，避免字幕時間軸飄出音檔 1-2 秒。
+cut_segment 是 backfill script 的工具：從既有整集 mp3 用 ffmpeg -c copy 切出
+指定時間區段，frame-boundary 對齊，誤差 ≤ 1 個 mp3 frame（~26ms @44.1kHz）。
 """
 
 from __future__ import annotations
@@ -159,3 +156,37 @@ def concat_segments(
     #    overhead，每段約 +50ms 累積，前端 audio.currentTime 對齊到 mp3 frame，
     #    cues 必須以這個時長為 ground truth 等比縮放）
     return _probe_duration(out_mp3)
+
+
+def cut_segment(in_mp3: Path, start: float, end: float, out_mp3: Path) -> None:
+    """從整集 mp3 用 ffmpeg -c copy 切出 [start, end] 區段寫到 out_mp3。
+
+    給 backfill script 從既有整集 mp3 切段用。-c copy 不重編碼，
+    frame-boundary 對齊，誤差 ≤ 1 個 mp3 frame（~26ms @44.1kHz）。
+    比 ffmpeg -c:a libmp3lame 重編碼快 10x 且無 frame alignment 飄移。
+
+    start/end 單位：秒；end-start > 0；in_mp3 必須存在。
+    """
+    if not in_mp3.exists():
+        raise TTSError(f"cut_segment：輸入檔不存在 {in_mp3}")
+    if end <= start:
+        raise TTSError(f"cut_segment：end={end} <= start={start}")
+    out_mp3.parent.mkdir(parents=True, exist_ok=True)
+    _run(
+        [
+            "ffmpeg",
+            "-y",
+            "-loglevel",
+            "error",
+            "-ss",
+            str(start),
+            "-i",
+            str(in_mp3),
+            "-t",
+            str(end - start),
+            "-c",
+            "copy",
+            str(out_mp3),
+        ],
+        what=f"切段 {start:.2f}-{end:.2f} → {out_mp3.name}",
+    )

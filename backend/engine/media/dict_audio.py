@@ -1,13 +1,19 @@
-"""單字 TTS + 發佈：dict_cache 音檔的單一 source of truth。
+"""單字 TTS + 發佈：⚠️ 前端不再使用（方案 B 上線後）。
 
-給兩條呼叫路徑共用：
-  - scripts/backfill_audio.py（批次補檔）
-  - app/routers/dict.py 的 lazy on-demand 路徑（首次查無音檔 inline 觸發）
+方案 B：前端 PronounceButton / ReplayAudioButton 改走
+player.playSegment 從該行 AudioBuffer 抽樣播（player.playSegment → ducking）
+dict_cache.audio_url 不再被前端讀，呼叫路徑全斷。
+
+保留此檔 + 公開函式 synthesize_word_audio 是給以下情境：
+  - 仍在跑的 scripts/backfill_audio.py（DEPRECATED，見該檔 docstring）
+  - 任何歷史排程或離線 job 還引用 synthesize_word_audio
+
+若專案已無任何呼叫路徑（grep synthesize_word_audio 只有這個 docstring），
+可直接刪本檔。
 
 公開 API：synthesize_word_audio(word) -> str | None
   - 守門 ^[a-z]+$：非單字（片語 / 數字 / 大寫）直接 None，避免 piper 對非單字合成失敗。
   - 任何例外（piper 沒裝 / R2 失敗 / publish 回 None）一律降級回 None，不外拋。
-    上游 router 已經會把 None 視為「無音檔」並回 audioUrl=null，不會污染主流程。
 """
 
 from __future__ import annotations
