@@ -105,9 +105,13 @@ def _probe_duration(audio_path: Path) -> float:
 # 字幕 cue 因此比實際講話時間多掛一秒左右，逐行看不明顯，但整集下來字幕會嚴重跟音訊脫鉤。
 # 用「轉正常方向切開頭」+「反轉音訊再切一次開頭（=切原始尾端）再轉回來」去頭尾靜音，
 # 句中自然停頓不受影響（duration 门槛只吃頭尾，不吃中段）。
+# _LEAD_KEEP_SEC 原為 0.05：實測（edge-tts 真實音檔 RMS envelope）發現觸發點落在字首輔音
+# 已經起音之後（約 -50dB→-11dB 的爬升段中段），keep=0.05 砍在爬升段中途，trim 後開頭直接
+# 是 -30dB 起跳、20ms 內衝到 -12dB 的硬切，聽感就是「這個字含糊/被咬掉開頭」。
+# keep=0.10 才能把整段自然爬升的攻擊尾（-80dB → -12dB，約 80ms）留住，開頭變成平滑淡入。
 _SILENCE_THRESHOLD = "-50dB"
 _LEAD_TRIGGER_SEC = 0.05
-_LEAD_KEEP_SEC = 0.05
+_LEAD_KEEP_SEC = 0.10
 _TAIL_TRIGGER_SEC = 0.15
 _TAIL_KEEP_SEC = 0.15
 
