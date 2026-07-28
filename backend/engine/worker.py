@@ -41,6 +41,8 @@ GENERATE_QUEUE = "generate"
 GENERATE_VT = 1100  # 生成 job 較重，隱形鎖 18 分鐘（> job_timeout_sec 預設 15 分）
 CONTROL_VT = 120
 IDLE_SLEEP_SEC = 2.0
+# push_daily 整合通知的 body 一次最多列幾集標題；超過時標題仍寫「等 N 集」提示還有更多。
+MAX_BODY_TITLES = 3
 
 
 class _Shutdown:
@@ -102,23 +104,41 @@ async def _push_daily(deliver_date: str) -> None:
     所以這裡不需要任何狀態判斷，tick 幾次都只推一次。時區用 app_timezone 自己算，
     不依賴容器本機時鐘（通常 UTC）。
 
-    payload 帶當天集數的 slug 跟顯示用標題（從 claim JOIN episodes 一次拿），
-    點擊通知直接跳到那集的 player 頁。
+    同位使用者當天可能有多集（被 collect_open 翻成 queued 後排程產生），把整批
+    收成同一則通知才不會擾民：title 寫「首集標題」等 N 集，body 列前幾集標題，
+    點擊跳到首集 player 頁（其餘集數 user 從首頁/行事曆可達）。
     """
     now = datetime.now(ZoneInfo(get_settings().app_timezone))
     claimed = await repo.claim_daily_notifications(deliver_date, now.strftime("%H:%M"))
     if not claimed:
         return
+
+    # 依 user_id 收成清單（保留 claim 順序：首集在前）
+    by_user: dict[str, list[dict[str, str]]] = {}
     for row in claimed:
+        by_user.setdefault(row["user_id"], []).append(row)
+
+    for user_id, eps in by_user.items():
+        first = eps[0]
+        n = len(eps)
+        if n == 1:
+            title = f"「{first['title']}」已製作完成"
+            body = "點開就能聽。"
+        else:
+            head = "、".join(f"「{e['title']}」" for e in eps[:MAX_BODY_TITLES])
+            more = "" if n <= MAX_BODY_TITLES else f" 等 {n} 集"
+            title = f"「{first['title']}」等 {n} 集已製作完成"
+            body = f"{head}{more}，點開就能聽。"
         await notify_user(
-            row["user_id"],
-            {
-                "title": f"「{row['title']}」已製作完成",
-                "body": "點開就能聽。",
-                "url": f"/player/{row['slug']}",
-            },
+            user_id,
+            {"title": title, "body": body, "url": f"/player/{first['slug']}"},
         )
-    logger.info("push_daily：通知 %d 位使用者（date=%s）", len(claimed), deliver_date)
+    logger.info(
+        "push_daily：通知 %d 位使用者、共 %d 集（date=%s）",
+        len(by_user),
+        len(claimed),
+        deliver_date,
+    )
 
 
 async def _orchestrate(request_date: str) -> None:

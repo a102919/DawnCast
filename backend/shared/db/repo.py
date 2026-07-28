@@ -579,11 +579,14 @@ async def delete_push_endpoints(endpoints: list[str]) -> None:
 async def claim_daily_notifications(
     deliver_date: str, now_hhmm: str
 ) -> list[dict[str, str]]:
-    """認領「出餐時間已到、還沒通知過」的交付，回傳每筆的 user_id + episode slug/title（已去重）。
+    """認領「出餐時間已到、還沒通知過」的交付，回傳每筆的 user_id + episode slug/title。
 
     UPDATE ... WHERE notified_at is null 同時完成篩選與 atomic claim——cron 掃
     幾次都只會推一次，不需要額外的 marker 表。時間用 <= 而非分鐘精確比對：
     worker 重啟或 cron 漂移不會讓使用者整天收不到。
+
+    一個 user 當天可能有多集（多筆 deliveries），原樣回傳讓 caller 自己 group
+    後再發一則整合通知；不要在這層去重，否則第 2~N 集會被吞掉。
 
     left join + coalesce 讓「還沒有 user_settings 列」不是特殊情況（對齊
     app/routers/settings.py 的 _SELECT 做法）。沒有任何 push 訂閱的 user 直接
@@ -596,7 +599,7 @@ async def claim_daily_notifications(
         await cur.execute(
             """
             with due as (
-              select d.id, d.user_id, d.episode_id, e.slug,
+              select d.id, d.user_id, e.slug,
                      coalesce(e.title_zh, e.title) as title
               from public.deliveries d
               join public.episodes e on e.id = d.episode_id
@@ -607,6 +610,7 @@ async def claim_daily_notifications(
                 and exists (
                   select 1 from public.push_subscriptions ps where ps.user_id = d.user_id
                 )
+              order by e.published_at nulls last, d.id
             )
             update public.deliveries d
             set notified_at = now()
@@ -618,16 +622,10 @@ async def claim_daily_notifications(
         )
         rows = await cur.fetchall()
         await conn.commit()
-    seen: set[str] = set()
-    deduped: list[dict[str, str]] = []
-    for r in rows:
-        if r["user_id"] in seen:
-            continue
-        seen.add(r["user_id"])
-        deduped.append(
-            {"user_id": r["user_id"], "slug": r["slug"], "title": r["title"]}
-        )
-    return deduped
+    return [
+        {"user_id": r["user_id"], "slug": r["slug"], "title": r["title"]}
+        for r in rows
+    ]
 
 
 async def get_episode_meta(episode_id: str) -> dict[str, str] | None:

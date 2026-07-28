@@ -300,3 +300,75 @@ async def test_push_daily_skips_when_claim_empty(
     await worker._push_daily("2026-07-28")
 
     assert called is False
+
+
+async def test_push_daily_bundles_multiple_episodes_per_user(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """同位使用者當天收到多集 → 只能推一則通知（標題/內文併 count），不再 N 連發。
+    claim 保留所有列（每列各自 notified_at），caller 負責 group。
+    """
+    from engine import worker
+
+    captured: list[dict[str, str]] = []
+
+    async def _fake_notify(user_id: str, payload: dict[str, str]) -> int:
+        captured.append({"user_id": user_id, **payload})
+        return 0
+
+    async def _fake_claim(_deliver_date: str, _hhmm: str) -> list[dict[str, str]]:
+        return [
+            {"user_id": USER_A, "slug": "ai-news-2026-07-28", "title": "AI 新聞週報"},
+            {"user_id": USER_A, "slug": "tech-trends-2026-07-28", "title": "科技趨勢速讀"},
+            {"user_id": USER_A, "slug": "vocab-2026-07-28", "title": "單字補給站"},
+            {"user_id": USER_B, "slug": "history-2026-07-28", "title": "歷史小百科"},
+        ]
+
+    monkeypatch.setattr(worker.repo, "claim_daily_notifications", _fake_claim)
+    monkeypatch.setattr(worker, "notify_user", _fake_notify)
+
+    await worker._push_daily("2026-07-28")
+
+    assert captured == [
+        {
+            "user_id": USER_A,
+            "title": "「AI 新聞週報」等 3 集已製作完成",
+            "body": "「AI 新聞週報」、「科技趨勢速讀」、「單字補給站」，點開就能聽。",
+            "url": "/player/ai-news-2026-07-28",
+        },
+        {
+            "user_id": USER_B,
+            "title": "「歷史小百科」已製作完成",
+            "body": "點開就能聽。",
+            "url": "/player/history-2026-07-28",
+        },
+    ]
+
+
+async def test_push_daily_truncates_body_when_more_than_three(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """body 一次最多列 3 集標題；超過時標「等 N 集」提示還有更多。"""
+    from engine import worker
+
+    captured: list[dict[str, str]] = []
+
+    async def _fake_notify(user_id: str, payload: dict[str, str]) -> int:
+        captured.append({"user_id": user_id, **payload})
+        return 0
+
+    async def _fake_claim(_deliver_date: str, _hhmm: str) -> list[dict[str, str]]:
+        return [
+            {"user_id": USER_A, "slug": f"ep-{i}", "title": f"集 {i}"}
+            for i in range(1, 6)
+        ]
+
+    monkeypatch.setattr(worker.repo, "claim_daily_notifications", _fake_claim)
+    monkeypatch.setattr(worker, "notify_user", _fake_notify)
+
+    await worker._push_daily("2026-07-28")
+
+    assert len(captured) == 1
+    assert captured[0]["title"] == "「集 1」等 5 集已製作完成"
+    assert captured[0]["body"] == "「集 1」、「集 2」、「集 3」 等 5 集，點開就能聽。"
+    assert captured[0]["url"] == "/player/ep-1"
