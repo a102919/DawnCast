@@ -233,6 +233,9 @@ async def run_demo(args: argparse.Namespace) -> int:
     except Exception as exc:
         print(f"  FAIL: {exc}", file=sys.stderr)
         return 2
+    if episode_id is None:
+        print("  DEAD-LETTER: storage 上傳失敗，優雅結束，沒有集數產出", file=sys.stderr)
+        return 1
     print(f"  → episode_id = {episode_id}")
     print()
 

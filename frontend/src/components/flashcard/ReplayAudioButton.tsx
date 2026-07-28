@@ -2,6 +2,7 @@ import { Play } from 'lucide-react'
 import { usePlayer } from '../../state'
 import { api } from '../../api'
 import { AppError } from '../../api/httpApi'
+import { findActiveCueIndex } from '../../lib/time'
 
 interface ReplayAudioButtonProps {
   readonly episodeSlug: string
@@ -30,17 +31,10 @@ export function ReplayAudioButton({ episodeSlug, timestamp }: ReplayAudioButtonP
         player.setCurrentEpisode(ep)
       }
       if (!ep) return
-      // binary search cue（同一段邏輯抽出來）
       const cues = ep.cues
-      let lo = 0, hi = cues.length - 1, idx = 0
-      while (lo <= hi) {
-        const mid = (lo + hi) >> 1
-        const cue = cues[mid]
-        if (!cue) break
-        if (timestamp < cue.start) hi = mid - 1
-        else if (timestamp > cue.end) { idx = mid; lo = mid + 1 }
-        else { idx = mid; break }
-      }
+      // timestamp 落在第一個 cue 之前時 findActiveCueIndex 回 -1，退回第 0 個
+      // cue，保持跟原本 binary search 版本一致的「找不到就播開頭」行為。
+      const idx = Math.max(0, findActiveCueIndex(cues, timestamp))
       const cue = cues[idx]
       if (!cue) return
       const offsetSec = Math.max(0, Math.min(timestamp - cue.start, cue.end - cue.start))

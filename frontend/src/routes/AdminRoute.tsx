@@ -4,6 +4,7 @@ import { ShieldCheck, Send, Eye, EyeOff, RefreshCw, ChevronDown, ChevronRight } 
 import { api, AppError, clearAdminToken, getAdminToken, setAdminToken } from '../api'
 import type { AdminEpsGenerateInput, AdminEpsGenerateResponse, AdminTokenUsageResponse } from '../api'
 import { Button, Card, ErrorBanner, SectionLabel, StatCard } from '../components/primitives'
+import { toIsoDate } from '../lib/dailyOrderDate'
 
 const ANGLE_OPTIONS = [
   { value: '定義', label: '定義' },
@@ -33,16 +34,6 @@ const CEFR_OPTIONS = [
   { value: 'B2', label: 'B2 中高級' },
 ] as const
 
-function todayIso(): string {
-  // 後端 app_timezone 預設 Asia/Taipei；前端用本地時區顯示，差一天也只差 deliverDate
-  // 預設值的字串，後端拿到後會做時區正規化（見 router 內 datetime.now(tz).date()）。
-  const d = new Date()
-  const y = d.getFullYear()
-  const m = String(d.getMonth() + 1).padStart(2, '0')
-  const day = String(d.getDate()).padStart(2, '0')
-  return `${y}-${m}-${day}`
-}
-
 export function AdminRoute() {
   const [tokenDraft, setTokenDraft] = useState('')
   const [showToken, setShowToken] = useState(false)
@@ -53,7 +44,7 @@ export function AdminRoute() {
   const [lengthTier, setLengthTier] = useState<(typeof LENGTH_TIER_OPTIONS)[number]['value']>('medium')
   const [cefr, setCefr] = useState<(typeof CEFR_OPTIONS)[number]['value']>('B1')
   const [userIdsRaw, setUserIdsRaw] = useState('')
-  const [deliverDate, setDeliverDate] = useState(todayIso())
+  const [deliverDate, setDeliverDate] = useState(toIsoDate(new Date()))
   const [overrideDate, setOverrideDate] = useState(false)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)

@@ -16,23 +16,23 @@ from shared.config import Settings, get_settings
 from shared.errors import SourceFetchError
 from shared.models import SourceSnippet
 
+from .base import _HttpSourceProvider
 
-class WikipediaProvider:
+
+class WikipediaProvider(_HttpSourceProvider):
     """深度知識入口用：抓 Wikipedia 條目摘要當 grounding 素材。"""
 
     name = "wikipedia"
 
     def __init__(self, settings: Settings | None = None) -> None:
         cfg = settings or get_settings()
-        self._max_snippets = cfg.source_max_snippets
-        self._client = httpx.AsyncClient(
+        super().__init__(
             base_url=cfg.wikipedia_base_url,
-            timeout=httpx.Timeout(cfg.source_fetch_timeout),
+            settings=cfg,
+            read_timeout=cfg.source_fetch_timeout,
             headers={"User-Agent": cfg.wikipedia_user_agent},
         )
-
-    async def aclose(self) -> None:
-        await self._client.aclose()
+        self._max_snippets = cfg.source_max_snippets
 
     async def _search_titles(self, query: str) -> list[str]:
         resp = await self._client.get(

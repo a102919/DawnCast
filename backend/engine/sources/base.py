@@ -9,6 +9,9 @@ from __future__ import annotations
 import logging
 from typing import Protocol, runtime_checkable
 
+import httpx
+
+from shared.config import Settings
 from shared.errors import SourceFetchError
 from shared.models import SourceSnippet
 
@@ -26,6 +29,36 @@ class SourceProvider(Protocol):
     async def aclose(self) -> None:
         """釋放底層資源（如 httpx client）。無資源者實作為 no-op。"""
         ...
+
+
+class _HttpSourceProvider:
+    """走 httpx 的 provider 共用基底：統一 client 建構（connect/read timeout 分離）與 aclose()。
+
+    connect/write/pool 沿用 settings.http_connect_timeout（5s 上線防呆），read 交給
+    各 provider 自己的 fetch timeout 語意（例如 source_fetch_timeout），不可合併成單一
+    數值——httpx.Timeout(單一數值) 等於四段都套同一個值，會讓連線逾時跟著被拉到 30s。
+    """
+
+    def __init__(
+        self,
+        base_url: str,
+        settings: Settings,
+        read_timeout: float,
+        headers: dict[str, str] | None = None,
+    ) -> None:
+        self._client = httpx.AsyncClient(
+            base_url=base_url,
+            timeout=httpx.Timeout(
+                connect=settings.http_connect_timeout,
+                read=read_timeout,
+                write=settings.http_connect_timeout,
+                pool=settings.http_connect_timeout,
+            ),
+            headers=headers,
+        )
+
+    async def aclose(self) -> None:
+        await self._client.aclose()
 
 
 class CombinedProvider:
@@ -47,4 +80,7 @@ class CombinedProvider:
 
     async def aclose(self) -> None:
         for provider in self._providers:
-            await provider.aclose()
+            try:
+                await provider.aclose()
+            except Exception as exc:
+                logger.warning("combined source %s 關閉失敗，跳過: %s", provider.name, exc)

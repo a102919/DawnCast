@@ -1,7 +1,7 @@
 """寫稿回應解析（LangGraph pod 的 write_script / judge 共用）。
 
-prompt 組裝在 langgraph_pod/nodes.py（_build_pod_messages）；這裡只負責剝 code fence
-並驗證成合法 ScriptJSON。任何解析 / 驗證失敗一律 raise GenerationError，
+prompt 組裝在 langgraph_pod/nodes.py（_build_outline_messages / _build_segment_messages）；
+這裡只負責剝 code fence 並驗證成合法 ScriptJSON。任何解析 / 驗證失敗一律 raise GenerationError，
 觸發語意層重試（RetryPolicy 控制硬上限，PRD §6 防重生風暴）。
 """
 

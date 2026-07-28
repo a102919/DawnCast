@@ -1,11 +1,11 @@
 // @vitest-environment happy-dom
-// FavoritesRoute 測試（回歸鎖：收藏頁要用 api.listEpisodes() 的真資料去 filter，
+// FavoritesRoute 測試（回歸鎖：收藏頁要用 useEpisodes() 給的真資料去 filter，
 // 不是拿舊 episodeData.ts（已移除）寫死的假 EPISODES 陣列——假資料的 id 跟真實 favorites id
 // 對不上，filter 完永遠是空陣列）。
 
 ;(globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
 
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { MemoryRouter } from 'react-router-dom'
@@ -19,22 +19,20 @@ const REAL_EPISODES: readonly MockEpisode[] = [
   { id: 'real-3', title: 'Real Three', titleZh: '真實第三集', topic: 'science', cefrLevel: 'A2', episode: 3, publishedAt: '2026-07-03' },
 ]
 
-const listEpisodes = vi.fn(async (): Promise<readonly MockEpisode[]> => REAL_EPISODES)
-
-vi.mock('../api', () => ({
-  get api() {
-    return { listEpisodes }
-  },
-}))
-
-// useFavorites 直接換成靜態假值：favorites 裡放 2 個「真實」id（real-1、real-3），
-// 對照修之前用假 EPISODES（舊 episodeData.ts 的 loop_engineering 之類的 id）filter，
+// useFavorites / useEpisodes 直接換成靜態假值：favorites 裡放 2 個「真實」id
+// （real-1、real-3），對照修之前用假 EPISODES（舊 episodeData.ts 的 id）filter，
 // 這 2 個 id 一定 filter 不出東西、清單永遠空。
 vi.mock('../state', () => ({
   useFavorites: () => ({
     favorites: new Set(['real-1', 'real-3']),
     toggle: vi.fn(),
     has: (id: string) => id === 'real-1' || id === 'real-3',
+  }),
+  useEpisodes: () => ({
+    episodes: REAL_EPISODES,
+    loading: false,
+    error: null,
+    refresh: vi.fn(),
   }),
 }))
 
@@ -50,20 +48,11 @@ async function renderRoute(): Promise<{ root: Root; container: HTMLDivElement }>
       </MemoryRouter>,
     )
   })
-  // listEpisodes() 的 await 鏈跑完，讓 setEpisodes 的 re-render 在 act 內結算。
-  await act(async () => {
-    await Promise.resolve()
-    await Promise.resolve()
-  })
 
   return { root, container }
 }
 
 const pendingRoots: Root[] = []
-
-beforeEach(() => {
-  listEpisodes.mockClear()
-})
 
 afterEach(async () => {
   await act(async () => {
@@ -73,12 +62,10 @@ afterEach(async () => {
   vi.restoreAllMocks()
 })
 
-describe('FavoritesRoute：用真實 api.listEpisodes() 資料 filter 收藏', () => {
+describe('FavoritesRoute：用 useEpisodes() 的真資料 filter 收藏', () => {
   it('顯示 favorites 裡的 2 筆真實集數，不是空清單', async () => {
     const { root, container } = await renderRoute()
     pendingRoots.push(root)
-
-    expect(listEpisodes).toHaveBeenCalledTimes(1)
 
     // 空狀態文案不該出現（修之前用假資料 filter，一定會落到這個空狀態）。
     expect(container.textContent).not.toContain('收藏清單是空的')

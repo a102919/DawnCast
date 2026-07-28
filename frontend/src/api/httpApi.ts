@@ -121,7 +121,6 @@ async function request<T>(path: string, opts: RequestOptions): Promise<T> {
   const env = parsed.data
 
   if (!env.ok) {
-    if (opts.nullable && res.status === 404) return null as T
     const e = env.error
     throw new AppError(e?.code ?? 'unknown', e?.message ?? '請求失敗', res.status)
   }
@@ -246,7 +245,8 @@ export const SourceReferenceSchema = z.object({
 // 或空 list 都 graceful（前端 consumer 各自判斷）。
 // titleZh/topic/cefrLevel/isFree 後端本來就會送（見 shared/models.py Episode），
 // 前端目前用不到但要收進來，不然 satisfies 抓不到後端這幾欄之後改型別/改名。
-// references 後端尚未合併（見 SourceReferenceSchema 註解），optional 對齊。
+// references 後端已送（見 shared/models/api.py Episode.references），empty
+// list 視為無來源；保留 optional 是為了對齊舊測試/mock 資料可能缺欄位的情境。
 const EpisodeContentSchema = z.object({
   id: z.string(),
   title: z.string(),

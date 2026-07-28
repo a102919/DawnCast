@@ -1,4 +1,3 @@
-export { GlobalAudioHost } from './GlobalAudioHost'
 export { MiniPlayer } from './MiniPlayer'
 export { PlayerControls } from './PlayerControls'
 export { PlayerBottomBar } from './PlayerBottomBar'

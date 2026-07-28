@@ -18,7 +18,7 @@ export interface paths {
          * Add Vocab
          * @description 新增；去重鍵 unique(user_id,lemma,source_episode_id,source_line_no)。
          *
-         *     衝突時回既有列（對齊 mockApi 行為）。slug→uuid 轉換在此。
+         *     衝突時回既有列（對齊 mockApi 行為）。slug→uuid 轉換呼叫 repo.resolve_episode_id。
          */
         post: operations["add_vocab_vocab_post"];
         /** Clear Vocab */

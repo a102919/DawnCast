@@ -71,16 +71,28 @@ def _invalidate_jwks_cache() -> None:
         _jwks_fetched_at = 0.0
 
 
+def extract_bearer_token(authorization: str | None) -> str | None:
+    """從 Authorization header 取出 Bearer token 字串；格式不符或缺 token 回 None。
+
+    get_current_user 與 account.py 的 _jwt_email 都要先做這一步才能驗證/解碼，
+    抽成公開 helper 避免兩處各自重寫一份幾乎一樣的字串解析邏輯。
+    """
+    if not authorization or not authorization.lower().startswith("bearer "):
+        return None
+    token = authorization[7:].strip()
+    return token or None
+
+
 def _decode(token: str) -> str:
-    payload = _decode_payload(token)
+    payload = decode_jwt_payload(token)
     sub = payload.get("sub")
     if not isinstance(sub, str) or not sub:
         raise AuthError("認證失敗")
     return sub
 
 
-def _decode_payload(token: str) -> dict[str, Any]:
-    """驗 JWT，回傳完整 payload。給 _jwt_email 等需要額外 claim 的場景用。
+def decode_jwt_payload(token: str) -> dict[str, Any]:
+    """驗 JWT，回傳完整 payload。給 account.py 的 _jwt_email 等需要額外 claim 的場景用。
 
     兩個 mode：
     - ES256（default，cloud Supabase）：從 JWKS 拿公鑰 verify。
@@ -153,11 +165,11 @@ def _find_key(jwks: dict[str, Any], kid: str) -> dict[str, Any] | None:
     return None
 
 
-def _is_dev_bypass(authorization: str | None) -> bool:
+def is_dev_bypass(authorization: str | None) -> bool:
     """判斷是否符合 dev bypass 條件：environment=dev 且 dev_auth_bypass=true，
     且 Authorization 是 'Bearer dev' 或缺。
 
-    get_current_user 與 account._jwt_email 共用此判斷，避免安全邏輯複製兩份。
+    get_current_user 與 account.py 的 _jwt_email 共用此判斷，避免安全邏輯複製兩份。
     """
     settings = get_settings()
     return (
@@ -175,11 +187,9 @@ async def get_current_user(authorization: str | None = Header(default=None)) -> 
     'Bearer dev' 或缺 → 直接回 dev_user_id。本機預覽不繞 Supabase。
     prod 強制走 ES256 + JWKS（assert_secure 已擋預設 JWKS URL）。
     """
-    if _is_dev_bypass(authorization):
+    if is_dev_bypass(authorization):
         return get_settings().dev_user_id
-    if not authorization or not authorization.lower().startswith("bearer "):
-        raise AuthError("缺少授權標頭")
-    token = authorization[7:].strip()
+    token = extract_bearer_token(authorization)
     if not token:
         raise AuthError("缺少授權標頭")
     return _decode(token)

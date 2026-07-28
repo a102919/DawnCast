@@ -1,7 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState, type ReactNode } from 'react'
 import { storageGet, storageSet } from '../lib/storage'
 import { PlayerContext, type PlayerContextValue } from './playerContextValue'
-import { useActivity } from './useActivity'
 import { useSegmentPlayer } from './useSegmentPlayer'
 import type { Episode } from '../types/episode'
 
@@ -14,12 +13,21 @@ type SavedProgress = {
   readonly currentTime: number
 }
 
+export interface PlayerProviderProps {
+  readonly children: ReactNode
+  /** activity.lastPlayed* 由外層（ActivityProvider 底下的 App shell）注入，
+   *  Provider 本身不直接依賴 useActivity，避免跨 Provider 隱性耦合。 */
+  readonly lastPlayedEpisodeId: string | null
+  readonly lastPlayedPosition: number | null
+  setLastPlayed(episodeId: string, position: number, opts?: { readonly force?: boolean }): void
+}
+
 /** Provider 包 useSegmentPlayer + 進度持久化 + lastPlayed 雲端同步。
  *
  * 取代舊 <audio> ref-based 邏輯：hook 內已管 AudioContext + AudioBuffer cache，這層
  * 只剩 React 狀態鏡像 + 跨分頁存檔 flush + activity.lastPlayed 同步。
  * 保留 currentEpisode state 讓 MiniPlayer / GlobalAudioHost / PlayerRoute 都能讀。 */
-export function PlayerProvider({ children }: { readonly children: ReactNode }) {
+export function PlayerProvider({ children, lastPlayedEpisodeId, lastPlayedPosition, setLastPlayed }: PlayerProviderProps) {
   const player = useSegmentPlayer()
   // useSegmentPlayer() 每次 render 回傳新物件字面量；player 本身拿來當 useCallback
   // 依賴會讓 setCurrentEpisode/seekTo 每次 render 都變新函式 → 依賴它們的 useEffect
@@ -28,7 +36,6 @@ export function PlayerProvider({ children }: { readonly children: ReactNode }) {
   // callback 保持穩定 identity，只在真正呼叫當下才讀最新方法。
   const playerRef = useRef(player)
   useLayoutEffect(() => { playerRef.current = player })
-  const { lastPlayedEpisodeId, lastPlayedPosition, setLastPlayed } = useActivity()
   const [currentEpisode, setCurrentEpisodeState] = useState<Episode | null>(null)
   const currentEpisodeIdRef = useRef<string | null>(null)
   const lastSavedTimeRef = useRef<number>(0)

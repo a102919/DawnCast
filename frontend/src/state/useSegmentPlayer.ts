@@ -187,11 +187,12 @@ export function useSegmentPlayer(): SegmentPlayer {
         return
       }
       segIdxRef.current = next
+      void prefetchAround(next)
       void ensureBuffer(next).then(b => {
         if (b && isPlayingRef.current) startSourceRef.current(next, 0)
       })
     }
-  }, [cache, ensureBuffer, stopActive])
+  }, [cache, ensureBuffer, prefetchAround, stopActive])
 
   useEffect(() => { startSourceRef.current = startSource }, [startSource])
 
@@ -254,8 +255,9 @@ export function useSegmentPlayer(): SegmentPlayer {
     const wasPlaying = isPlayingRef.current
     stopActive()
     segIdxRef.current = idx
+    void prefetchAround(idx)
     if (wasPlaying) void ensureBuffer(idx).then(b => { if (b) startSource(idx, offsetSec) })
-  }, [ensureBuffer, startSource, stopActive])
+  }, [ensureBuffer, prefetchAround, startSource, stopActive])
 
   const setPlaybackRate = useCallback((rate: number) => {
     rateRef.current = rate

@@ -12,8 +12,6 @@
 
 from __future__ import annotations
 
-import json
-import shutil
 import tempfile
 import uuid
 from collections import defaultdict
@@ -413,37 +411,3 @@ def get_mocks(reset: bool = False) -> tuple[MockRepo, MockR2, MockQueue]:
 
 def make_mock_workdir() -> Path:
     return Path(tempfile.mkdtemp(prefix="pod-mock-"))
-
-
-def safe_local_fallback(mp3_src: Path, slug: str, local_media_dir: str) -> bool:
-    """把新產出的音檔寫入本地 fallback，回報這次是否真的寫成功。"""
-    if not local_media_dir:
-        return False
-    target = Path(local_media_dir)
-    if not target.is_dir():
-        return False
-    try:
-        shutil.copy2(mp3_src, target / f"{slug}.mp3")
-    except OSError:
-        return False
-    return True
-
-
-# ── local preview dump（demo 印出最終 json）───────────────
-
-
-def dump_pod_state(state: dict[str, Any], path: Path) -> None:
-    """把最終 state 序列化到 json file，方便 demo / debugging。"""
-    serializable: dict[str, Any] = {}
-    for k, v in state.items():
-        if hasattr(v, "model_dump"):
-            serializable[k] = v.model_dump()
-        elif isinstance(v, Path):
-            serializable[k] = str(v)
-        else:
-            try:
-                json.dumps(v)
-                serializable[k] = v
-            except (TypeError, ValueError):
-                serializable[k] = str(v)
-    path.write_text(json.dumps(serializable, ensure_ascii=False, indent=2), encoding="utf-8")

@@ -2,8 +2,8 @@ import { useEffect, useCallback, useRef } from 'react'
 import { Play, Pause, Repeat1, Volume2, VolumeX } from 'lucide-react'
 import { usePlayer } from '../../state'
 import { formatTime } from '../../lib'
-import { RATES, computeProgress } from '../../lib/playback'
-import { IconButton } from '../primitives'
+import { RATES } from '../../lib/playback'
+import { IconButton, ProgressSlider } from '../primitives'
 
 interface PlayerControlsProps {
   readonly duration: number
@@ -18,10 +18,6 @@ export function PlayerControls({ duration, isCueLooping, canLoopCue, onCueLoopTo
   // hook 內 volume=0 等於 mute（segmentGain.gain=0），所以實際行為直接看 hook.volume。
   const lastNonZeroVolumeRef = useRef(1)
   const isMuted = volume === 0
-
-  const handleSeek = (e: React.ChangeEvent<HTMLInputElement>) => {
-    seekTo(Number(e.target.value))
-  }
 
   const handleVolumeChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const val = Number(e.target.value)
@@ -56,29 +52,10 @@ export function PlayerControls({ duration, isCueLooping, canLoopCue, onCueLoopTo
     return () => window.removeEventListener('keydown', handler)
   }, [isPlaying, currentTime, duration, play, pause, seekTo])
 
-  const progress = computeProgress(currentTime, duration)
-
   return (
     <div className="space-y-2">
       {/* 進度條 */}
-      <div className="relative py-4 -my-4">
-        <input
-          type="range"
-          min={0}
-          max={duration}
-          value={currentTime}
-          step={0.1}
-          onChange={handleSeek}
-          aria-label="播放進度"
-          aria-valuemin={0}
-          aria-valuemax={duration}
-          aria-valuenow={currentTime}
-          className="w-full h-1 bg-border rounded-full appearance-none cursor-pointer accent-accent"
-          style={{
-            background: `linear-gradient(to right, var(--color-accent) ${progress}%, var(--color-border) ${progress}%)`,
-          }}
-        />
-      </div>
+      <ProgressSlider currentTime={currentTime} duration={duration} onSeek={seekTo} />
 
       {/* 控制列 */}
       <div className="flex items-center justify-between">

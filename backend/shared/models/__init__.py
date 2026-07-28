@@ -28,11 +28,11 @@ from shared.models.api import (
 )
 from shared.models.engine import (
     ANGLES,
+    ENTRY_MODE_TO_TOPIC_TYPE,
     ClaimCheck,
     ClaimVerification,
     EntryMode,
     EvidenceCard,
-    FreshnessClass,
     JudgeVerdict,
     LengthTier,
     OutlineSegment,
@@ -51,6 +51,7 @@ from shared.models.engine import (
 
 __all__ = [
     "ANGLES",
+    "ENTRY_MODE_TO_TOPIC_TYPE",
     "AccountInfo",
     "Activity",
     "AdminEpisode",
@@ -69,7 +70,6 @@ __all__ = [
     "EpisodeListItem",
     "EntryMode",
     "EvidenceCard",
-    "FreshnessClass",
     "JudgeVerdict",
     "LengthTier",
     "OutlineSegment",

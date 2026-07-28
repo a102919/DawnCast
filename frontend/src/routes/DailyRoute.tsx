@@ -1,28 +1,20 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useMemo, useState } from 'react'
 import { toast } from 'sonner'
 import { CalendarDays, Play } from 'lucide-react'
-import { useDailyOrder } from '../state'
+import { useDailyOrder, useEpisodes } from '../state'
 import { TOPIC_LABELS, formatDateZhTW } from '../lib'
-import type { MockEpisode } from '../lib'
-import { api } from '../api'
 import { DailyCalendar } from '../components/daily/DailyCalendar'
 import { DailyOrderForm, type DailyOrderFormSubmitResult } from '../components/daily/DailyOrderForm'
 import { DailyOrderHistory } from '../components/daily/DailyOrderHistory'
-import { nextNDays, toIsoDate } from '../lib/dailyOrderDate'
+import { nextNDays } from '../lib/dailyOrderDate'
 import { SectionLabel } from '../components/primitives/SectionLabel'
 
 export function DailyRoute() {
   const { todayDate, orders, getOrder, setOrder, deleteOrder } = useDailyOrder()
+  const { episodes } = useEpisodes()
   const [userSelectedDate, setUserSelectedDate] = useState<string>(todayDate)
   const [formExpanded, setFormExpanded] = useState<boolean>(false)
   const [busy, setBusy] = useState(false)
-  const [episodes, setEpisodes] = useState<readonly MockEpisode[]>([])
-
-  useEffect(() => {
-    api.listEpisodes()
-      .then(list => setEpisodes(list))
-      .catch(() => { /* 推薦區塊不顯示，不影響訂單流程 */ })
-  }, [])
 
   // 跨日保護：若使用者選的日期已 < todayDate，自動回 todayDate。
   // 不靠 effect 修 state：直接以 todayDate 為下界，避免 cascading render。
@@ -35,9 +27,6 @@ export function DailyRoute() {
   }
 
   const calendarDates = useMemo(() => nextNDays(todayDate, 7), [todayDate])
-  // 保險：避免任何異常下 calendarDates 空掉
-  const safeCalendarDates =
-    calendarDates.length === 7 ? calendarDates : nextNDays(toIsoDate(new Date()), 7)
 
   const existing = getOrder(selectedDate)
   const formKey = `${selectedDate}-${existing?.updatedAt ?? 'new'}`
@@ -100,7 +89,7 @@ export function DailyRoute() {
       {/* 行事曆 */}
       <DailyCalendar
         today={todayDate}
-        dates={safeCalendarDates}
+        dates={calendarDates}
         selectedDate={selectedDate}
         getOrder={getOrder}
         onSelect={handleSelectDate}

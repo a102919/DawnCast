@@ -18,6 +18,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app.routers import favorites as favorites_router
+from shared.db import repo
 from tests._auth import auth_header
 from tests._db_fakes import FakeConnection as _BaseFakeConnection
 from tests._db_fakes import FakeCursor as _BaseFakeCursor
@@ -26,7 +27,7 @@ from tests._db_fakes import fake_connection
 USER_A = "11111111-1111-1111-1111-111111111111"
 USER_B = "22222222-2222-2222-2222-222222222222"
 
-# slug → uuid（模擬 episodes 表，_slug_to_uuid 用）
+# slug → uuid（模擬 episodes 表，repo.resolve_episode_id 用）
 EPISODES: dict[str, str] = {
     "ep-a": "uuid-ep-a",
     "ep-b": "uuid-ep-b",
@@ -63,7 +64,7 @@ class FakeCursor(_BaseFakeCursor):
     async def execute(self, sql: str, params: tuple[Any, ...] = ()) -> None:
         s = " ".join(sql.split())
 
-        # slug → uuid lookup（_slug_to_uuid）
+        # slug → uuid lookup（repo.resolve_episode_id）
         if "select id from public.episodes where slug = %s" in s:
             slug = params[0]
             uid = EPISODES.get(slug)
@@ -123,6 +124,9 @@ def _reset_fixtures() -> None:
 @pytest.fixture(autouse=True)
 def patch_db(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(favorites_router, "connection", fake_connection(FakeConnection))
+    # add_favorite 的 slug→uuid 查詢已搬進 repo.resolve_episode_id（shared/db/repo.py
+    # 自己的 connection 引用），跟 router 本身的 connection 是兩個獨立 binding，都要 patch。
+    monkeypatch.setattr(repo, "connection", fake_connection(FakeConnection))
 
 
 @pytest.fixture
@@ -168,7 +172,7 @@ def test_add_favorite_unknown_slug_returns_404(client: TestClient) -> None:
     res = client.post("/favorites/no-such-ep", headers=auth_header(USER_A))
     assert res.status_code == 404
     assert res.json()["error"]["code"] == "not_found"
-    # 404 在 _slug_to_uuid 階段就 raise，沒走到 insert；驗 FAVORITES 集合未變動
+    # 404 在 resolve_episode_id 階段就 raise，沒走到 insert；驗 FAVORITES 集合未變動
     # （一個帶未知 uuid 的 tuple 不該出現在 FAVORITES，因為 FAVORITES 的 uuid 都來自 EPISODES）
     assert ("no-such-ep",) not in {(e,) for _, e in FAVORITES}
 

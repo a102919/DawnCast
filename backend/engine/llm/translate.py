@@ -20,6 +20,20 @@ logger = logging.getLogger(__name__)
 _BATCH_MAX_TOKENS = 8192  # 10 字冷僻字實測 6808 tokens（thinking + output），留 buffer
 _BATCH_READ_TIMEOUT = 180.0  # 10 字冷僻字實測 80s，留 2x buffer；覆寫 settings.http_read_timeout
 
+# translate_word / translate_batch 共用的翻譯品質規則，兩邊各自在前後加自己專屬的規則
+# （batch 版多一條 word echo 規則、輸出格式規則措辭也不同），組裝時用 enumerate 統一編號。
+_TRANSLATION_RULES: tuple[str, ...] = (
+    "translation 必須繁體中文台灣用詞（網路/網路、磁碟/磁碟、滑鼠/滑鼠）。",
+    "example_en 要自然、簡短（≤ 15 字），能展示該字典型用法。",
+    "example_zh 為 example_en 的逐字台繁翻譯。",
+    "mnemonic 是給台灣學習者的諧音/關鍵字文字聯想（≤30字，繁體中文），"
+    "格式類似「發音像『OO』，聯想到＿＿」；只用文字聯想，不要描述圖像/畫面。",
+)
+
+
+def _numbered_rules(rules: list[str]) -> str:
+    return "\n".join(f"{i}. {r}" for i, r in enumerate(rules, start=1))
+
 
 def _resolve_llm_creds(settings: Settings) -> tuple[str, str, str]:
     """依 generation_engine 選 (base_url, auth_token, model)，跟 chat.make_langchain_chat 對齊。
@@ -88,6 +102,7 @@ async def translate_word(word: str) -> dict[str, Any] | None:
     LLM 失敗 / timeout / 解析爛掉 → 回 None（caller 寫 log、不擋主流程）。
     """
     settings = get_settings()
+    rules = _numbered_rules([*_TRANSLATION_RULES, "輸出嚴格 JSON，不要解釋、不要 code fence。"])
     prompt = (
         "你是英文單字翻譯助手。對給定的英文單字輸出 JSON 物件：\n"
         '{"translation": "<繁體中文（台灣用語）>", '
@@ -96,13 +111,7 @@ async def translate_word(word: str) -> dict[str, Any] | None:
         '"example_en": "<一個用到這個單字的英文例句>", '
         '"example_zh": "<上述例句的繁體中文翻譯>", '
         '"mnemonic": "<諧音/關鍵字記憶提示>"}\n'
-        "規則：\n"
-        "1. translation 必須繁體中文台灣用詞（網路/網路、磁碟/磁碟、滑鼠/滑鼠）。\n"
-        "2. example_en 要自然、簡短（≤ 15 字），能展示該字典型用法。\n"
-        "3. example_zh 為 example_en 的逐字台繁翻譯。\n"
-        "4. mnemonic 是給台灣學習者的諧音/關鍵字文字聯想（≤30字，繁體中文），"
-        "格式類似「發音像『OO』，聯想到＿＿」；只用文字聯想，不要描述圖像/畫面。\n"
-        "5. 輸出嚴格 JSON，不要解釋、不要 code fence。\n"
+        f"規則：\n{rules}\n"
         f"單字：{word}"
     )
     _, _, model = _resolve_llm_creds(settings)
@@ -167,6 +176,13 @@ async def translate_batch(words: list[str]) -> dict[str, dict[str, Any] | None]:
         return {}
     settings = get_settings()
     word_list = "\n".join(words)
+    rules = _numbered_rules(
+        [
+            "word 欄位必須 echo 對應的英文單字（小寫、不可變）。",
+            *_TRANSLATION_RULES,
+            "嚴格只輸出 JSON 陣列，不要解釋、不要 code fence。",
+        ]
+    )
     prompt = (
         f"你是英文單字翻譯助手。對以下 {len(words)} 個英文單字，每個字各輸出一個 JSON 物件，"
         f"集合成 JSON 陣列回傳。每個物件必須包含 word 欄位（原樣 echo 輸入的英文單字）+：\n"
@@ -177,14 +193,7 @@ async def translate_batch(words: list[str]) -> dict[str, dict[str, Any] | None]:
         '"example_en": "<一個用到這個單字的英文例句>", '
         '"example_zh": "<上述例句的繁體中文翻譯>", '
         '"mnemonic": "<諧音/關鍵字記憶提示>"}\n'
-        "規則：\n"
-        "1. word 欄位必須 echo 對應的英文單字（小寫、不可變）。\n"
-        "2. translation 必須繁體中文台灣用詞（網路/網路、磁碟/磁碟、滑鼠/滑鼠）。\n"
-        "3. example_en 要自然、簡短（≤ 15 字），能展示該字典型用法。\n"
-        "4. example_zh 為 example_en 的逐字台繁翻譯。\n"
-        "5. mnemonic 是給台灣學習者的諧音/關鍵字文字聯想（≤30字，繁體中文），"
-        "格式類似「發音像『OO』，聯想到＿＿」；只用文字聯想，不要描述圖像/畫面。\n"
-        "6. 嚴格只輸出 JSON 陣列，不要解釋、不要 code fence。\n"
+        f"規則：\n{rules}\n"
         f"單字列表（每行一個，順序固定）：\n{word_list}"
     )
     _, _, model = _resolve_llm_creds(settings)

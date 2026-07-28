@@ -78,8 +78,11 @@ class Settings(BaseSettings):
     # - Cloud Supabase：JWKS 從 Supabase project URL 直接拿。
     # - Zeabur Self-host：透過 Kong 的 /auth/v1/.well-known/jwks.json 對外，
     #   完整 URL 為 https://<API_EXTERNAL_URL>/auth/v1/.well-known/jwks.json。
+    # 預設空字串（比照 admin_token）：不可硬寫成任何一個特定 Supabase 專案的網址——
+    # 那樣 assert_secure() 的「非空即通過」判斷形同虛設，部署忘記設定也會被誤判成安全。
+    # 空字串 = 未設定，prod 會被 assert_secure() 擋下；dev / 測試請於 .env 顯式設定。
     supabase_jwks_url: str = Field(
-        default="https://agrprhsbfnxzwyugctrp.supabase.co/auth/v1/.well-known/jwks.json",
+        default="",
         description="JWKS endpoint 網址；驗 ES256 token 用",
     )
     supabase_jwt_audience: str = "authenticated"
@@ -203,16 +206,6 @@ class Settings(BaseSettings):
     wikipedia_user_agent: str = "DawnCast/1.0 (https://dawncast.app; contact: ops@dawncast.app)"
     source_fetch_timeout: float = 30.0
     source_max_snippets: int = 5
-    openalex_base_url: str = "https://api.openalex.org"
-    openalex_email: str = ""
-    crossref_base_url: str = "https://api.crossref.org"
-    world_bank_base_url: str = "https://api.worldbank.org/v2"
-    world_bank_indicator: str = "NY.GDP.MKTP.CD"
-    fred_base_url: str = "https://api.stlouisfed.org/fred"
-    fred_api_key: str = ""
-    fact_check_base_url: str = "https://factchecktools.googleapis.com"
-    google_fact_check_api_key: str = ""
-    internet_archive_base_url: str = "https://archive.org"
 
     # ── Web Push（VAPID）─────────────────────────────────────────
     # 兩個 key 皆為 base64url（applicationServerKey 格式）。留空＝通知功能靜默

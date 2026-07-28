@@ -84,6 +84,7 @@ async def test_decompose_research_parse_failure_falls_back_to_original_question(
 
 async def test_gather_evidence_keeps_partial_success_and_closes_every_provider() -> None:
     from engine.pipeline.langgraph_pod.nodes import gather_evidence_node
+    from engine.sources.base import CombinedProvider
     from shared.config import get_settings
     from shared.errors import SourceFetchError
     from shared.models import ResearchQuestion, SourceSnippet
@@ -111,10 +112,13 @@ async def test_gather_evidence_keeps_partial_success_and_closes_every_provider()
 
     created: list[StubProvider] = []
 
-    def factory(topic_type: str, settings: object) -> list[StubProvider]:
-        providers = [StubProvider("wiki"), StubProvider("broken", fails=True)]
-        created.extend(providers)
-        return providers
+    # factory 現在只回傳單一 provider；用 CombinedProvider 包住一個會失敗的、
+    # 一個會成功的 stub，驗證「部分來源失敗不擋其他來源」的語意不變。
+    def factory(topic_type: str, settings: object) -> CombinedProvider:
+        wiki_stub = StubProvider("wiki")
+        broken_stub = StubProvider("broken", fails=True)
+        created.extend([wiki_stub, broken_stub])
+        return CombinedProvider([wiki_stub, broken_stub])
 
     state = {
         "big_topic": "科技",
@@ -136,9 +140,11 @@ async def test_gather_evidence_keeps_partial_success_and_closes_every_provider()
     assert len(result["sources"]) == 2
     assert len(result["evidence_cards"]) == 2
     assert result["evidence_cards"][0].source_ids == ["q1:wiki:1"]
-    assert result["evidence_cards"][0].provider == "wiki"
+    # CombinedProvider 對外只有一個 name="combined"，broken_stub 的失敗被
+    # CombinedProvider.fetch 內部吞掉，不再冒泡成 gather_evidence_node 的 errors。
+    assert result["evidence_cards"][0].provider == "combined"
     assert result["grounded"] is True
-    assert len(result["errors"]) == 2
+    assert not result.get("errors")
     assert len(created) == 4
     assert all(provider.closed for provider in created)
 
@@ -603,6 +609,7 @@ async def test_research_llm_and_provider_failures_degrade_to_writer() -> None:
     from engine.pipeline.langgraph_pod import run_pod
     from engine.pipeline.langgraph_pod.chat import FakeChatModel
     from engine.pipeline.langgraph_pod.mock import MockRenderer, get_mocks, make_mock_workdir
+    from engine.sources.base import CombinedProvider
     from shared.errors import SourceFetchError
     from shared.models import SourceSnippet
     from tests.test_langgraph_pod import _judge_json, _outline_json, _segment_json
@@ -635,8 +642,11 @@ async def test_research_llm_and_provider_failures_degrade_to_writer() -> None:
         async def aclose(self) -> None:
             closed.append("good")
 
-    def factory(topic_type: str, settings: object) -> list[BrokenProvider | GoodProvider]:
-        return [BrokenProvider(), GoodProvider()]
+    # BrokenProvider 排前面：驗證 CombinedProvider.aclose() 逐一關閉時，
+    # 前面 provider 的 aclose() raise 不會擋到後面 provider 也被關閉
+    # （見 engine/sources/base.py CombinedProvider.aclose 的 try/except）。
+    def factory(topic_type: str, settings: object) -> CombinedProvider:
+        return CombinedProvider([BrokenProvider(), GoodProvider()])
 
     outline = json.loads(_outline_json())
     outline["extracted_facts"][0]["source_ids"] = ["q1:good:1"]

@@ -5,8 +5,9 @@
 worker 流程：read_batch → translate_batch (MiniMax) → 逐筆 upsert dict_cache on conflict →
 成功才 delete。
 
-批次大小 BATCH_SIZE=40：一次 prompt 丟 40 字翻譯，比單字版 ~40x 加速
-（單字版 MiniMax API round-trip ~25~50s/字；batch 版 latency 接近單字但 output token 對齊 N 筆）。
+批次大小 BATCH_SIZE=10：一次 prompt 丟 10 字翻譯，比單字版加速數倍
+（單字版 MiniMax API round-trip ~25~50s/字；batch 版 10 字冷僻字實測 ~80s，
+output token 對齊 N 筆）。
 
 失敗策略（pgmq 內建 vt + read_ct）：
   - 整批 API 失敗 / JSON 解析失敗 → 所有字不 delete → vt 到期 pgmq 自動重投。

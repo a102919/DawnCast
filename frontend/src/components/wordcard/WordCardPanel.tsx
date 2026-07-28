@@ -36,6 +36,14 @@ function wordOffsetInCue(sentence: string, word: string, cue: Cue): number {
   return (idx / sentence.length) * dur
 }
 
+/** 加入單字本按鈕的視覺狀態：依 isPending/inVocab 查表決定 icon 與文案 */
+interface AddVocabButtonState {
+  readonly key: string
+  readonly when: boolean
+  readonly icon: ReactNode
+  readonly label: string
+}
+
 interface WordCardPanelProps {
   readonly isOpen: boolean
   readonly word: string | null
@@ -54,6 +62,14 @@ export function WordCardPanel({ isOpen, word, entry, lookupError, onRetry, activ
   const { snappy } = useSprings()
   const inVocab = entry ? isInVocab(entry.word) : false
   const [isPending, setIsPending] = useState(false)
+
+  const addVocabButtonStates: AddVocabButtonState[] = [
+    { key: 'pending', when: isPending, icon: <Loader2 size={14} className="animate-spin" />, label: '加入中' },
+    { key: 'added', when: !isPending && inVocab, icon: <Check size={14} />, label: '已收錄' },
+    { key: 'idle', when: !isPending && !inVocab, icon: <BookmarkPlus size={14} />, label: '加入單字本' },
+  ]
+  const addVocabButtonState =
+    addVocabButtonStates.find((state) => state.when) ?? addVocabButtonStates[addVocabButtonStates.length - 1]
 
   const handleAddVocab = async () => {
     if (!word || !entry || !activeCue) return
@@ -133,40 +149,16 @@ export function WordCardPanel({ isOpen, word, entry, lookupError, onRetry, activ
               }`}
             >
               <AnimatePresence mode="wait" initial={false}>
-                {isPending ? (
-                  <motion.span
-                    key="pending"
-                    initial={{ opacity: 0, scale: 0.7 }}
-                    animate={{ opacity: 1, scale: 1 }}
-                    exit={{ opacity: 0, scale: 0.7 }}
-                    transition={snappy}
-                    className="inline-flex items-center gap-1.5"
-                  >
-                    <Loader2 size={14} className="animate-spin" /> 加入中
-                  </motion.span>
-                ) : inVocab ? (
-                  <motion.span
-                    key="added"
-                    initial={{ opacity: 0, scale: 0.7 }}
-                    animate={{ opacity: 1, scale: 1 }}
-                    exit={{ opacity: 0, scale: 0.7 }}
-                    transition={snappy}
-                    className="inline-flex items-center gap-1.5"
-                  >
-                    <Check size={14} /> 已收錄
-                  </motion.span>
-                ) : (
-                  <motion.span
-                    key="idle"
-                    initial={{ opacity: 0, scale: 0.7 }}
-                    animate={{ opacity: 1, scale: 1 }}
-                    exit={{ opacity: 0, scale: 0.7 }}
-                    transition={snappy}
-                    className="inline-flex items-center gap-1.5"
-                  >
-                    <BookmarkPlus size={14} /> 加入單字本
-                  </motion.span>
-                )}
+                <motion.span
+                  key={addVocabButtonState.key}
+                  initial={{ opacity: 0, scale: 0.7 }}
+                  animate={{ opacity: 1, scale: 1 }}
+                  exit={{ opacity: 0, scale: 0.7 }}
+                  transition={snappy}
+                  className="inline-flex items-center gap-1.5"
+                >
+                  {addVocabButtonState.icon} {addVocabButtonState.label}
+                </motion.span>
               </AnimatePresence>
             </motion.button>
             <IconButton label="關閉詞卡" onClick={onClose}>

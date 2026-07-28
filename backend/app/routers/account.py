@@ -24,7 +24,7 @@ from typing import Any
 from fastapi import APIRouter, Depends, Header
 from psycopg.rows import dict_row
 
-from app.deps import _decode_payload, _is_dev_bypass, get_current_user
+from app.deps import decode_jwt_payload, extract_bearer_token, get_current_user, is_dev_bypass
 from app.response import ApiResponse, ok
 from shared.db.pool import connection
 from shared.errors import AuthError
@@ -53,15 +53,13 @@ async def _jwt_email(authorization: str | None = Header(default=None)) -> str:
     dev bypass 模式沒 JWT → 回空字串。
     """
     # dev bypass：沒真 JWT，自然也沒 email
-    if _is_dev_bypass(authorization):
+    if is_dev_bypass(authorization):
         return ""
-    if not authorization or not authorization.lower().startswith("bearer "):
-        return ""
-    token = authorization[7:].strip()
+    token = extract_bearer_token(authorization)
     if not token:
         return ""
     try:
-        payload = _decode_payload(token)
+        payload = decode_jwt_payload(token)
     except AuthError:
         return ""
     email = payload.get("email")

@@ -8,9 +8,10 @@ V2 改為 thin shim：把 body 轉交給 LangGraph pod 跑。
   * per-node `RetryPolicy` 把語意層重試（GenerationError）與傳輸重試（5xx）分開，
     不用再混在 `_write_script` 的 try/except 裡。
 
-對外介面 `run_generate_job(body, settings) -> str` 維持不變，worker.py 與既有
-tests/test_pipeline.py 透過 `**run_pod_kwargs` 注入 mocks（chat / repo / r2 /
-queue / renderer）— production 呼叫端零改動。
+對外介面 `run_generate_job(body, settings) -> str | None` 維持不變，worker.py 與
+既有 tests/test_pipeline.py 透過 `**run_pod_kwargs` 注入 mocks（chat / repo / r2 /
+queue / renderer）— production 呼叫端零改動。None 是 storage 雙重失敗優雅結束
+的訊號（見 run_pod docstring），不是例外。
 """
 
 from __future__ import annotations
@@ -27,11 +28,13 @@ async def run_generate_job(
     body: dict[str, Any],
     settings: Settings | None = None,
     **run_pod_kwargs: Any,
-) -> str:
-    """處理一筆 generate 訊息，回傳建立的 episode_id。
+) -> str | None:
+    """處理一筆 generate 訊息，回傳建立的 episode_id；storage 雙重失敗優雅結束回 None。
 
     body：{big_topic, angle?, cluster_id?, deliver_date, user_ids[]}。
     冪等：失敗在落庫前 raise，worker 不 delete → vt 到期重投；成功後 worker delete。
+    None 是第三種結果（見 run_pod 的 dead_letter 說明）：row 已清乾淨、worker 視為
+    完成不重投，只是這次沒有集數產出，不是 raise 也不是成功建立 episode。
 
     **run_pod_kwargs 給測試 / demo 注入 LangGraph pod 內部元件用：
       chat / chat_failover / repo / r2 / queue / renderer / use_mock。

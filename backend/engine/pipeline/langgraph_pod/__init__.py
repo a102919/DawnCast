@@ -17,10 +17,10 @@ from typing import Any, cast
 from langchain_core.language_models import BaseChatModel
 from langgraph.checkpoint.memory import MemorySaver
 
+from engine.pipeline import reuse_repo as db_repo
 from engine.sources.factory import make_source_provider
 from shared.config import Settings, get_settings
 from shared.db import pool as db_pool
-from shared.db import repo as db_repo
 from shared.errors import RateLimitError
 from shared.idempotency import compute_idempotency_key
 from shared.models import ClaimVerification
@@ -102,8 +102,8 @@ async def run_pod(
     source_provider_factory: SourceProviderFactory | None = None,
     thread_id: str | None = None,
     enqueued_at: datetime | None = None,
-) -> str:
-    """跑一集 LangGraph pod，回傳 episode_id。
+) -> str | None:
+    """跑一集 LangGraph pod，回傳 episode_id；storage 雙重失敗優雅結束時回 None。
 
     用法：
       * production：worker.py 呼叫 `run_pod(body)`，use_mock 自動 False。
@@ -113,6 +113,11 @@ async def run_pod(
 
     enqueued_at：pgmq 訊息入列時間，從 worker 一路傳進來算 queue_wait_ms
     （見 metrics.py）。demo / 直接呼叫時可留 None。
+
+    回傳 None 只發生在 dead_letter_node 那條路徑（storage 上傳雙重失敗、row
+    已被刪除、pipeline_runs 已 finalize 成 dead_letter）：這是刻意的優雅結束，
+    不 raise 是為了不讓 worker vt-retry 把已經跑完的 33s+ TTS render 重做一次；
+    呼叫端不能把 None 當例外處理，只能當「這次沒有集數產出」。
     """
     cfg = settings or get_settings()
     # 任何元件被注入 → 視為測試 / mock 模式，不開 DB pool，也不 reset mock state
@@ -201,7 +206,6 @@ async def run_pod(
         "errors": [],
         "rate_limited": False,
         "storage_failed": False,
-        "local_fallback_written": False,
         "already_rendered": False,
     }
 
@@ -233,11 +237,19 @@ async def run_pod(
 
     episode_id = final.get("episode_id")
     if not episode_id:
+        errors = final.get("errors") or []
+        if final.get("storage_failed"):
+            # dead_letter_node 已經自己刪掉半完成 row、把 pipeline_runs
+            # finalize 成 status="dead_letter"（不是 "failed"）。這裡不能再呼叫
+            # _finalize_run_failed——會用 status="failed" 蓋掉剛寫的正確狀態，
+            # 且不能 raise：raise 會讓 worker 判定失敗去重投，白白把已經跑完的
+            # 33s+ TTS render 整個重做一次，對系統性 R2 故障沒有幫助。
+            logger.warning("pod 因 storage 上傳失敗優雅結束，未產出 episode：errors=%s", errors)
+            return None
         # 走到 END 沒拿到 episode_id 代表 fail（典型：degrade 模式撞限流放棄）。
         # worker 端 vt-retry 機制會接手重投；rate limit 也要明確 raise 讓
         # production 觀測能正確分流。這條路徑通常發生在 upsert_episode 之前，
         # 尚未有其他 node 幫忙 finalize forensic run，這裡補上。
-        errors = final.get("errors") or []
         await _finalize_run_failed("NoEpisodeId", str(errors))
         if final.get("rate_limited"):
             raise RateLimitError(f"pod 限流且未啟用 failover：{errors}")

@@ -23,12 +23,13 @@ from typing import Any
 from zoneinfo import ZoneInfo
 
 from engine.pipeline import dict_translate
+from engine.pipeline import reuse_repo as repo
 from engine.pipeline.daily_batch import enqueue_daily_batch
 from engine.pipeline.evergreen import run_evergreen
 from engine.pipeline.generate_job import run_generate_job
 from engine.pipeline.reuse import resolve_for_user
 from shared.config import get_settings
-from shared.db import queue, repo
+from shared.db import queue
 from shared.db.pool import close_pool, open_pool
 from shared.db.queue import Msg
 from shared.idempotency import compute_idempotency_key

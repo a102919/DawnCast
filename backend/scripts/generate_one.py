@@ -45,7 +45,7 @@ async def _resynth_real_audio(episode_id: str) -> None:
     import shutil
 
     from engine.media import make_job_workdir, render_episode
-    from shared.db import repo as db_repo
+    from engine.pipeline import reuse_repo as db_repo
     from shared.models.engine import ScriptJSON
     from shared.storage import r2
 
@@ -99,13 +99,13 @@ async def main(
     if use_mock:
         import json
 
+        from engine.pipeline import reuse_repo as db_repo
         from engine.pipeline.langgraph_pod.chat import FakeChatModel
         from engine.pipeline.langgraph_pod.mock import (
             MockRenderer,
             get_mocks,
             make_mock_workdir,
         )
-        from shared.db import repo as db_repo
         from shared.models.engine import ScriptJSON
 
         # 寫稿流程是「outline 1 次 + N 段」（見 nodes.py:_invoke_writer），不是單次
@@ -145,6 +145,10 @@ async def main(
             "renderer": MockRenderer(make_mock_workdir()),
         })
     episode_id = await run_generate_job(body, cfg, **run_kwargs)
+    if episode_id is None:
+        await close_pool()
+        print("✗ storage 上傳失敗，優雅結束（row 已清），沒有集數產出")
+        return
     try:
         if use_mock:
             print("→ LLM/DB 用 mock 完成，正在用真 TTS 重新合成音檔...")

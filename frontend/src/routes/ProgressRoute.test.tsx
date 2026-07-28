@@ -1,17 +1,17 @@
 // @vitest-environment happy-dom
 // ProgressRoute 測試（回歸鎖：「已聽集數」要直接顯示 listenedIds.size，不是拿
-// listenEps.filter(假資料).length——後者只要 listened id 剛好不在 listEpisodes()
-// 回傳的集數清單裡就會被漏算，跟首頁等處顯示的 listenedIds.size 對不上）。
+// listenEps.filter(假資料).length——後者只要 listened id 剛好不在 useEpisodes()
+// 給的集數清單裡就會被漏算，跟首頁等處顯示的 listenedIds.size 對不上）。
 
 ;(globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
 
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { ProgressRoute } from './ProgressRoute'
 import type { MockEpisode } from '../lib'
 
-// listEpisodes() 回傳的集數 id 跟下面 listenedIds 刻意完全不重疊：
+// useEpisodes() 給的集數 id 跟下面 listenedIds 刻意完全不重疊：
 // 如果程式碼退回用「episodes.filter(ep => listenedIds.has(ep.id)).length」計算，
 // 這裡永遠算出 0，跟 listenedIds.size（3）對不上，測試就會抓到。
 const LIST_EPISODES: readonly MockEpisode[] = [
@@ -21,15 +21,13 @@ const LIST_EPISODES: readonly MockEpisode[] = [
 
 const NOT_IN_LIST_IDS = ['zz-not-in-list', 'yy-not-in-list', 'xx-not-in-list']
 
-const listEpisodes = vi.fn(async (): Promise<readonly MockEpisode[]> => LIST_EPISODES)
-
-vi.mock('../api', () => ({
-  get api() {
-    return { listEpisodes }
-  },
-}))
-
 vi.mock('../state', () => ({
+  useEpisodes: () => ({
+    episodes: LIST_EPISODES,
+    loading: false,
+    error: null,
+    refresh: vi.fn(),
+  }),
   useVocab: () => ({
     items: [],
     isLoading: false,
@@ -61,11 +59,6 @@ async function renderRoute(): Promise<{ root: Root; container: HTMLDivElement }>
   await act(async () => {
     root.render(<ProgressRoute />)
   })
-  // listEpisodes() 的 await 鏈跑完，讓 setEpisodes 的 re-render 在 act 內結算。
-  await act(async () => {
-    await Promise.resolve()
-    await Promise.resolve()
-  })
 
   return { root, container }
 }
@@ -80,10 +73,6 @@ function readStatValue(container: HTMLDivElement, label: string): string | null 
 
 const pendingRoots: Root[] = []
 
-beforeEach(() => {
-  listEpisodes.mockClear()
-})
-
 afterEach(async () => {
   await act(async () => {
     for (const r of pendingRoots.splice(0)) r.unmount()
@@ -97,7 +86,6 @@ describe('ProgressRoute：已聽集數直接顯示 listenedIds.size', () => {
     const { root, container } = await renderRoute()
     pendingRoots.push(root)
 
-    expect(listEpisodes).toHaveBeenCalledTimes(1)
     expect(readStatValue(container, '已聽集數')).toBe('3')
   })
 })

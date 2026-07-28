@@ -1,30 +1,14 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useMemo } from 'react'
 import { Heart } from 'lucide-react'
 import type { MockEpisode } from '../lib'
-import { api } from '../api'
-import { useFavorites } from '../state'
+import { useFavorites, useEpisodes } from '../state'
 import { EmptyState } from '../components/primitives/EmptyState'
 import { ErrorBanner } from '../components/primitives/ErrorBanner'
 import { EpisodeRow } from '../components/shared/EpisodeRow'
 
 export function FavoritesRoute() {
   const { favorites } = useFavorites()
-  const [episodes, setEpisodes] = useState<readonly MockEpisode[]>([])
-  const [fetchError, setFetchError] = useState<string | null>(null)
-  const [retryKey, setRetryKey] = useState(0)
-
-  useEffect(() => {
-    const load = async () => {
-      setFetchError(null)
-      try {
-        const list = await api.listEpisodes()
-        setEpisodes(list)
-      } catch {
-        setFetchError('節目資料載入失敗，請重試')
-      }
-    }
-    void load()
-  }, [retryKey])
+  const { episodes, error, refresh } = useEpisodes()
 
   const list = useMemo<readonly MockEpisode[]>(() => {
     return episodes.filter(ep => favorites.has(ep.id))
@@ -39,8 +23,8 @@ export function FavoritesRoute() {
         </p>
       </div>
 
-      {fetchError !== null ? (
-        <ErrorBanner message={fetchError} onRetry={() => setRetryKey(k => k + 1)} retryLabel="重新載入" />
+      {error !== null ? (
+        <ErrorBanner message={error} onRetry={() => void refresh()} retryLabel="重新載入" />
       ) : list.length === 0 ? (
         <EmptyState
           icon={Heart}

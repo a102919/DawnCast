@@ -24,6 +24,7 @@ from app.routers import activity as activity_router
 from app.routers import daily_orders as daily_orders_router
 from app.routers import episodes as episodes_router
 from app.routers import vocab as vocab_router
+from app.services import episode_assembly
 from shared.db import repo as db_repo
 from tests._auth import auth_header
 from tests._db_fakes import FakeConnection as _BaseFakeConnection
@@ -221,14 +222,15 @@ def patch_db(monkeypatch: pytest.MonkeyPatch) -> None:
     # repo.py 用 `from shared.db.pool import connection`，import 時把 connection
     # 綁進 db_repo 自己的 namespace；patch shared.db.pool 不夠，必須 patch db_repo。
     monkeypatch.setattr(db_repo, "connection", conn)
-    # presign 不打真 R2
+    # presign 不打真 R2；build_episode 已搬到 services/episode_assembly.py，
+    # r2 module 從那裡 import，patch 對象跟著搬過去。
     monkeypatch.setattr(
-        episodes_router.r2,
+        episode_assembly.r2,
         "presigned_get_url",
         lambda key, ttl=None: f"https://signed.example/{key}",
     )
     monkeypatch.setattr(
-        episodes_router.r2,
+        episode_assembly.r2,
         "presigned_get_urls",
         lambda keys, ttl=None: {k: f"https://signed.example/{k}" for k in keys},
     )

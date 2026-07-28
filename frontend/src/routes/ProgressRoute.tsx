@@ -1,8 +1,5 @@
-import { useEffect, useState } from 'react'
 import { Headphones, BookOpen, Flame, Clock, Search } from 'lucide-react'
-import { useVocab, useActivity } from '../state'
-import { api } from '../api'
-import type { MockEpisode } from '../lib'
+import { useVocab, useActivity, useEpisodes } from '../state'
 import { StatCard } from '../components/primitives/StatCard'
 import { SectionLabel } from '../components/primitives/SectionLabel'
 import { EmptyState } from '../components/primitives/EmptyState'
@@ -27,15 +24,7 @@ function calcStreak(dates: readonly string[]): number {
 export function ProgressRoute() {
   const { items } = useVocab()
   const { streakDates, listenMinutes, lookupCount, listenedEpisodeIds } = useActivity()
-  const [episodes, setEpisodes] = useState<readonly MockEpisode[]>([])
-
-  useEffect(() => {
-    api.listEpisodes()
-      .then(setEpisodes)
-      .catch(() => {
-        // 統計摘要頁：載入失敗靜默處理，不擋整頁
-      })
-  }, [])
+  const { episodes } = useEpisodes()
 
   const listenedEps = episodes.filter(ep => listenedEpisodeIds.has(ep.id))
   const yearMonth = new Date().toLocaleDateString('en-CA').slice(0, 7)

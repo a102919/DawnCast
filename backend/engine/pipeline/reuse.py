@@ -24,7 +24,8 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from shared.db import queue, repo
+from engine.pipeline import reuse_repo as repo
+from shared.db import queue
 from shared.models import ANGLES
 from shared.push import notify_user
 

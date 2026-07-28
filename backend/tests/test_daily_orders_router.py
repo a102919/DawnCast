@@ -193,25 +193,25 @@ class FakeCursor(_BaseFakeCursor):
                 self._rowcount = 0
             return
 
-        # INSERT (save upsert)
+        # INSERT (save upsert)：status 已從 params 移除，SQL 端固定字面量 'pending'
+        # （on conflict 不覆寫 status），mock 對齊同一語意：新列 pending、既有列沿用舊 status。
         if "insert into public.daily_orders" in s:
             (
                 user_id,
                 order_date,
                 topics_json,
                 specific_request,
-                status,
                 delivery_time,
                 played_at,
                 entry_mode,
                 length_tier,
-            ) = params[:9]
+            ) = params[:8]
             prior = ORDERS.get((user_id, order_date), {})
             topics = json.loads(topics_json) if isinstance(topics_json, str) else topics_json
             ORDERS[(user_id, order_date)] = {
                 "selected_topics": topics,
                 "specific_request": specific_request,
-                "status": status,
+                "status": prior.get("status", "pending"),
                 "delivery_time": delivery_time,
                 "created_at": prior.get("created_at", "2026-07-17T00:00:00Z"),
                 "updated_at": "2026-07-17T00:00:00Z",
@@ -244,8 +244,8 @@ class FakeConnection(_BaseFakeConnection):
 async def fake_find_delivered_episode(user_id: str, deliver_date: str) -> dict[str, Any] | None:
     """簡化：USER_A 在 2026-07-15 有交付，其他都 null。
 
-    回傳原始 row（不是 Episode）：router 層改用 build_episode() 組裝，
-    跟 repo.find_delivered_episode() 的真實回傳型別一致。
+    回傳原始 row（不是 Episode）：router 層改呼叫 services/episode_assembly.py
+    的 build_episode() 組裝，跟 repo.find_delivered_episode() 的真實回傳型別一致。
     """
     if user_id == USER_A and deliver_date == "2026-07-15":
         return {
@@ -361,6 +361,47 @@ def test_save_daily_order_upserts_and_returns(client: TestClient) -> None:
     assert data["selectedTopics"] == ["skill"]
     assert data["specificRequest"] == "learn CORS"
     assert (USER_A, "2026-07-20") in ORDERS
+
+
+def test_save_daily_order_new_row_ignores_client_status(client: TestClient) -> None:
+    """新訂單即使 body.status 帶 'played'，落庫仍固定 'pending'。
+
+    狀態機推進只能由 jobs router / collect_open cron 控制，client 不能在建立
+    當下就偽造成已完成狀態繞過流程。
+    """
+    res = client.put(
+        "/daily-orders",
+        json={
+            "date": "2026-07-21",
+            "selectedTopics": ["skill"],
+            "status": "played",
+            "deliveryTime": "07:00",
+            "entryMode": "topic",
+            "lengthTier": "medium",
+        },
+        headers=auth_header(USER_A),
+    )
+    assert res.status_code == 200
+    assert res.json()["data"]["status"] == "pending"
+    assert ORDERS[(USER_A, "2026-07-21")]["status"] == "pending"
+
+
+def test_save_daily_order_existing_row_status_untouched(client: TestClient) -> None:
+    """既有訂單（status=queued）再次 save，即使 body.status 帶 'pending' 也不被改動。"""
+    res = client.put(
+        "/daily-orders",
+        json={
+            "date": "2026-07-15",
+            "selectedTopics": ["tech-updated"],
+            "status": "pending",
+            "deliveryTime": "07:00",
+            "entryMode": "topic",
+            "lengthTier": "medium",
+        },
+        headers=auth_header(USER_A),
+    )
+    assert res.status_code == 200
+    assert res.json()["data"]["status"] == "played"  # 原本就是 played，不因 body.status 改動
 
 
 def test_list_daily_orders_filters_by_range(client: TestClient) -> None:

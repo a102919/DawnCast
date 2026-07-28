@@ -14,6 +14,7 @@ from psycopg.rows import dict_row
 from app.deps import get_current_user
 from app.response import ApiResponse, ok
 from app.schemas import AddVocabBody, UpdateVocabBody
+from shared.db import repo
 from shared.db.pool import connection
 from shared.errors import NotFoundError
 from shared.models import VocabItem
@@ -79,16 +80,13 @@ async def add_vocab(
 ) -> ApiResponse[VocabItem]:
     """新增；去重鍵 unique(user_id,lemma,source_episode_id,source_line_no)。
 
-    衝突時回既有列（對齊 mockApi 行為）。slug→uuid 轉換在此。
+    衝突時回既有列（對齊 mockApi 行為）。slug→uuid 轉換呼叫 repo.resolve_episode_id。
     """
+    # slug → episode uuid（找不到則存 null，仍可入本：source_episode_id 只是
+    # 附加來源標記，不是這筆單字的主鍵，缺集數關聯不影響學習紀錄本身，跟
+    # favorites 那種「收藏本來就是在收藏某一集」的語意不同，不能共用容錯策略）。
+    ep_uuid = await repo.resolve_episode_id(body.source_episode_id)
     async with connection() as conn, conn.cursor(row_factory=dict_row) as cur:
-        # slug → episode uuid（找不到則存 null，仍可入本）
-        await cur.execute(
-            "select id from public.episodes where slug = %s", (body.source_episode_id,)
-        )
-        ep = await cur.fetchone()
-        ep_uuid = ep["id"] if ep else None
-
         await cur.execute(
             """
             insert into public.user_vocab

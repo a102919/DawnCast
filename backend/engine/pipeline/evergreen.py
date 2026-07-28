@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import logging
 
-from shared.db import repo
+from engine.pipeline import reuse_repo as repo
 
 logger = logging.getLogger(__name__)
 

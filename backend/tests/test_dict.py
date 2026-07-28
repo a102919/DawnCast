@@ -8,7 +8,6 @@
 
 from __future__ import annotations
 
-import asyncio
 from typing import Any
 from unittest.mock import patch
 
@@ -107,7 +106,3 @@ async def test_backfill_dict_only_sends_missing() -> None:
 
     assert n == 1, f"expected exactly 1 enqueued, got {n}"
     assert sent_words == ["beta"], f"expected only 'beta' enqueued, got {sent_words}"
-
-
-def test_backfill_dict_runs() -> None:
-    asyncio.run(test_backfill_dict_only_sends_missing())

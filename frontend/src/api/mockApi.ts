@@ -3,6 +3,7 @@ import type { AccountInfo, Activity, ActivityPatch, AdminEpsGenerateInput, Admin
 import type { Episode } from '../types/episode'
 import { CueSchema, SegmentSchema, SourceReferenceSchema } from './httpApi'
 import type { MockEpisode } from '../lib/episode'
+import { storageGet, storageSet } from '../lib/storage'
 
 // mock 模式的集數列表 seed（runtime 僅此處使用；畫面真資料一律走 httpApi）。
 // 擴充至 10 集以讓首頁 Hero / Weekly carousel 視覺成立；多元主題/CEFR 偶爾 isFeatured。
@@ -164,67 +165,37 @@ const DEFAULT_SETTINGS: Settings = {
 } as const
 
 function readVocab(): VocabItem[] {
-  const raw = localStorage.getItem(VOCAB_KEY)
-  if (!raw) return []
-  try {
-    const parsed: unknown = JSON.parse(raw)
-    if (!Array.isArray(parsed)) return []
-    return parsed as VocabItem[]
-  } catch {
-    return []
-  }
+  const parsed = storageGet<unknown>(VOCAB_KEY)
+  return Array.isArray(parsed) ? (parsed as VocabItem[]) : []
 }
 
 function writeVocab(items: VocabItem[]): void {
-  localStorage.setItem(VOCAB_KEY, JSON.stringify(items))
+  storageSet(VOCAB_KEY, items)
 }
 
 function readSettings(): Settings {
-  const raw = localStorage.getItem(SETTINGS_KEY)
-  if (!raw) return { ...DEFAULT_SETTINGS }
-  try {
-    const parsed: unknown = JSON.parse(raw)
-    if (typeof parsed !== 'object' || parsed === null) return { ...DEFAULT_SETTINGS }
-    return { ...DEFAULT_SETTINGS, ...(parsed as Partial<Settings>) }
-  } catch {
-    return { ...DEFAULT_SETTINGS }
-  }
+  return { ...DEFAULT_SETTINGS, ...(storageGet<Partial<Settings>>(SETTINGS_KEY) ?? {}) }
 }
 
 function writeSettings(s: Settings): void {
-  localStorage.setItem(SETTINGS_KEY, JSON.stringify(s))
+  storageSet(SETTINGS_KEY, s)
 }
 
 function readFavorites(): string[] {
-  const raw = localStorage.getItem(FAVORITES_KEY)
-  if (!raw) return []
-  try {
-    const parsed: unknown = JSON.parse(raw)
-    if (!Array.isArray(parsed)) return []
-    return parsed.filter((x): x is string => typeof x === 'string')
-  } catch {
-    return []
-  }
+  const parsed = storageGet<unknown[]>(FAVORITES_KEY)
+  return Array.isArray(parsed) ? parsed.filter((x): x is string => typeof x === 'string') : []
 }
 
 function writeFavorites(ids: readonly string[]): void {
-  localStorage.setItem(FAVORITES_KEY, JSON.stringify([...ids]))
+  storageSet(FAVORITES_KEY, [...ids])
 }
 
 function readDailyOrder(date: string): DailyOrder | null {
-  const raw = localStorage.getItem(DAILY_ORDER_KEY_PREFIX + date)
-  if (!raw) return null
-  try {
-    const parsed: unknown = JSON.parse(raw)
-    if (typeof parsed !== 'object' || parsed === null) return null
-    return parsed as DailyOrder
-  } catch {
-    return null
-  }
+  return storageGet<DailyOrder>(DAILY_ORDER_KEY_PREFIX + date)
 }
 
 function writeDailyOrder(order: DailyOrder): void {
-  localStorage.setItem(DAILY_ORDER_KEY_PREFIX + order.date, JSON.stringify(order))
+  storageSet(DAILY_ORDER_KEY_PREFIX + order.date, order)
 }
 
 function removeDailyOrder(date: string): void {
@@ -256,19 +227,11 @@ function writeLastOrderDate(date: string): void {
 }
 
 function readActivity(): Activity {
-  const raw = localStorage.getItem(ACTIVITY_KEY)
-  if (!raw) return { ...DEFAULT_ACTIVITY }
-  try {
-    const parsed: unknown = JSON.parse(raw)
-    if (typeof parsed !== 'object' || parsed === null) return { ...DEFAULT_ACTIVITY }
-    return { ...DEFAULT_ACTIVITY, ...(parsed as Partial<Activity>) }
-  } catch {
-    return { ...DEFAULT_ACTIVITY }
-  }
+  return { ...DEFAULT_ACTIVITY, ...(storageGet<Partial<Activity>>(ACTIVITY_KEY) ?? {}) }
 }
 
 function writeActivity(a: Activity): void {
-  localStorage.setItem(ACTIVITY_KEY, JSON.stringify(a))
+  storageSet(ACTIVITY_KEY, a)
 }
 
 // 簡化版合併（不要求跟後端逐 bit 一致，純粹讓 mock 模式功能可用）：

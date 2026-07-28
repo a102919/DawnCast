@@ -22,12 +22,6 @@ export function addDays(iso: string, n: number): string {
   return toIsoDate(d)
 }
 
-/** 兩 YYYY-MM-DD 的天數差（b - a）。回正/負整數。 */
-export function diffDays(a: string, b: string): number {
-  const ms = parseIsoDate(b).getTime() - parseIsoDate(a).getTime()
-  return Math.round(ms / 86_400_000)
-}
-
 export function isPast(iso: string, now: Date = new Date()): boolean {
   return iso < toIsoDate(now)
 }

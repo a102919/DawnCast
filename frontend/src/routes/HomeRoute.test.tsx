@@ -37,10 +37,24 @@ vi.mock('../api', () => ({
   },
 }))
 
+// episodes 清單改由 useEpisodes（EpisodesProvider）提供；用可變 state 物件讓個別
+// 測試能 override 清單內容（取代舊版 listEpisodes.mockResolvedValueOnce 的做法）。
+const episodesState: { episodes: readonly MockEpisode[]; error: string | null } = {
+  episodes: EPISODES,
+  error: null,
+}
+const refreshEpisodes = vi.fn(async (): Promise<void> => undefined)
+
 vi.mock('../state', () => ({
   useActivity: () => ({ listenedEpisodeIds: new Set<string>() }),
   useVocab: () => ({ items: [] }),
   useFavorites: () => ({ favorites: new Set<string>(), toggle: toggleFavorite }),
+  useEpisodes: () => ({
+    episodes: episodesState.episodes,
+    loading: false,
+    error: episodesState.error,
+    refresh: refreshEpisodes,
+  }),
   // Episode readiness polling：測試不模擬訂單（getOrder 回 null → 不觸發輪詢），
   // 避免 setTimeout 殘留導致 act() warning。
   useDailyOrder: () => ({
@@ -103,6 +117,9 @@ beforeEach(() => {
   getDeliveredEpisode.mockClear()
   getDeliveredEpisode.mockResolvedValue(null)
   toggleFavorite.mockClear()
+  refreshEpisodes.mockClear()
+  episodesState.episodes = EPISODES
+  episodesState.error = null
   localStorage.clear()
 })
 
@@ -176,7 +193,7 @@ describe('HomeRoute 今日推薦', () => {
   })
 
   it('episodes 為空時整個 weekly 區塊不渲染', async () => {
-    listEpisodes.mockResolvedValueOnce([])
+    episodesState.episodes = []
     const { root, container } = await renderRoute()
     pendingRoots.push(root)
 

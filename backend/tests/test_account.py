@@ -18,6 +18,7 @@ SQL 觸發時同步 mutate 9 張表的小型 fixture，DELETE 後斷言 9 表該
 
 from __future__ import annotations
 
+import copy
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from typing import Any
@@ -34,9 +35,11 @@ from tests._db_fakes import fake_connection
 USER_A = "11111111-1111-1111-1111-111111111111"
 USER_B = "22222222-2222-2222-2222-222222222222"
 
-# 9 張表的 fixture：每表以 user_id 為 key 存列，模擬 DB 內容。
+# 9 張表的種子資料：每表以 user_id 為 key 存列，模擬 DB 內容。
 # DELETE /me 後，A 的列必須全消失；B 不受影響。
-USERS_BY_ID: dict[str, dict[str, Any]] = {
+# 公開的 *_BY_USER 字典（下方）與 _reset_state() 都從這份種子 deepcopy 出來，
+# 確保「模組載入時的初始狀態」與「每測試前重置後的狀態」永遠一致。
+_SEED_USERS_BY_ID: dict[str, dict[str, Any]] = {
     USER_A: {
         "id": USER_A,
         "tz": "Asia/Taipei",
@@ -51,7 +54,7 @@ USERS_BY_ID: dict[str, dict[str, Any]] = {
     },
 }
 
-DELIVERIES_BY_USER: dict[str, list[dict[str, Any]]] = {
+_SEED_DELIVERIES_BY_USER: dict[str, list[dict[str, Any]]] = {
     USER_A: [
         {"id": "d1", "user_id": USER_A, "episode_id": "ep1", "deliver_date": "2026-07-15"}
     ],
@@ -60,7 +63,7 @@ DELIVERIES_BY_USER: dict[str, list[dict[str, Any]]] = {
     ],
 }
 
-DAILY_ORDERS_BY_USER: dict[str, list[dict[str, Any]]] = {
+_SEED_DAILY_ORDERS_BY_USER: dict[str, list[dict[str, Any]]] = {
     USER_A: [
         {
             "user_id": USER_A,
@@ -79,7 +82,7 @@ DAILY_ORDERS_BY_USER: dict[str, list[dict[str, Any]]] = {
     USER_B: [],
 }
 
-USER_VOCAB_BY_USER: dict[str, list[dict[str, Any]]] = {
+_SEED_USER_VOCAB_BY_USER: dict[str, list[dict[str, Any]]] = {
     USER_A: [
         {"id": "v1", "user_id": USER_A, "word": "serendipity"},
         {"id": "v2", "user_id": USER_A, "word": "ephemeral"},
@@ -87,27 +90,27 @@ USER_VOCAB_BY_USER: dict[str, list[dict[str, Any]]] = {
     USER_B: [{"id": "v3", "user_id": USER_B, "word": "obfuscate"}],
 }
 
-USER_FAVORITES_BY_USER: dict[str, list[dict[str, Any]]] = {
+_SEED_USER_FAVORITES_BY_USER: dict[str, list[dict[str, Any]]] = {
     USER_A: [{"user_id": USER_A, "episode_id": "ep1"}],
     USER_B: [],
 }
 
-USER_SETTINGS_BY_USER: dict[str, dict[str, Any]] = {
+_SEED_USER_SETTINGS_BY_USER: dict[str, dict[str, Any]] = {
     USER_A: {"user_id": USER_A, "popup_enabled": True},
     USER_B: {"user_id": USER_B, "popup_enabled": False},
 }
 
-TOPIC_REQUESTS_BY_USER: dict[str, list[dict[str, Any]]] = {
+_SEED_TOPIC_REQUESTS_BY_USER: dict[str, list[dict[str, Any]]] = {
     USER_A: [{"id": "tr1", "user_id": USER_A, "request_date": "2026-07-15"}],
     USER_B: [],
 }
 
-USER_HEARD_TOPICS_BY_USER: dict[str, list[dict[str, Any]]] = {
+_SEED_USER_HEARD_TOPICS_BY_USER: dict[str, list[dict[str, Any]]] = {
     USER_A: [{"user_id": USER_A, "episode_id": "ep1", "heard_date": "2026-07-15"}],
     USER_B: [],
 }
 
-USER_ACTIVITY_BY_USER: dict[str, dict[str, Any]] = {
+_SEED_USER_ACTIVITY_BY_USER: dict[str, dict[str, Any]] = {
     USER_A: {
         "user_id": USER_A,
         "streak_dates": ["2026-07-15"],
@@ -120,71 +123,43 @@ USER_ACTIVITY_BY_USER: dict[str, dict[str, Any]] = {
     },
 }
 
+USERS_BY_ID: dict[str, dict[str, Any]] = copy.deepcopy(_SEED_USERS_BY_ID)
+DELIVERIES_BY_USER: dict[str, list[dict[str, Any]]] = copy.deepcopy(_SEED_DELIVERIES_BY_USER)
+DAILY_ORDERS_BY_USER: dict[str, list[dict[str, Any]]] = copy.deepcopy(_SEED_DAILY_ORDERS_BY_USER)
+USER_VOCAB_BY_USER: dict[str, list[dict[str, Any]]] = copy.deepcopy(_SEED_USER_VOCAB_BY_USER)
+USER_FAVORITES_BY_USER: dict[str, list[dict[str, Any]]] = copy.deepcopy(
+    _SEED_USER_FAVORITES_BY_USER
+)
+USER_SETTINGS_BY_USER: dict[str, dict[str, Any]] = copy.deepcopy(_SEED_USER_SETTINGS_BY_USER)
+TOPIC_REQUESTS_BY_USER: dict[str, list[dict[str, Any]]] = copy.deepcopy(
+    _SEED_TOPIC_REQUESTS_BY_USER
+)
+USER_HEARD_TOPICS_BY_USER: dict[str, list[dict[str, Any]]] = copy.deepcopy(
+    _SEED_USER_HEARD_TOPICS_BY_USER
+)
+USER_ACTIVITY_BY_USER: dict[str, dict[str, Any]] = copy.deepcopy(_SEED_USER_ACTIVITY_BY_USER)
+
 
 def _reset_state() -> None:
-    """重置 fixture；每個測試前重灌。"""
+    """重置 fixture；每個測試前重灌，內容與模組載入時的種子完全一致。"""
     USERS_BY_ID.clear()
-    USERS_BY_ID[USER_A] = {
-        "id": USER_A,
-        "tz": "Asia/Taipei",
-        "delivery_time": "08:30",
-        "created_at": "2026-07-01T00:00:00Z",
-    }
-    USERS_BY_ID[USER_B] = {
-        "id": USER_B,
-        "tz": "Asia/Taipei",
-        "delivery_time": "07:00",
-        "created_at": "2026-07-02T00:00:00Z",
-    }
-    DELIVERIES_BY_USER[USER_A] = [
-        {"id": "d1", "user_id": USER_A, "episode_id": "ep1", "deliver_date": "2026-07-15"}
-    ]
-    DELIVERIES_BY_USER[USER_B] = [
-        {"id": "d2", "user_id": USER_B, "episode_id": "ep2", "deliver_date": "2026-07-15"}
-    ]
-    DAILY_ORDERS_BY_USER[USER_A] = [
-        {
-            "user_id": USER_A,
-            "order_date": "2026-07-15",
-            "selected_topics": ["tech"],
-            "specific_request": None,
-            "status": "played",
-            "delivery_time": "08:30",
-            "created_at": "2026-07-15T00:00:00Z",
-            "updated_at": "2026-07-15T08:30:00Z",
-            "played_at": "2026-07-15T08:30:00Z",
-            "entry_mode": "topic",
-            "length_tier": "medium",
-        }
-    ]
-    DAILY_ORDERS_BY_USER[USER_B] = []
-    USER_VOCAB_BY_USER[USER_A] = [
-        {"id": "v1", "user_id": USER_A, "word": "serendipity"},
-        {"id": "v2", "user_id": USER_A, "word": "ephemeral"},
-    ]
-    USER_VOCAB_BY_USER[USER_B] = [{"id": "v3", "user_id": USER_B, "word": "obfuscate"}]
-    USER_FAVORITES_BY_USER[USER_A] = [{"user_id": USER_A, "episode_id": "ep1"}]
-    USER_FAVORITES_BY_USER[USER_B] = []
-    USER_SETTINGS_BY_USER[USER_A] = {"user_id": USER_A, "popup_enabled": True}
-    USER_SETTINGS_BY_USER[USER_B] = {"user_id": USER_B, "popup_enabled": False}
-    TOPIC_REQUESTS_BY_USER[USER_A] = [
-        {"id": "tr1", "user_id": USER_A, "request_date": "2026-07-15"}
-    ]
-    TOPIC_REQUESTS_BY_USER[USER_B] = []
-    USER_HEARD_TOPICS_BY_USER[USER_A] = [
-        {"user_id": USER_A, "episode_id": "ep1", "heard_date": "2026-07-15"}
-    ]
-    USER_HEARD_TOPICS_BY_USER[USER_B] = []
-    USER_ACTIVITY_BY_USER[USER_A] = {
-        "user_id": USER_A,
-        "streak_dates": ["2026-07-15"],
-        "listen_minutes": {"2026-07": 5},
-    }
-    USER_ACTIVITY_BY_USER[USER_B] = {
-        "user_id": USER_B,
-        "streak_dates": [],
-        "listen_minutes": {},
-    }
+    USERS_BY_ID.update(copy.deepcopy(_SEED_USERS_BY_ID))
+    DELIVERIES_BY_USER.clear()
+    DELIVERIES_BY_USER.update(copy.deepcopy(_SEED_DELIVERIES_BY_USER))
+    DAILY_ORDERS_BY_USER.clear()
+    DAILY_ORDERS_BY_USER.update(copy.deepcopy(_SEED_DAILY_ORDERS_BY_USER))
+    USER_VOCAB_BY_USER.clear()
+    USER_VOCAB_BY_USER.update(copy.deepcopy(_SEED_USER_VOCAB_BY_USER))
+    USER_FAVORITES_BY_USER.clear()
+    USER_FAVORITES_BY_USER.update(copy.deepcopy(_SEED_USER_FAVORITES_BY_USER))
+    USER_SETTINGS_BY_USER.clear()
+    USER_SETTINGS_BY_USER.update(copy.deepcopy(_SEED_USER_SETTINGS_BY_USER))
+    TOPIC_REQUESTS_BY_USER.clear()
+    TOPIC_REQUESTS_BY_USER.update(copy.deepcopy(_SEED_TOPIC_REQUESTS_BY_USER))
+    USER_HEARD_TOPICS_BY_USER.clear()
+    USER_HEARD_TOPICS_BY_USER.update(copy.deepcopy(_SEED_USER_HEARD_TOPICS_BY_USER))
+    USER_ACTIVITY_BY_USER.clear()
+    USER_ACTIVITY_BY_USER.update(copy.deepcopy(_SEED_USER_ACTIVITY_BY_USER))
 
 
 # 9 張 child tables 的清單（直接對應上一輪漏 user_activity 的 feedback）。

@@ -5,13 +5,12 @@ DB user_favorites 存 episode uuid；對外一律用 slug。slug↔uuid 轉換�
 
 from __future__ import annotations
 
-from typing import Any
-
 from fastapi import APIRouter, Depends
 from psycopg.rows import dict_row
 
 from app.deps import get_current_user
 from app.response import ApiResponse, ok
+from shared.db import repo
 from shared.db.pool import connection
 from shared.errors import NotFoundError
 
@@ -35,18 +34,12 @@ async def list_favorites(user_id: str = Depends(get_current_user)) -> ApiRespons
     return ok([r["slug"] for r in rows])
 
 
-async def _slug_to_uuid(cur: Any, slug: str) -> str:
-    await cur.execute("select id from public.episodes where slug = %s", (slug,))
-    row = await cur.fetchone()
-    if row is None:
-        raise NotFoundError("找不到集數")
-    return str(row["id"])
-
-
 @router.post("/{slug}", response_model=ApiResponse[None])
 async def add_favorite(slug: str, user_id: str = Depends(get_current_user)) -> ApiResponse[None]:
+    ep_uuid = await repo.resolve_episode_id(slug)
+    if ep_uuid is None:
+        raise NotFoundError("找不到集數")
     async with connection() as conn, conn.cursor(row_factory=dict_row) as cur:
-        ep_uuid = await _slug_to_uuid(cur, slug)
         await cur.execute(
             """
             insert into public.user_favorites (user_id, episode_id)

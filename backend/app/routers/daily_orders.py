@@ -14,8 +14,8 @@ from psycopg.rows import dict_row
 
 from app.deps import get_current_user
 from app.response import ApiResponse, ok
-from app.routers.episodes import build_episode
 from app.schemas import MarkPlayedBody, SaveDailyOrderBody
+from app.services.episode_assembly import build_episode
 from shared.db import repo
 from shared.db.pool import connection
 from shared.models import DailyOrder, Episode
@@ -77,12 +77,14 @@ async def save_daily_order(
               (user_id, order_date, selected_topics, specific_request,
                status, delivery_time, played_at,
                entry_mode, length_tier, updated_at)
-            values (%s, %s, %s::jsonb, %s, %s, %s, %s, %s, %s, now())
+            values (%s, %s, %s::jsonb, %s, 'pending', %s, %s, %s, %s, now())
             on conflict (user_id, order_date) do update set
               selected_topics  = excluded.selected_topics,
               specific_request = excluded.specific_request,
               -- status 故意不重置：狀態機推進只能由 jobs router / collect_open cron 控制，
               -- 前端編輯不能把 queued 洗回 pending（會造成重複 enqueue 與 LLM 成本 DoS）。
+              -- 同理，新列的 status 也不吃 body.status：client 傳什麼都一律從 'pending'
+              -- 起跑，避免直接偽造 queued/played 繞過狀態機。
               delivery_time    = excluded.delivery_time,
               played_at        = excluded.played_at,
               entry_mode       = excluded.entry_mode,
@@ -94,7 +96,6 @@ async def save_daily_order(
                 body.date,
                 json.dumps(body.selected_topics),
                 body.specific_request,
-                body.status,
                 body.delivery_time,
                 body.played_at,
                 body.entry_mode,
@@ -157,4 +158,4 @@ async def get_daily_order_episode(
     連結時不知道播哪集的問題）。
     """
     row = await repo.find_delivered_episode(user_id, date)
-    return ok(build_episode(row["slug"], row) if row else None)
+    return ok(await build_episode(row["slug"], row) if row else None)

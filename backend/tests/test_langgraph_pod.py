@@ -14,7 +14,6 @@
 from __future__ import annotations
 
 import json
-from pathlib import Path
 from typing import Any
 
 import pytest
@@ -28,7 +27,6 @@ from engine.pipeline.langgraph_pod.mock import (
     MockRepo,
     get_mocks,
     make_mock_workdir,
-    safe_local_fallback,
 )
 from engine.pipeline.langgraph_pod.nodes import storage_decision
 from shared.config import get_settings
@@ -508,13 +506,18 @@ async def test_r2_failure_falls_back_to_local_keys_null(pod_mocks: PodMocks) -> 
 
     保留這個測試名稱對照舊意圖，但斷言改為「row 被刪、無交付」，避免和
     test_r2_failure_with_no_local_fallback_deletes_row 完全重複因此註解說明。
+
+    dead_letter_node 明確把 episode_id 清成 None（row 已刪，不能讓 state 留著
+    剛被刪掉的 uuid）。run_pod() 看到 storage_failed 為真時視為刻意的優雅結束，
+    回傳 None 而不 raise——raise 會讓 worker vt 重投，把已經跑完的 render 整個
+    重做一次，對系統性 R2 故障沒有幫助。
     """
     chat = _make_passing_chat()
     repo, _, queue, renderer = pod_mocks
     r2 = MockR2()
     r2.fail_put = True
 
-    eid = await run_pod(
+    episode_id = await run_pod(
         _body(),
         chat=chat,
         repo=repo,
@@ -522,8 +525,7 @@ async def test_r2_failure_falls_back_to_local_keys_null(pod_mocks: PodMocks) -> 
         queue=queue,
         renderer=renderer,
     )
-    # 仍回傳 episode_id（graceful END 不是例外）
-    assert eid
+    assert episode_id is None
     # row 被補償清掉、沒交付（新方案：segments 沒 fallback 路徑 → dead_letter）
     assert len(repo.episodes) == 0
     assert len(repo.by_idem) == 0
@@ -534,16 +536,13 @@ async def test_r2_failure_falls_back_to_local_keys_null(pod_mocks: PodMocks) -> 
 
 
 async def test_r2_failure_with_no_local_fallback_deletes_row(pod_mocks: PodMocks) -> None:
-    """媒體雙重失敗不能留殭屍 row：先 DELETE 再 graceful END。
+    """媒體雙重失敗不能留殭屍 row：dead_letter_node 先 DELETE，graph 本身 graceful END。
 
     觸發條件：local_media_dir 沒設 → safe_local_fallback 不寫檔 →
-    update_episode_keys_node 偵測 storage_failed + 無本機 mp3 → DELETE +
-    return errors（不再 raise）。graph conditional edge 已分流，這裡是
-    防呆路徑；測試確保 DELETE + graceful END 兩件事都發生。
-
-    改 raise → graceful END 理由：raise 會觸發 worker pgmq 視為失敗 → vt 重投
-    → render_episode 整個重做（TTS 33s+）。改 graceful END 後 worker 視為
-    完成（read_ct 不累積），episode 被 compensation DELETE 不留殭屍。
+    storage_decision 分流到 dead_letter_node → DELETE row + errors 標記。
+    dead_letter_node 明確把 episode_id 清成 None（row 已刪，state 不能留著
+    剛被刪掉的 uuid）。run_pod() 對 storage_failed 的優雅結束回傳 None、不
+    raise，worker 視為完成（read_ct 不累積），不會重投整個 render。
     """
     chat = _make_passing_chat()
     repo, r2, queue, renderer = pod_mocks
@@ -552,7 +551,7 @@ async def test_r2_failure_with_no_local_fallback_deletes_row(pod_mocks: PodMocks
     # local_media_dir=None → 沒有任何本機 fallback 機會
     settings = get_settings().model_copy(update={"local_media_dir": None})
 
-    eid = await run_pod(
+    episode_id = await run_pod(
         _body(),
         chat=chat,
         repo=repo,
@@ -561,38 +560,22 @@ async def test_r2_failure_with_no_local_fallback_deletes_row(pod_mocks: PodMocks
         renderer=renderer,
         settings=settings,
     )
+    assert episode_id is None
 
-    # run_pod 仍回傳 episode_id（graceful END 不是例外）
-    assert eid
     # row 被補償清掉、沒交付
     assert len(repo.episodes) == 0
     assert len(repo.by_idem) == 0
     assert repo.deliveries == []
 
 
-def test_local_fallback_reports_write_result(tmp_path: Path) -> None:
-    source = tmp_path / "episode.mp3"
-    media_dir = tmp_path / "media"
-    source.write_bytes(b"new-audio")
-    media_dir.mkdir()
-
-    assert safe_local_fallback(source, "ep-1", str(media_dir)) is True
-    assert (media_dir / "ep-1.mp3").read_bytes() == b"new-audio"
-    assert safe_local_fallback(source, "ep-1", str(tmp_path / "missing")) is False
-
-
 def test_storage_decision_does_not_accept_stale_fallback_file() -> None:
     config = {"configurable": {"settings": get_settings()}}
     failed_state = {
         "storage_failed": True,
-        "local_fallback_written": False,
         "slug": "ep-1",
     }
 
     assert storage_decision(failed_state, config) == "dead_letter"
-    assert (
-        storage_decision({**failed_state, "local_fallback_written": True}, config) == "update_keys"
-    )
 
 
 # ── 6. rate-limit + 無 failover → degrade（raise RateLimitError）

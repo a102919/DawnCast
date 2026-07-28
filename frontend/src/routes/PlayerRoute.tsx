@@ -9,125 +9,38 @@ import { LyricsView } from '../components/lyrics/LyricsView'
 import { PlayerBottomBar } from '../components/player/PlayerBottomBar'
 import { WordCardPanel } from '../components/wordcard/WordCardPanel'
 import { VocabDrawer } from '../components/vocab/VocabDrawer'
-import type { Episode, Cue } from '../types/episode'
-import type { DictEntry } from '../api/types'
-import { api } from '../api'
+import type { Cue } from '../types/episode'
 import { usePlayer, useDailyOrder, useSettings, useActivity, useVocab } from '../state'
 import { findActiveCueIndex, buildConversationPrompt, filterDueDeck } from '../lib'
+import { useEpisode } from './useEpisode'
+import { useEpisodeProgress } from './useEpisodeProgress'
+import { useCueLoop } from './useCueLoop'
+import { useWordLookup } from './useWordLookup'
 
 export function PlayerRoute() {
   const { id } = useParams<{ id: string }>()
   const navigate = useNavigate()
-  const [episode, setEpisode] = useState<Episode | null>(null)
-  const [fetchError, setFetchError] = useState<string | null>(null)
-  const [selectedWord, setSelectedWord] = useState<string | null>(null)
-  const [selectedCue, setSelectedCue] = useState<Cue | null>(null)
-  const [dictEntry, setDictEntry] = useState<DictEntry | null>(null)
-  const [isWordCardOpen, setIsWordCardOpen] = useState(false)
-  const [loopCueIdx, setLoopCueIdx] = useState<number | null>(null)
   const [isVocabDrawerOpen, setIsVocabDrawerOpen] = useState(false)
-  const [lookupError, setLookupError] = useState<string | null>(null)
+  const hasNotifiedDueRef = useRef(false)
+  const dueNotifiedEpisodeIdRef = useRef<string | null>(null)
+
   const { currentTime, isPlaying, duration, seekTo, play, pause, loadProgress, setPlaybackRate, loadState, currentEpisode, setCurrentEpisode, getSegmentPlayer } = usePlayer()
   const { settings } = useSettings()
   const { markPlayed } = useDailyOrder()
   const { addListenMinutes, addLookupCount, markListened } = useActivity()
   const { items: vocabItems } = useVocab()
-  const episodeIdRef = useRef<string | null>(null)
-  const hasMarkedListened = useRef(false)
-  const hasMarkedDailyPlayed = useRef(false)
-  const initialSeekAppliedRef = useRef(false)
-  const hasNotifiedDueRef = useRef(false)
-  const resumePlaybackAfterWordCardRef = useRef(false)
 
-  const loadEpisode = useCallback(async () => {
-    setFetchError(null)
-    setLoopCueIdx(null)
-    try {
-      // ?date= 連結：DailyRoute 帶日期過來，先查當天交付；找不到（尚未生成／不歸屬）
-      // fallback 到 listEpisodes()[0]，避免擋使用者。
-      const dateParam = new URLSearchParams(window.location.search).get('date')
-      if (dateParam) {
-        const delivered = await api.getDeliveredEpisode(dateParam)
-        if (delivered) {
-          setEpisode(delivered)
-          return
-        }
-      }
-      if (id) {
-        const data = await api.getEpisode(id)
-        setEpisode(data)
-        return
-      }
-      const list = await api.listEpisodes()
-      if (list.length === 0) {
-        setFetchError('目前沒有可播放的集數')
-        return
-      }
-      const data = await api.getEpisode(list[0].id)
-      setEpisode(data)
-    } catch {
-      setFetchError('節目資料載入失敗，請重新整理頁面')
-    }
-  }, [id])
-
-  useEffect(() => {
-    // 非同步資料載入的標準模式：setState 都在 await 之後才發生，
-    // 不會造成 render 迴圈；規則誤報，抑制之。
-    // eslint-disable-next-line react-hooks/set-state-in-effect
-    void loadEpisode()
-  }, [loadEpisode])
-
-  useEffect(() => {
-    if (episode && episode.id !== episodeIdRef.current) {
-      episodeIdRef.current = episode.id
-      initialSeekAppliedRef.current = false
-      hasMarkedListened.current = false
-      hasNotifiedDueRef.current = false
-    }
-  }, [episode])
+  const { episode, fetchError, reload } = useEpisode(id)
 
   useEffect(() => {
     // 推到全域 PlayerProvider：離開播放頁後 GlobalAudioHost/MiniPlayer 才知道現在播誰。
     if (episode) setCurrentEpisode(episode)
   }, [episode, setCurrentEpisode])
 
-  useEffect(() => {
-    if (!episode || initialSeekAppliedRef.current) return
-    const episodeId = episode.id
-    // 全域 PlayerProvider 已在播這集（例：從 MiniPlayer 點回播放頁）→ currentTime
-    // 才是事實。localStorage 進度是節流快照，會落後幾百毫秒到 1 秒，
-    // 拿它去 seek 就是使用者看到的「點進來倒退一下」。只有冷啟動才需要續播定位。
-    if (currentEpisode?.id === episodeId && currentTime > 0) {
-      initialSeekAppliedRef.current = true
-      loadProgress(episodeId) // 副作用：綁定 provider 的 currentEpisodeIdRef，續存進度
-      return
-    }
-    const progress = loadProgress(episodeId)
-    if (!progress.exists) return
-
-    // 等 hook loadState === 'ready'（segments decode 完成）才能 seek，否則會定位到 0。
-    if (loadState !== 'ready') return
-    initialSeekAppliedRef.current = true
-    seekTo(progress.currentTime)
-  }, [episode, currentEpisode, currentTime, loadProgress, loadState, seekTo])
-
-  useEffect(() => {
-    if (!episode || duration <= 0 || hasMarkedListened.current) return
-    if (currentTime / duration > 0.8) {
-      hasMarkedListened.current = true
-      markListened(episode.id)
-      const ymMin = new Date().toLocaleDateString('en-CA').slice(0, 7)
-      addListenMinutes(ymMin, Math.floor(currentTime / 60))
-    }
-  }, [currentTime, duration, episode, markListened, addListenMinutes])
-
-  useEffect(() => {
-    if (!episode || duration <= 0 || hasMarkedDailyPlayed.current) return
-    if (currentTime / duration >= 0.9) {
-      hasMarkedDailyPlayed.current = true
-      void markPlayed(new Date().toLocaleDateString('en-CA'))
-    }
-  }, [currentTime, duration, episode, markPlayed])
+  useEpisodeProgress({
+    episode, currentTime, duration, loadState, currentEpisode,
+    seekTo, loadProgress, markListened, addListenMinutes, markPlayed,
+  })
 
   useEffect(() => {
     setPlaybackRate(settings.playbackRate)
@@ -138,94 +51,42 @@ export function PlayerRoute() {
     [episode, currentTime],
   )
 
-  useEffect(() => {
-    if (!episode || loopCueIdx === null) return
-    const cue = episode.cues[loopCueIdx]
-    if (!cue || (currentTime >= cue.start && currentTime < cue.end)) return
-    seekTo(cue.start)
-    play()
-  }, [currentTime, episode, loopCueIdx, play, seekTo])
-
-  const lookupWord = async (word: string) => {
-    setDictEntry(null)
-    setLookupError(null)
-    try {
-      const entry = await api.lookupDict(word)
-      setDictEntry(entry)
-      const ymLookup = new Date().toLocaleDateString('en-CA').slice(0, 7)
-      addLookupCount(ymLookup, 1)
-    } catch {
-      setLookupError('查詢失敗，請重試')
-    }
-  }
-
   // iOS Safari gesture unlock：必須在 click handler 同步路徑內 ctx.resume() 才有效。
-  // 包成 helper 讓所有「play」入口（cue click / next / replay）都走同一條路徑。
+  // 包成 helper 讓所有「play」入口（cue click / next / replay / cue loop toggle）都走同一條路徑。
   const playWithUnlock = useCallback(() => {
     void getSegmentPlayer().unlock()
     void play()
   }, [play, getSegmentPlayer])
 
+  const cueLoop = useCueLoop({ episode, currentTime, activeCueIdx, seekTo, play, playWithUnlock })
+  const { retarget: retargetCueLoop } = cueLoop
+  const wordLookup = useWordLookup({ isPlaying, pause, playWithUnlock, addLookupCount })
+
   const handleWordClick = async (word: string, cue: Cue) => {
     if (!settings.popupEnabled) return
-    resumePlaybackAfterWordCardRef.current = isPlaying
-    if (isPlaying) pause()
-    setSelectedWord(word)
-    setSelectedCue(cue)
-    setIsWordCardOpen(true)
-    await lookupWord(word)
+    await wordLookup.open(word, cue)
   }
 
-  const closeWordCard = useCallback(() => {
-    const shouldResume = resumePlaybackAfterWordCardRef.current
-    resumePlaybackAfterWordCardRef.current = false
-    setIsWordCardOpen(false)
-    if (shouldResume) playWithUnlock()
-  }, [playWithUnlock])
-
   const handleReplayCue = () => {
-    if (!episode || !selectedCue) return
-    const cueIdx = episode.cues.indexOf(selectedCue)
-    if (loopCueIdx !== null && cueIdx >= 0) setLoopCueIdx(cueIdx)
-    seekTo(selectedCue.start)
-    resumePlaybackAfterWordCardRef.current = true
-    closeWordCard()
+    if (!episode || !wordLookup.selectedCue) return
+    cueLoop.retarget(wordLookup.selectedCue)
+    seekTo(wordLookup.selectedCue.start)
+    wordLookup.markResumeOnClose()
+    wordLookup.close()
   }
 
   const handleCueClick = useCallback((cue: Cue) => {
-    if (loopCueIdx !== null && episode) {
-      const cueIdx = episode.cues.indexOf(cue)
-      if (cueIdx >= 0) setLoopCueIdx(cueIdx)
-    }
+    retargetCueLoop(cue)
     seekTo(cue.start)
     playWithUnlock()
-  }, [episode, loopCueIdx, seekTo, playWithUnlock])
+  }, [retargetCueLoop, seekTo, playWithUnlock])
 
-  const handleCueLoopToggle = useCallback(() => {
-    if (loopCueIdx !== null) {
-      setLoopCueIdx(null)
-      return
+  useEffect(() => {
+    if (episode && episode.id !== dueNotifiedEpisodeIdRef.current) {
+      dueNotifiedEpisodeIdRef.current = episode.id
+      hasNotifiedDueRef.current = false
     }
-    if (!episode || activeCueIdx < 0) return
-    const cue = episode.cues[activeCueIdx]
-    if (!cue) return
-    setLoopCueIdx(activeCueIdx)
-    seekTo(cue.start)
-    playWithUnlock()
-  }, [activeCueIdx, episode, loopCueIdx, playWithUnlock, seekTo])
-
-  const handleNextCue = useCallback(() => {
-    if (!episode) return
-    const nextCueIdx = activeCueIdx + 1
-    const nextCue = episode.cues[nextCueIdx]
-    if (!nextCue) return
-    if (loopCueIdx !== null) setLoopCueIdx(nextCueIdx)
-    seekTo(nextCue.start)
-  }, [activeCueIdx, episode, loopCueIdx, seekTo])
-
-  const handleLookupRetry = () => {
-    if (selectedWord) void lookupWord(selectedWord)
-  }
+  }, [episode])
 
   useEffect(() => {
     // 播完（<audio> 是全域節點，改用 currentTime/duration 逼近判斷取代 onEnded 事件）
@@ -258,7 +119,7 @@ export function PlayerRoute() {
 
   if (fetchError !== null) {
     return (
-      <ErrorBanner message={fetchError} onRetry={() => void loadEpisode()} retryLabel="重新載入" className="h-64" />
+      <ErrorBanner message={fetchError} onRetry={() => void reload()} retryLabel="重新載入" className="h-64" />
     )
   }
 
@@ -271,9 +132,7 @@ export function PlayerRoute() {
     )
   }
 
-  const selectedCueIdx = selectedCue ? episode.cues.indexOf(selectedCue) : -1
-  const isCueLooping = loopCueIdx !== null
-  const canLoopCue = isCueLooping || activeCueIdx >= 0
+  const selectedCueIdx = wordLookup.selectedCue ? episode.cues.indexOf(wordLookup.selectedCue) : -1
   const cueDuration = episode.cues[episode.cues.length - 1]?.end ?? 0
   const playerDuration = duration > 0 ? duration : cueDuration
 
@@ -302,9 +161,9 @@ export function PlayerRoute() {
       <footer className="hidden lg:block fixed bottom-0 left-0 right-0 z-30 px-8 pb-6 pt-4 bg-bg-primary border-t border-border">
         <PlayerControls
           duration={playerDuration}
-          isCueLooping={isCueLooping}
-          canLoopCue={canLoopCue}
-          onCueLoopToggle={handleCueLoopToggle}
+          isCueLooping={cueLoop.isCueLooping}
+          canLoopCue={cueLoop.canLoopCue}
+          onCueLoopToggle={cueLoop.toggle}
         />
         <div className="flex items-center justify-center gap-4 mt-3">
           <button
@@ -335,25 +194,25 @@ export function PlayerRoute() {
         duration={playerDuration}
         cues={episode.cues}
         activeCueIdx={activeCueIdx}
-        isCueLooping={isCueLooping}
-        canLoopCue={canLoopCue}
-        onCueLoopToggle={handleCueLoopToggle}
-        onNextCue={handleNextCue}
+        isCueLooping={cueLoop.isCueLooping}
+        canLoopCue={cueLoop.canLoopCue}
+        onCueLoopToggle={cueLoop.toggle}
+        onNextCue={cueLoop.next}
         onCopyPrompt={() => void handleCopyPrompt()}
         onVocabOpen={() => setIsVocabDrawerOpen(true)}
       />
 
       {/* 詞卡面板 */}
       <WordCardPanel
-        isOpen={isWordCardOpen}
-        word={selectedWord}
-        entry={dictEntry}
-        lookupError={lookupError}
-        onRetry={handleLookupRetry}
-        activeCue={selectedCue}
+        isOpen={wordLookup.isWordCardOpen}
+        word={wordLookup.selectedWord}
+        entry={wordLookup.dictEntry}
+        lookupError={wordLookup.lookupError}
+        onRetry={wordLookup.retry}
+        activeCue={wordLookup.selectedCue}
         episodeId={episode.id}
         activeCueIdx={selectedCueIdx}
-        onClose={closeWordCard}
+        onClose={wordLookup.close}
         onReplayCue={handleReplayCue}
       />
 

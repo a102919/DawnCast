@@ -42,9 +42,9 @@ export type VocabItem = {
 }
 
 export type Settings = {
-  popupEnabled: boolean
-  playbackRate: number
-  theme: 'light' | 'dark' | 'auto'
+  readonly popupEnabled: boolean
+  readonly playbackRate: number
+  readonly theme: 'light' | 'dark' | 'auto'
   readonly preferredTopics: readonly string[]
   /** 出餐時間 'HH:MM'，限定 6 個 chips 之一；下單時預設帶入 */
   readonly defaultDeliveryTime: string

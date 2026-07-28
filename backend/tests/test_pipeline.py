@@ -461,14 +461,13 @@ def _patch_generate_job(
     script: ScriptJSON,
     repo_spy: _GenRepoSpy,
     write_raises: Exception | None = None,
-) -> tuple[dict[str, Any], list[tuple[str, bytes, str]], dict[str, int]]:
+) -> tuple[dict[str, Any], list[tuple[str, bytes, str]]]:
     """把 LangGraph pod 的外部相依全 mock。
 
     回傳：
-      mocks       — 直接傳給 run_generate_job 的 **kwargs（chat / chat_failover /
-                    repo / r2 / renderer）
-      uploads     — R2 put_object 呼叫記錄
-      call_counts — 各 chat 的呼叫次數（驗證 failover 是否真的切到 chat_failover）
+      mocks   — 直接傳給 run_generate_job 的 **kwargs（chat / chat_failover /
+                repo / r2 / renderer）
+      uploads — R2 put_object 呼叫記錄
     """
     uploads: list[tuple[str, bytes, str]] = []
 
@@ -523,17 +522,9 @@ def _patch_generate_job(
             responses=writer_pool,
             judge_responses=[passing_judge],
         )
-        chat_failover = (
-            FakeChatModel(
-                responses=writer_pool,
-                judge_responses=[passing_judge],
-            )
-            if False
-            else None
-        )
+        chat_failover = None
 
     renderer = MockRenderer(make_mock_workdir())
-    call_counts = {"primary": 0, "failover": 0}
     chat._call_count = 0  # type: ignore[attr-defined]
     if chat_failover is not None:
         chat_failover._call_count = 0  # type: ignore[attr-defined]
@@ -545,13 +536,13 @@ def _patch_generate_job(
         "r2": _FakeR2(),
         "renderer": renderer,
     }
-    return mocks, uploads, call_counts
+    return mocks, uploads
 
 
 async def test_generate_job_happy_path(monkeypatch: pytest.MonkeyPatch) -> None:
     script = _sample_script()
     repo_spy = _GenRepoSpy()
-    mocks, uploads, _ = _patch_generate_job(monkeypatch, script=script, repo_spy=repo_spy)
+    mocks, uploads = _patch_generate_job(monkeypatch, script=script, repo_spy=repo_spy)
 
     body = {
         "big_topic": "科技",
@@ -593,7 +584,7 @@ async def test_generate_job_skips_render_when_already_rendered(
     """冪等：upsert 命中既有已渲染集 → 跳過渲染/上傳/回填，只補交付。"""
     script = _sample_script()
     repo_spy = _GenRepoSpy()
-    mocks, uploads, _ = _patch_generate_job(monkeypatch, script=script, repo_spy=repo_spy)
+    mocks, uploads = _patch_generate_job(monkeypatch, script=script, repo_spy=repo_spy)
 
     # 覆寫 upsert：回 already_rendered=True（模擬重投撞到已完成的集）
     async def upsert_existing(**kw: Any) -> tuple[str, bool]:
@@ -627,7 +618,7 @@ async def test_generate_job_passes_idempotency_key(monkeypatch: pytest.MonkeyPat
     """
     script = _sample_script()
     repo_spy = _GenRepoSpy()
-    mocks, _, _ = _patch_generate_job(monkeypatch, script=script, repo_spy=repo_spy)
+    mocks, _ = _patch_generate_job(monkeypatch, script=script, repo_spy=repo_spy)
 
     body = {
         "big_topic": "科技",
@@ -656,13 +647,13 @@ async def test_generate_job_idempotency_key_includes_topic_type(
     # news → resolve_format → monologue：fixture 必須 speaker 全 Nova，
     # topic → dialogue：fixture 維持 Alex/Sarah。兩次 run_generate_job 各自
     # 拿不同 script（mock 內 segment_json 用對應的 script 餵）。
-    news_mocks, _, _ = _patch_generate_job(
+    news_mocks, _ = _patch_generate_job(
         monkeypatch, script=_sample_script(format="monologue"), repo_spy=repo_spy
     )
     news = await generate_job.run_generate_job(
         {**base, "topic_type": "news"}, **news_mocks
     )
-    topic_mocks, _, _ = _patch_generate_job(
+    topic_mocks, _ = _patch_generate_job(
         monkeypatch, script=_sample_script(format="dialogue"), repo_spy=repo_spy
     )
     topic = await generate_job.run_generate_job(
@@ -683,7 +674,7 @@ async def test_generate_job_degrade_gives_up(monkeypatch: pytest.MonkeyPatch) ->
     """failover_mode=degrade：限流直接放棄（raise RateLimitError），不落庫、不交付。"""
     script = _sample_script()
     repo_spy = _GenRepoSpy()
-    mocks, _, _ = _patch_generate_job(
+    mocks, _ = _patch_generate_job(
         monkeypatch, script=script, repo_spy=repo_spy, write_raises=RateLimitError("429")
     )
     settings = generate_job.get_settings().model_copy(
@@ -701,7 +692,7 @@ async def test_generate_job_failover_switches_engine(monkeypatch: pytest.MonkeyP
     """failover_mode=failover：主引擎限流 → 切 api_key 重跑成功。"""
     script = _sample_script()
     repo_spy = _GenRepoSpy()
-    mocks, _, _ = _patch_generate_job(
+    mocks, _ = _patch_generate_job(
         monkeypatch, script=script, repo_spy=repo_spy, write_raises=RateLimitError("429")
     )
     settings = generate_job.get_settings().model_copy(

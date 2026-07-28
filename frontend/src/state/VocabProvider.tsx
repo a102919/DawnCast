@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState, type ReactNode } from 'react'
 import { api, type VocabItem } from '../api'
+import { toIsoDate } from '../lib/dailyOrderDate'
 import { MASTERED_STATUS } from '../lib/srs'
 import { VocabContext, type VocabContextValue } from './vocabContextValue'
 
@@ -23,7 +24,7 @@ function nextStatus(quality: number, interval: number, prevStatus: number): numb
 function todayPlusDays(days: number): string {
   const d = new Date()
   d.setDate(d.getDate() + days)
-  return d.toLocaleDateString('en-CA')
+  return toIsoDate(d)
 }
 
 export function VocabProvider({ children }: { readonly children: ReactNode }) {

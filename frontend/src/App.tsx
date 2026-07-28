@@ -1,10 +1,10 @@
 import { BrowserRouter, Routes, Route, Navigate, useLocation } from 'react-router-dom'
 import { AnimatePresence, motion } from 'framer-motion'
 import { Toaster } from 'sonner'
-import { useEffect } from 'react'
-import { AuthProvider, ActivityProvider, PlayerProvider, VocabProvider, SettingsProvider, FavoritesProvider, DailyOrderProvider, useAuth, usePlayer } from './state'
+import { useEffect, type ReactNode } from 'react'
+import { AuthProvider, ActivityProvider, EpisodesProvider, PlayerProvider, VocabProvider, SettingsProvider, FavoritesProvider, DailyOrderProvider, useAuth, usePlayer, useActivity } from './state'
 import { TopBar, BottomNav } from './components/layout'
-import { GlobalAudioHost, MiniPlayer } from './components/player'
+import { MiniPlayer } from './components/player'
 import { HomeRoute, PlayerRoute, VocabRoute, FavoritesRoute, SettingsRoute, ProgressRoute, FlashcardRoute, DailyRoute, LoginRoute, AdminRoute } from './routes'
 import { useSprings } from './lib/motion'
 import { UpdatePrompt } from './components/UpdatePrompt'
@@ -77,10 +77,26 @@ function AuthenticatedContent() {
       }>
         <AnimatedRoutes />
       </main>
-      <GlobalAudioHost />
       <MiniPlayer />
       <BottomNav />
     </div>
+  )
+}
+
+// PlayerProvider 不直接依賴 useActivity（見 PlayerProvider.tsx 註解），改由這裡讀出
+// lastPlayed* 當 props 注入。這個 wrapper 必須是 ActivityProvider 的子元件才讀得到
+// context——AuthenticatedShell 本身是 ActivityProvider 的建立者，不是消費者，
+// 不能在它裡面直接呼叫 useActivity()。
+function PlayerProviderWithActivity({ children }: { readonly children: ReactNode }) {
+  const { lastPlayedEpisodeId, lastPlayedPosition, setLastPlayed } = useActivity()
+  return (
+    <PlayerProvider
+      lastPlayedEpisodeId={lastPlayedEpisodeId}
+      lastPlayedPosition={lastPlayedPosition}
+      setLastPlayed={setLastPlayed}
+    >
+      {children}
+    </PlayerProvider>
   )
 }
 
@@ -89,15 +105,17 @@ function AuthenticatedShell() {
   return (
     <SettingsProvider>
       <ActivityProvider>
-        <PlayerProvider>
-          <VocabProvider>
-            <FavoritesProvider>
-              <DailyOrderProvider>
-                <AuthenticatedContent />
-              </DailyOrderProvider>
-            </FavoritesProvider>
-          </VocabProvider>
-        </PlayerProvider>
+        <EpisodesProvider>
+          <PlayerProviderWithActivity>
+            <VocabProvider>
+              <FavoritesProvider>
+                <DailyOrderProvider>
+                  <AuthenticatedContent />
+                </DailyOrderProvider>
+              </FavoritesProvider>
+            </VocabProvider>
+          </PlayerProviderWithActivity>
+        </EpisodesProvider>
       </ActivityProvider>
     </SettingsProvider>
   )

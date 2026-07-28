@@ -1,5 +1,7 @@
 import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
 import { api } from '../api'
+import type { ActivityPatch } from '../api/types'
+import { toIsoDate } from '../lib/dailyOrderDate'
 import { storageGet, storageSet } from '../lib/storage'
 import { ActivityContext, type ActivityContextValue } from './activityContextValue'
 
@@ -23,6 +25,13 @@ type ActivityState = {
   readonly listenedEpisodeIds: readonly string[]
   readonly lastPlayedEpisodeId: string | null
   readonly lastPlayedPosition: number | null
+}
+
+// fire-and-forget 同步後端，失敗只記警告不擋 UI；統一收斂在這裡，未來要加重試或上報只需改一處。
+function syncActivity(patch: ActivityPatch): void {
+  void api.patchActivity(patch).catch(err => {
+    console.warn('[activity] patchActivity failed', err)
+  })
 }
 
 function loadCache(): ActivityState {
@@ -64,7 +73,7 @@ export function ActivityProvider({ children }: { readonly children: ReactNode })
   }, [])
 
   const markListened = useCallback((episodeId: string) => {
-    const today = new Date().toLocaleDateString('en-CA')
+    const today = toIsoDate(new Date())
     setState(prev => {
       if (prev.listenedEpisodeIds.includes(episodeId)) return prev
       const streakDates = prev.streakDates.includes(today)
@@ -75,9 +84,7 @@ export function ActivityProvider({ children }: { readonly children: ReactNode })
       storageSet(LISTENED_KEY, listenedEpisodeIds)
       return { ...prev, streakDates, listenedEpisodeIds }
     })
-    void api.patchActivity({ addStreakDate: today, addListenedEpisodeId: episodeId }).catch(err => {
-      console.warn('[activity] patchActivity failed', err)
-    })
+    syncActivity({ addStreakDate: today, addListenedEpisodeId: episodeId })
   }, [])
 
   const addListenMinutes = useCallback((month: string, minutes: number) => {
@@ -90,9 +97,7 @@ export function ActivityProvider({ children }: { readonly children: ReactNode })
       storageSet(LISTEN_MINUTES_KEY, listenMinutes)
       return { ...prev, listenMinutes }
     })
-    void api.patchActivity({ addListenMinutes: { month, minutes } }).catch(err => {
-      console.warn('[activity] patchActivity failed', err)
-    })
+    syncActivity({ addListenMinutes: { month, minutes } })
   }, [])
 
   const addLookupCount = useCallback((month: string, count: number) => {
@@ -105,9 +110,7 @@ export function ActivityProvider({ children }: { readonly children: ReactNode })
       storageSet(LOOKUP_COUNT_KEY, lookupCount)
       return { ...prev, lookupCount }
     })
-    void api.patchActivity({ addLookupCount: { month, count } }).catch(err => {
-      console.warn('[activity] patchActivity failed', err)
-    })
+    syncActivity({ addLookupCount: { month, count } })
   }, [])
 
   const setLastPlayed = useCallback(
@@ -116,9 +119,7 @@ export function ActivityProvider({ children }: { readonly children: ReactNode })
       const now = Date.now()
       if (!opts?.force && now - lastSyncRef.current < LAST_PLAYED_SYNC_THROTTLE_MS) return
       lastSyncRef.current = now
-      void api.patchActivity({ lastPlayed: { episodeId, position, at: new Date().toISOString() } }).catch(err => {
-        console.warn('[activity] patchActivity failed', err)
-      })
+      syncActivity({ lastPlayed: { episodeId, position, at: new Date().toISOString() } })
     },
     [],
   )

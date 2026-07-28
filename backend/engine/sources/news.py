@@ -17,26 +17,26 @@ from shared.config import Settings, get_settings
 from shared.errors import SourceFetchError
 from shared.models import SourceSnippet
 
+from .base import _HttpSourceProvider
 from .search import TavilyProvider
 
 
-class GdeltProvider:
+class GdeltProvider(_HttpSourceProvider):
     """今日新聞入口用：GDELT 事件搜尋 + 選配的 Tavily 全文補全。"""
 
     name = "gdelt"
 
     def __init__(self, settings: Settings | None = None) -> None:
         cfg = settings or get_settings()
-        self._max_snippets = cfg.source_max_snippets
-        self._client = httpx.AsyncClient(
-            base_url=cfg.gdelt_base_url,
-            timeout=httpx.Timeout(cfg.source_fetch_timeout),
+        super().__init__(
+            base_url=cfg.gdelt_base_url, settings=cfg, read_timeout=cfg.source_fetch_timeout
         )
+        self._max_snippets = cfg.source_max_snippets
         # 只有設了 Tavily key 才啟用全文補全；沒設就用純標題當 snippet。
         self._extractor = TavilyProvider(cfg) if cfg.tavily_api_key else None
 
     async def aclose(self) -> None:
-        await self._client.aclose()
+        await super().aclose()
         if self._extractor is not None:
             await self._extractor.aclose()
 

@@ -58,6 +58,7 @@ from shared.models import (
     VerifiedClaim,
 )
 from shared.push import notify_user
+from shared.script_contract import first_duplicate_adjacent_index, missing_vocab_words
 
 from .metrics import MetricsCollector
 from .state import PodState
@@ -185,43 +186,6 @@ def _segment_word_targets(cefr: str, length_tier: str) -> list[tuple[int, bool]]
     remainder = _word_target(cefr, length_tier) - sum(t for t, _ in targets)
     targets[-1] = (targets[-1][0] + remainder, True)
     return targets
-
-
-def _build_lemma_pool(text: str) -> set[str]:
-    """共用 helper：把一段 text 斷詞、lemmatize、回傳所有候選 lemma 的集合。
-
-    ScriptJSON._target_vocab_appears_in_script 與段落層級的 vocab 檢查都用這套
-    規則，避免兩處邏輯漂移。
-    """
-    from shared.lemmatize import lemmatize  # noqa: PLC0415
-
-    pool: set[str] = set()
-    for token in re.findall(r"[A-Za-z']+", text.casefold()):
-        pool.update(lemmatize(token))
-    return pool
-
-
-def _vocab_words_present(text: str, vocab_words: list[str]) -> list[str]:
-    """回傳「在 text 裡沒出現（含詞形變化都沒有）」的 vocab_words。空 list = 全部命中。"""
-    pool = _build_lemma_pool(text)
-    missing: list[str] = []
-    for w in vocab_words:
-        w_lower = w.casefold()
-        if " " in w_lower or "-" in w_lower:
-            parts = [p for p in re.split(r"[\s-]+", w_lower) if p]
-            if not all(p in pool for p in parts):
-                missing.append(w)
-        elif w_lower not in pool:
-            missing.append(w)
-    return missing
-
-
-def _first_duplicate_adjacent_zh(lines: list[ScriptLine]) -> int | None:
-    """回傳第一個跟前一行的 zh 完全相同的 index；None = 沒有重複。"""
-    for i in range(1, len(lines)):
-        if lines[i].zh == lines[i - 1].zh:
-            return i
-    return None
 
 
 # ── 對應 config["configurable"] 的 runtime context ─────────
@@ -814,15 +778,6 @@ async def decompose_research_node(state: PodState, config: RunnableConfig) -> di
     }
 
 
-def _provider_list(value: Any) -> list[Any]:
-    """相容既有單一 SourceProvider factory，也容許每題回最多兩個 provider。"""
-    if value is None:
-        return []
-    if isinstance(value, (list, tuple)):
-        return [provider for provider in value if provider is not None][:2]
-    return [value]
-
-
 def _evidence_source_type(snippet: SourceSnippet, provider_name: str) -> str:
     prefix, separator, _ = snippet.id.partition(":")
     return prefix if separator and prefix else provider_name
@@ -851,7 +806,7 @@ async def gather_evidence_node(state: PodState, config: RunnableConfig) -> dict[
         if not question.requires_sources:
             continue
         try:
-            providers = _provider_list(factory(topic_type, settings))
+            provider = factory(topic_type, settings)
         except Exception as exc:
             logger.warning(
                 "gather_evidence provider factory 失敗 question=%s: %s",
@@ -860,46 +815,47 @@ async def gather_evidence_node(state: PodState, config: RunnableConfig) -> dict[
             )
             errors.append(f"gather_evidence factory 失敗：{type(exc).__name__}")
             continue
+        if provider is None:
+            continue
 
-        for provider_index, provider in enumerate(providers):
-            provider_name = str(getattr(provider, "name", "unknown"))
+        provider_name = str(getattr(provider, "name", "unknown"))
+        try:
+            snippets = await provider.fetch(question.question)
+            for snippet_index, raw_snippet in enumerate(snippets):
+                # Tavily/GDELT 的 id 是單次查詢內的序號；跨子問題時加 namespace，
+                # 避免 q1:tavily:0 與 q2:tavily:0 在 citation 對映互相覆蓋。
+                snippet = raw_snippet.model_copy(
+                    update={"id": f"q{question_index + 1}:{raw_snippet.id}"}
+                )
+                sources.append(snippet)
+                cards.append(
+                    EvidenceCard(
+                        id=f"e{question_index + 1}:{snippet_index + 1}",
+                        claim=snippet.text,
+                        source_ids=[snippet.id],
+                        provider=raw_snippet.source or provider_name,
+                        source_type=_evidence_source_type(raw_snippet, provider_name),
+                        confidence=0.5,
+                    )
+                )
+        except Exception as exc:
+            logger.warning(
+                "gather_evidence provider 失敗 provider=%s question=%s: %s",
+                provider_name,
+                question.question,
+                exc,
+            )
+            errors.append(f"gather_evidence {provider_name} 失敗：{type(exc).__name__}")
+        finally:
             try:
-                snippets = await provider.fetch(question.question)
-                for snippet_index, raw_snippet in enumerate(snippets):
-                    # Tavily/GDELT 的 id 是單次查詢內的序號；跨子問題時加 namespace，
-                    # 避免 q1:tavily:0 與 q2:tavily:0 在 citation 對映互相覆蓋。
-                    snippet = raw_snippet.model_copy(
-                        update={"id": f"q{question_index + 1}:{raw_snippet.id}"}
-                    )
-                    sources.append(snippet)
-                    cards.append(
-                        EvidenceCard(
-                            id=(f"e{question_index + 1}:{provider_index + 1}:{snippet_index + 1}"),
-                            claim=snippet.text,
-                            source_ids=[snippet.id],
-                            provider=raw_snippet.source or provider_name,
-                            source_type=_evidence_source_type(raw_snippet, provider_name),
-                            confidence=0.5,
-                        )
-                    )
+                await provider.aclose()
             except Exception as exc:
                 logger.warning(
-                    "gather_evidence provider 失敗 provider=%s question=%s: %s",
+                    "gather_evidence provider 關閉失敗 provider=%s: %s",
                     provider_name,
-                    question.question,
                     exc,
                 )
-                errors.append(f"gather_evidence {provider_name} 失敗：{type(exc).__name__}")
-            finally:
-                try:
-                    await provider.aclose()
-                except Exception as exc:
-                    logger.warning(
-                        "gather_evidence provider 關閉失敗 provider=%s: %s",
-                        provider_name,
-                        exc,
-                    )
-                    errors.append(f"gather_evidence {provider_name} 關閉失敗：{type(exc).__name__}")
+                errors.append(f"gather_evidence {provider_name} 關閉失敗：{type(exc).__name__}")
 
     if collector is not None:
         provider_counts: dict[str, int] = {}
@@ -1322,8 +1278,8 @@ async def _generate_segment(  # type: ignore[return]
 
         # Level 1 段落內檢查：vocab 命中 + 段內 zh 不重複。
         seg_text = " ".join(ln.text for ln in lines)
-        missing_vocab = _vocab_words_present(seg_text, segment_vocab)
-        dup_idx = _first_duplicate_adjacent_zh(lines)
+        missing_vocab = missing_vocab_words(seg_text, segment_vocab)
+        dup_idx = first_duplicate_adjacent_index([ln.zh for ln in lines])
         if not missing_vocab and dup_idx is None:
             return lines, total_usage
 
@@ -2093,7 +2049,6 @@ async def render_episode_node(state: PodState, config: RunnableConfig) -> dict[s
     # production 路徑
     # workdir 不能用 auto-cleanup 的 TemporaryDirectory：每行 mp3 檔要活到
     # upload_artifacts_node（下一個 node）讀完才能刪，見 upload_artifacts_node 的 cleanup。
-    _settings: Settings = ctx["settings"]  # noqa: F841  預留觀測 / 後續設定接入
     workdir = make_job_workdir()
     artifacts = await render_episode(script, workdir, cefr=state.get("cefr") or "B1")
     collector = _collector(config)
@@ -2110,20 +2065,14 @@ async def render_episode_node(state: PodState, config: RunnableConfig) -> dict[s
 def storage_decision(
     state: PodState, config: RunnableConfig
 ) -> Literal["update_keys", "dead_letter"]:
-    """upload_artifacts 後分流：本輪 fallback 寫入失敗 → dead_letter_node → END。
+    """upload_artifacts 後分流：storage_failed → dead_letter_node → END，否則 update_keys。
 
-    條件：storage_failed AND 本輪 fallback 寫入失敗 → 不能留半完成 row
-    （播放頁不能拿同 slug 舊檔冒充新音檔），也不能 raise（會觸發 worker
-    pgmq vt 重投 → render 整個重做）。改成 graceful END：decision 走
-    dead_letter_node 做 DELETE + 寫 errors，worker 視為完成，read_ct 不累積。
-
-    其他情況（r2 OK / r2 失敗但本輪 fallback 寫入成功）→ 走
-    update_episode_keys + insert_deliveries，前端可從本地路徑或 R2 取音檔。
+    R2 上傳失敗不能留半完成 row（播放頁不能拿同 slug 舊檔冒充新音檔），也不能
+    raise（會觸發 worker pgmq vt 重投 → render 整個重做）。改成 graceful END：
+    decision 走 dead_letter_node 做 DELETE + 寫 errors，worker 視為完成，
+    read_ct 不累積。
     """
     if not state.get("storage_failed"):
-        return "update_keys"
-    # 不能把同 slug 的舊檔當成這次 render 成功；只有本輪 copy 成功才可落庫。
-    if state.get("local_fallback_written"):
         return "update_keys"
     return "dead_letter"
 
@@ -2135,6 +2084,11 @@ async def dead_letter_node(state: PodState, config: RunnableConfig) -> dict[str,
     raise 會觸發 LangGraph 整個 invoke 失敗 → worker pgmq vt 重投 → 整集
     render_episode (TTS 33s+) 重做。改 graceful END：DELETE row + 寫
     errors 標記，worker 視為完成，read_ct 不累積。
+
+    回傳 dict 必須明確把 episode_id 清成 None：LangGraph 對沒回傳的 key 會保留
+    舊值，這裡的 row 已經被 DELETE，state 裡若還留著那個 uuid，run_pod() 的
+    `final.get("episode_id")` truthy 檢查就會誤判成功，把已刪除的 episode_id
+    當結果回傳。
     """
     ctx = _ctx(config)
     repo = ctx.get("repo")
@@ -2161,10 +2115,11 @@ async def dead_letter_node(state: PodState, config: RunnableConfig) -> dict[str,
         idem_key,
     )
     return {
+        "episode_id": None,
         "errors": [
             *state.get("errors", []),
             f"upload_artifacts 雙重失敗，row 已清。slug={slug}",
-        ]
+        ],
     }
 
 
@@ -2210,10 +2165,6 @@ async def upload_artifacts_node(state: PodState, config: RunnableConfig) -> dict
         audio_keys = []
         storage_failed = True
 
-    # 本地 fallback 取消：segments 多檔難以一份一份 fallback；R2 失敗就讓
-    # storage_decision 走 dead_letter，避免半殘 row 污染同 slug 舊檔。
-    local_fallback_written = False
-
     # render_episode_node 用 make_job_workdir()（不會自動清）產出這些檔案，
     # 讀完就是清掉的時機。
     if is_production and art.segments:
@@ -2223,7 +2174,6 @@ async def upload_artifacts_node(state: PodState, config: RunnableConfig) -> dict
         "audio_keys": audio_keys,
         "srt_key": srt_key if not storage_failed else None,
         "storage_failed": storage_failed,
-        "local_fallback_written": local_fallback_written,
     }
 
 
@@ -2231,6 +2181,9 @@ async def upload_artifacts_node(state: PodState, config: RunnableConfig) -> dict
 
 
 async def update_episode_keys_node(state: PodState, config: RunnableConfig) -> dict[str, Any]:
+    """storage_decision 只在 `not storage_failed` 時才會路由到這裡（見 graph.py），
+    storage_failed=True 一律走 dead_letter_node → END，這裡不需要再處理雙重失敗分支。
+    """
     ctx = _ctx(config)
     repo = ctx["repo"]
     collector = _collector(config)
@@ -2239,39 +2192,6 @@ async def update_episode_keys_node(state: PodState, config: RunnableConfig) -> d
     script: ScriptJSON = state["script"]
     # extracted_facts 現在是 SourcedFact 物件（非純字串），jsonb 落庫前先轉 dict。
     facts_payload = [f.model_dump(by_alias=False) for f in script.extracted_facts]
-
-    # ponytail：媒體落地保護。R2 失敗 + 本輪本機 fallback 也沒寫成功 → 不能留 row，
-    # 否則同 slug 的舊檔會被誤當成新音檔，字幕與聲音就會錯集。
-    slug = state["slug"]
-    storage_failed = bool(state.get("storage_failed"))
-    local_fallback_written = bool(state.get("local_fallback_written"))
-    if storage_failed and not local_fallback_written:
-        episode_id = state["episode_id"]
-        idem_key = state["idempotency_key"]
-        logger.warning(
-            "媒體雙重失敗，刪除半完成 row（id=%s slug=%s idem=%s），graceful END",
-            episode_id,
-            slug,
-            idem_key,
-        )
-        await repo.delete_episode_by_idem(idem_key)
-        if collector is not None:
-            collector.finalize("dead_letter")
-            if run_id is not None:
-                await repo.finalize_pipeline_run(
-                    run_id,
-                    status="dead_letter",
-                    gen_metrics=collector.gen_metrics(),
-                    research_metrics=collector.research_metrics(),
-                )
-        # 上層 graph 已 conditional 分流到 END；這裡再寫一次 errors 是防呆，
-        # 確保即使 conditional edge 未來被改壞也不會觸發 worker pgmq vt 重投 → render 重做。
-        return {
-            "errors": [
-                *state.get("errors", []),
-                f"upload_artifacts 雙重失敗，row 已清。slug={slug}",
-            ]
-        }
 
     if collector is not None:
         collector.finalize("success")
@@ -2315,23 +2235,7 @@ async def insert_deliveries_node(state: PodState, config: RunnableConfig) -> dic
         try:
             # insert_delivery 回傳「是否首次寫入」，直接當推送的去重閘門——
             # pipeline 重投時 ON CONFLICT DO NOTHING 回 False，不會重複通知。
-            if await repo.insert_delivery(uid, episode_id, deliver_date):
-                # 拿這集的對外資訊（slug + 中文標題）拼通知 payload。
-                # get_episode_meta 回 None 表示 episode 已不存在（FK CASCADE
-                # 理論上不會發生，但守一下），沒有 slug 就不推。
-                meta = await repo.get_episode_meta(episode_id)
-                if meta:
-                    try:
-                        await notify_user(
-                            uid,
-                            {
-                                "title": f"「{meta['title']}」已製作完成",
-                                "body": "點開就能聽。",
-                                "url": f"/player/{meta['slug']}",
-                            },
-                        )
-                    except Exception as exc:
-                        logger.warning("交付已完成，但推播失敗（uid=%s）: %s", uid, exc)
+            inserted = await repo.insert_delivery(uid, episode_id, deliver_date)
         except ForeignKeyViolation:
             # 上游補償（update_episode_keys_node 的 DELETE-on-failure 或 worker
             # _compensate_generate_failure）已把這筆 episode row 刪掉 —
@@ -2343,6 +2247,27 @@ async def insert_deliveries_node(state: PodState, config: RunnableConfig) -> dic
                 episode_id,
                 uid,
             )
+            continue
+        if not inserted:
+            continue
+
+        # 拿這集的對外資訊（slug + 中文標題）拼通知 payload。get_episode_meta
+        # 回 None 表示 episode 已不存在（FK CASCADE 理論上不會發生，但守一下），
+        # 沒有 slug 就不推。
+        meta = await repo.get_episode_meta(episode_id)
+        if not meta:
+            continue
+        try:
+            await notify_user(
+                uid,
+                {
+                    "title": f"「{meta['title']}」已製作完成",
+                    "body": "點開就能聽。",
+                    "url": f"/player/{meta['slug']}",
+                },
+            )
+        except Exception as exc:
+            logger.warning("交付已完成，但推播失敗（uid=%s）: %s", uid, exc)
 
     return {}
 

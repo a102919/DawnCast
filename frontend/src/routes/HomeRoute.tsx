@@ -8,11 +8,11 @@ import { ErrorBanner } from '../components/primitives/ErrorBanner'
 import { TodayHeroCard } from '../components/home/TodayHeroCard'
 import { HomeHeroFallback } from '../components/home/HomeHeroFallback'
 import { WeeklyCard } from '../components/home/WeeklyCard'
-import { useDailyOrder, useVocab } from '../state'
+import { useDailyOrder, useEpisodes, useVocab } from '../state'
 import { EpisodeRow } from '../components/shared/EpisodeRow'
 import { api } from '../api'
 import { TOPIC_LABELS } from '../lib'
-import type { TopicKey, MockEpisode } from '../lib'
+import type { TopicKey } from '../lib'
 import type { Episode } from '../types/episode'
 
 /** 今日推薦最多顯示幾張（featured 不夠時用 published desc 補到這個上限）。 */
@@ -20,7 +20,7 @@ const TODAY_PICKS_LIMIT = 2
 
 // episode-readiness 輪詢：worker 跑完就停。間隔遞增避免對剛排隊的 job 過度打，
 // 上限 16s 對齊「生成中」視覺節奏（不會讓 spinner 看起來卡住）。
-// ponytail: 30 次無命中後停止。worker 卡死時不會無限打；使用者按 retryKey 重啟。
+// ponytail: 30 次無命中後停止。worker 卡死時不會無限打；離開頁面再回來會重新輪詢。
 const POLL_DELAYS_MS = [2000, 4000, 8000, 16000, 16000, 16000, 16000, 16000, 16000, 16000,
   16000, 16000, 16000, 16000, 16000, 16000, 16000, 16000, 16000, 16000,
   16000, 16000, 16000, 16000, 16000, 16000, 16000, 16000, 16000, 16000] as const
@@ -42,11 +42,9 @@ const EPISODE_CARD_MOTION = {
 } as const
 
 export function HomeRoute() {
-  const [episodes, setEpisodes] = useState<readonly MockEpisode[]>([])
+  const { episodes, error, refresh } = useEpisodes()
   // 每集時長（秒），從 cues 末段推算；單集 fetch 失敗時留空 → 卡片顯示「—」
   const [durations, setDurations] = useState<ReadonlyMap<string, number>>(new Map())
-  const [fetchError, setFetchError] = useState<string | null>(null)
-  const [retryKey, setRetryKey] = useState(0)
   const [topicFilter, setTopicFilter] = useState<TopicKey>('all')
   // 今日已送達集數的 Episode 內容（id 對齊 listEpisodes）；null = 沒送達，fallback
   const [deliveredEpisode, setDeliveredEpisode] = useState<Episode | null>(null)
@@ -58,42 +56,34 @@ export function HomeRoute() {
   // 給「繼續學習」按鈕帶位用：新到首集，沒有就 fallback 留空（按鈕仍渲染但網址無效）
   const continueTargetId = episodes[0]?.id ?? null
 
+  // episodes 清單本身由 EpisodesProvider 集中抓取（見 useEpisodes）；這裡只負責
+  // HomeRoute 專屬的今日送達查詢 + 逐集補抓 cues 推算時長。
   useEffect(() => {
     let cancelled = false
 
     const load = async () => {
-      setFetchError(null)
-      try {
-        // 並行：列舉集數 + 今日送達查詢，分享同一份錯誤處理
-        const [list, delivered] = await Promise.all([
-          api.listEpisodes(),
-          api.getDeliveredEpisode(today).catch(() => null),
-        ])
-        if (cancelled) return
-        setEpisodes(list)
-        setDeliveredEpisode(delivered)
-        // 一次抓所有集數的 cues 推算時長；單集失敗不影響整體
-        const results = await Promise.all(
-          list.map(ep => api.getEpisode(ep.id).catch(() => null)),
-        )
-        if (cancelled) return
-        const durMap = new Map<string, number>()
-        for (const full of results) {
-          if (!full) continue
-          const lastCue = full.cues.at(-1)
-          if (lastCue) durMap.set(full.id, lastCue.end)
-        }
-        setDurations(durMap)
-      } catch {
-        if (!cancelled) setFetchError('節目資料載入失敗，請重試')
+      const delivered = await api.getDeliveredEpisode(today).catch(() => null)
+      if (cancelled) return
+      setDeliveredEpisode(delivered)
+      // 逐集補抓 cues 推算時長；單集失敗不影響整體
+      const results = await Promise.all(
+        episodes.map(ep => api.getEpisode(ep.id).catch(() => null)),
+      )
+      if (cancelled) return
+      const durMap = new Map<string, number>()
+      for (const full of results) {
+        if (!full) continue
+        const lastCue = full.cues.at(-1)
+        if (lastCue) durMap.set(full.id, lastCue.end)
       }
+      setDurations(durMap)
     }
     void load()
 
     return () => {
       cancelled = true
     }
-  }, [retryKey, today])
+  }, [episodes, today])
 
   // 今日 hero 對應的 MockEpisode（借 listEpisodes 的封面/主題/徽章資訊）
   const todayEpisode = useMemo(() => {
@@ -126,7 +116,7 @@ export function HomeRoute() {
           if (d) {
             setDeliveredEpisode(d)
             // 命中：連帶刷全集數庫（hero card 需要封面/主題）+ 訂單狀態（翻 played）。
-            setRetryKey(k => k + 1)
+            void refresh()
             void refreshOrders()
             return
           }
@@ -141,7 +131,7 @@ export function HomeRoute() {
       cancelledRef.current = true
       if (timerRef.current) clearTimeout(timerRef.current)
     }
-  }, [shouldPoll, today, refreshOrders])
+  }, [shouldPoll, today, refresh, refreshOrders])
 
   // Fallback 用的「精選」集：優先 is_featured，其次全集第一集
   const fallbackFeatured = useMemo(() => {
@@ -242,8 +232,8 @@ export function HomeRoute() {
             </Chip>
           ))}
         </div>
-        {fetchError !== null && (
-          <ErrorBanner variant="inline" message={fetchError} onRetry={() => setRetryKey(k => k + 1)} />
+        {error !== null && (
+          <ErrorBanner variant="inline" message={error} onRetry={() => void refresh()} />
         )}
         <AnimatePresence mode="popLayout" initial={false}>
           {filteredEpisodes.length === 0 ? (

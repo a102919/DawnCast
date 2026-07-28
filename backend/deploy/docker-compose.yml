@@ -6,7 +6,8 @@
 #   2. cd backend && docker compose up -d
 #   3. 首次跑 migrations：
 #      docker compose run --rm migrate
-#      之後 entrypoint-api.sh / entrypoint-worker.sh 會自動跑冪等
+#      之後 app/main.py / engine/worker.py 啟動時內建的 _run_migrations_on_startup() 會自動跑冪等
+#      （entrypoint-*.sh 只是 Zeabur frozen dockerfile COPY 相容用的 noop，不會被執行）
 #
 # 不需 Kong：FastAPI 8080 對 localhost 直開、本機 vite proxy /api 跟 /auth 轉過去即可。
 

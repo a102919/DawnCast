@@ -1,8 +1,8 @@
 import { RotateCcw, Play, Pause, ChevronRight, Repeat1, BookMarked, MessageCircle } from 'lucide-react'
-import { IconButton } from '../primitives'
+import { IconButton, ProgressSlider } from '../primitives'
 import { usePlayer } from '../../state'
 import { formatTime } from '../../lib'
-import { RATES, computeProgress, type PlaybackRate } from '../../lib/playback'
+import { RATES, type PlaybackRate } from '../../lib/playback'
 import type { Cue } from '../../types/episode'
 
 interface PlayerBottomBarProps {
@@ -37,8 +37,6 @@ export function PlayerBottomBar({
 
   const handleRewind = () => seekTo(Math.max(0, currentTime - 10))
 
-  const progress = computeProgress(currentTime, duration)
-
   return (
     <nav
       aria-label="播放工具列"
@@ -49,21 +47,7 @@ export function PlayerBottomBar({
         <span className="text-xs text-text-secondary font-mono w-[2.75rem] shrink-0 tabular-nums">
           {formatTime(currentTime)}
         </span>
-        <div className="relative flex-1 py-4 -my-4">
-          <input
-            type="range"
-            min={0}
-            max={duration}
-            value={currentTime}
-            step={0.1}
-            onChange={e => seekTo(Number(e.target.value))}
-            aria-label="播放進度"
-            className="w-full h-1 rounded-full appearance-none cursor-pointer"
-            style={{
-              background: `linear-gradient(to right, var(--color-accent) ${progress}%, var(--color-border) ${progress}%)`,
-            }}
-          />
-        </div>
+        <ProgressSlider currentTime={currentTime} duration={duration} onSeek={seekTo} className="flex-1" />
         <span className="text-xs text-text-secondary font-mono w-[2.75rem] shrink-0 text-right tabular-nums">
           {formatTime(duration)}
         </span>

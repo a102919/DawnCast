@@ -13,6 +13,8 @@
 - migrations/ 放在 scripts/ 內而非 db/：Zeabur frozen template inline dockerfile
   已 COPY scripts/，但沒 COPY db/。放 scripts/ 確保 image 內 /app/scripts/migrations/
   一定有 SQL（frozen template 升級前不要改）。
+- API 與 worker 部署啟動時各自呼叫 main()，用固定 key 的 pg_advisory_lock
+  序列化兩邊，避免同一次部署併發跑同一批 migration SQL（見 _MIGRATION_LOCK_KEY）。
 
 使用方式：
     # Zeabur 部署時由 backup/init container 跑一次
@@ -44,6 +46,14 @@ from psycopg import sql as pg_sql
 # template inline dockerfile 已 COPY scripts/，沒 COPY db/。放這確保 image 內
 # /app/scripts/migrations/ 一定有 SQL；dev / 本機同樣 layout 也 work。
 MIGRATIONS_DIR = Path(__file__).resolve().parent / "migrations"
+
+# Postgres session-level advisory lock key，序列化 migration 執行。
+# app/main.py 的 lifespan 與 engine/worker.py 的 main() 各自獨立呼叫
+# apply_migrations.main()，同一次部署啟動時兩邊行程會併發跑同一批
+# migration SQL（idempotent 的 IF NOT EXISTS 之間仍有 race window，
+# 例如兩邊同時 CREATE TABLE 撞 duplicate key）。固定值即可，只要不
+# 跟專案內其他 pg_advisory_lock 用途撞；純數字常數，無特殊語意。
+_MIGRATION_LOCK_KEY = 472_819_003
 
 
 def _ensure_gotrue_prereqs(conn: psycopg.Connection, password: str) -> None:
@@ -178,21 +188,35 @@ def main(argv: list[str] | None = None) -> int:
     print(f"\n連線到 {user}@...（讀 env 略）", flush=True)
 
     with psycopg.connect(dsn, autocommit=False) as conn:
-        # 先建 GoTrue 預設 role + auth schema（gotrue migration 前置；見函式 docstring）
-        try:
-            _ensure_gotrue_prereqs(conn, password)
-        except Exception as exc:
-            print(f"\n✗ GoTrue prereqs 確保失敗：{exc}", file=sys.stderr)
-            conn.rollback()
-            return 1
+        # advisory lock：api lifespan 與 worker main() 同一次部署可能併發呼叫
+        # 到這裡，用固定 key 的 session-level lock 序列化兩邊。拿不到就阻塞
+        # 等待——全程只有這一把鎖、沒有雙方互等對方另一把鎖的情況，不會死結；
+        # 讓晚到的一方等前面的人跑完，才能保證它接下來看到的是完整 schema。
+        with conn.cursor() as cur:
+            cur.execute("SELECT pg_advisory_lock(%s::bigint)", (_MIGRATION_LOCK_KEY,))
+        conn.commit()
+        print("→ 取得 migration advisory lock", flush=True)
 
-        for path in files:
+        try:
+            # 先建 GoTrue 預設 role + auth schema（gotrue migration 前置；見函式 docstring）
             try:
-                _apply(conn, path)
+                _ensure_gotrue_prereqs(conn, password)
             except Exception as exc:
-                print(f"\n✗ {path.name} 失敗：{exc}", file=sys.stderr)
+                print(f"\n✗ GoTrue prereqs 確保失敗：{exc}", file=sys.stderr)
                 conn.rollback()
                 return 1
+
+            for path in files:
+                try:
+                    _apply(conn, path)
+                except Exception as exc:
+                    print(f"\n✗ {path.name} 失敗：{exc}", file=sys.stderr)
+                    conn.rollback()
+                    return 1
+        finally:
+            with conn.cursor() as cur:
+                cur.execute("SELECT pg_advisory_unlock(%s::bigint)", (_MIGRATION_LOCK_KEY,))
+            conn.commit()
 
     print(f"\n✓ {len(files)} 支 migrations 全部完成", flush=True)
     return 0

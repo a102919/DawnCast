@@ -16,23 +16,21 @@ from shared.config import Settings, get_settings
 from shared.errors import SourceFetchError
 from shared.models import SourceSnippet
 
+from .base import _HttpSourceProvider
 
-class TavilyProvider:
+
+class TavilyProvider(_HttpSourceProvider):
     """通用搜尋：使用者自訂主題入口用。"""
 
     name = "tavily"
 
     def __init__(self, settings: Settings | None = None) -> None:
         cfg = settings or get_settings()
+        super().__init__(
+            base_url=cfg.tavily_base_url, settings=cfg, read_timeout=cfg.source_fetch_timeout
+        )
         self._api_key = cfg.tavily_api_key
         self._max_snippets = cfg.source_max_snippets
-        self._client = httpx.AsyncClient(
-            base_url=cfg.tavily_base_url,
-            timeout=httpx.Timeout(cfg.source_fetch_timeout),
-        )
-
-    async def aclose(self) -> None:
-        await self._client.aclose()
 
     async def fetch(self, query: str) -> list[SourceSnippet]:
         if not self._api_key:

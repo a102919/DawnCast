@@ -82,9 +82,3 @@ def sign_test_token(user_id: str, **extra: Any) -> str:
 def auth_header(user_id: str, **extra: Any) -> dict[str, str]:
     """回傳 {'Authorization': 'Bearer <token>'}，給 TestClient 直接用。"""
     return {"Authorization": f"Bearer {sign_test_token(user_id, **extra)}"}
-
-
-def reset_jwks_factory() -> None:
-    """解除 monkeypatch（給少數不想用 fake JWKS 的測試用）。"""
-    deps._jwks_factory = None
-    deps._invalidate_jwks_cache()

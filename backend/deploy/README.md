@@ -315,9 +315,9 @@ prod 自動 fail（`shared/config.py:208` `assert_secure()` 拒絕）。
 - **無 HA、無監控**：個人版不裝 Sentry / Better Stack。出問題翻 Zeabur logs。
 - **Mock 媒體 6.4MB**：`frontend/public/episodes/loop_engineering.mp4` 仍隨 Pages
   bundle 出貨。prod 不該帶，待清掉。
-- **`jwt-keys/` 已 commit ES256 私鑰**：`backend/deploy/scripts/jwt-keys/` 內的
-  `jwt_es256.pem` 是過渡期產物，HS256 path 不需要——**待加 `.gitignore` 隔離、從
-  git history 清掉**（不可逆操作要小心，rotate secret 配套）。
+- **`jwt-keys/` 私鑰不進版控**：`backend/deploy/scripts/jwt-keys/` 內的
+  `jwt_es256.pem` 是過渡期產物，HS256 path 不需要，`.gitignore` 已排除該目錄，
+  本機自行保管即可。
 - **`manual_backup.sh` 待補**：`backend/deploy/scripts/` 沒有單人版每日 pg_dump。
 - **Docker compose 僅供 dev**：`backend/deploy/docker-compose.yml` 是本機 4 容器
   dev 環境；prod 全走 Zeabur marketplace，**不要拿來 deploy**。
