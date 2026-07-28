@@ -122,15 +122,15 @@ async def archive(queue: str, msg_id: int) -> bool:
 
 
 async def send_daily_batch(deliver_date: str, bodies: list[dict[str, Any]]) -> int:
-    """原子送 5 筆 generate 訊息給當天 daily podcast batch。
+    """原子送 2 筆 generate 訊息給當天 daily podcast batch。
 
     包成單一 SQL function 呼叫 `public.enqueue_daily_podcast_batch(date, jsonb)`：
       - 同 deliver_date 第二次呼叫 → function 回 0（marker ON CONFLICT）
       - 任一 pgmq.send 失敗 → 整 transaction rollback（marker 也撤回）
 
-    回傳實際送出數：5（首次成功）或 0（已 claim）。
+    回傳實際送出數：2（首次成功）或 0（已 claim）。
 
-    ponytail: 故意不迴圈 `send("generate", body)`，因為那樣無法保證 marker 與 5 筆
+    ponytail: 故意不迴圈 `send("generate", body)`，因為那樣無法保證 marker 與 2 筆
     send 的原子性。整個 exactly-once 語意下沉到 SQL function。
     """
     async with connection() as conn, conn.cursor(row_factory=dict_row) as cur:
