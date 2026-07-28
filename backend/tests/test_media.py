@@ -22,6 +22,7 @@ from engine.media.tts import (
     MINIMAX_VOICES,
     VOICES,
     SynthSegment,
+    _make_minimax_line_synth,
     _minimax_tts_request,
     synth_script,
 )
@@ -171,6 +172,55 @@ async def test_minimax_tts_request_business_error_raises() -> None:
             await _minimax_tts_request(client, _tts_settings(), {"text": "hi"})
 
 
+async def test_minimax_line_synth_帶合法_emotion_進voice_setting(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(tts_mod, "_trim_silence", lambda src, dst: dst.write_bytes(b"mp3"))
+    monkeypatch.setattr(tts_mod, "_probe_duration", lambda p: 1.0)
+
+    captured: list[dict[str, object]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        import json as _json
+
+        captured.append(_json.loads(request.content))
+        return httpx.Response(
+            200, json={"base_resp": {"status_code": 0}, "data": {"audio": b"x".hex()}}
+        )
+
+    async with _client_with(handler) as client:
+        synth_line = _make_minimax_line_synth(client, _tts_settings(), 1.0)
+        await synth_line(0, "Alex", "hi", "happy", tmp_path / "line_000.mp3")
+
+    assert captured[0]["voice_setting"]["emotion"] == "happy"
+
+
+async def test_minimax_line_synth_無效_emotion不帶進voice_setting(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """LLM 拼錯值或沒標（None）都要退化成現況行為：不帶 emotion key。"""
+    monkeypatch.setattr(tts_mod, "_trim_silence", lambda src, dst: dst.write_bytes(b"mp3"))
+    monkeypatch.setattr(tts_mod, "_probe_duration", lambda p: 1.0)
+
+    captured: list[dict[str, object]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        import json as _json
+
+        captured.append(_json.loads(request.content))
+        return httpx.Response(
+            200, json={"base_resp": {"status_code": 0}, "data": {"audio": b"x".hex()}}
+        )
+
+    async with _client_with(handler) as client:
+        synth_line = _make_minimax_line_synth(client, _tts_settings(), 1.0)
+        await synth_line(0, "Alex", "hi", "excited", tmp_path / "line_000.mp3")
+        await synth_line(1, "Alex", "hi", None, tmp_path / "line_001.mp3")
+
+    assert "emotion" not in captured[0]["voice_setting"]
+    assert "emotion" not in captured[1]["voice_setting"]
+
+
 async def test_synth_script_falls_back_to_edge_on_minimax_failure(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -184,7 +234,9 @@ async def test_synth_script_falls_back_to_edge_on_minimax_failure(
 
     edge_calls: list[str] = []
 
-    async def fake_edge(index: int, speaker: str, text: str, out_path: Path, rate: str) -> float:
+    async def fake_edge(
+        index: int, speaker: str, text: str, emotion: str | None, out_path: Path, rate: str
+    ) -> float:
         edge_calls.append(f"{speaker}:{rate}")
         out_path.write_bytes(b"mp3")
         return 1.0
@@ -196,9 +248,9 @@ async def test_synth_script_falls_back_to_edge_on_minimax_failure(
 
     assert provider == "edge"
     assert len(segs) == len(script.script)
-    # 全部行都由 edge 合成，且 A2 語速（-20%）有帶到
+    # 全部行都由 edge 合成，且 A2 語速（-15%）有帶到
     assert len(edge_calls) == len(script.script)
-    assert all(call.endswith(":-20%") for call in edge_calls)
+    assert all(call.endswith(":-15%") for call in edge_calls)
 
 
 # ── 端對端時間軸對照 ──────────────────────────────────────────

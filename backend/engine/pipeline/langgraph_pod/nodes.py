@@ -198,6 +198,8 @@ def _build_lemma_pool(text: str) -> set[str]:
     for token in re.findall(r"[A-Za-z']+", text.casefold()):
         pool.update(lemmatize(token))
     return pool
+
+
 def _vocab_words_present(text: str, vocab_words: list[str]) -> list[str]:
     """回傳「在 text 裡沒出現（含詞形變化都沒有）」的 vocab_words。空 list = 全部命中。"""
     pool = _build_lemma_pool(text)
@@ -303,34 +305,47 @@ _MONOLOGUE_VOICE = """
 """
 
 _FEW_SHOTS_DIALOGUE = """
-# Few-shot exemplars（開場鉤子示範，非逐字模仿）
+# Few-shot exemplars（開場鉤子示範，非逐字模仿；每行後面標的是該行 emotion）
 
 Example 1 (curiosity gap, topic="量子力學"):
-Alex: You know that feeling when headphones go on, the world just... disappears?
-Sarah: Mmm.
-Alex: Imagine that, but for an electron. The electron can't take the headphones off.
+Alex: You know that feeling when headphones go on, the world just... disappears? [neutral]
+Sarah: Mmm. [neutral]
+Alex: Imagine that, but for an electron. The electron can't take the headphones off. [surprised]
 
 Example 2 (character-led, topic="投資組合"):
-Sarah: My uncle once put all his savings into one stock. One stock, Alex.
-Alex: And?
-Sarah: Let's say he's now a very enthusiastic fan of... index funds.
+Sarah: My uncle once put all his savings into one stock. One stock, Alex. [surprised]
+Alex: And? [neutral]
+Sarah: Let's say he's now a very enthusiastic fan of... index funds. [happy]
 
 Example 3 (counter-intuitive stat, topic="remote work"):
-Alex: Companies that went fully remote saw output go UP, not down. Nobody predicted that.
-Sarah: Wait, really? Everyone I know assumed the opposite.
+Alex: Companies that went fully remote saw output go UP, not down. Nobody predicted that. \
+[surprised]
+Sarah: Wait, really? Everyone I know assumed the opposite. [surprised]
 """
 
 _FEW_SHOTS_MONOLOGUE = """
-# Few-shot exemplars（單人口白開場鉤子示範，非逐字模仿）
+# Few-shot exemplars（單人口白開場鉤子示範，非逐字模仿；每行後面標的是該行 emotion）
 
 Example 1 (counter-intuitive stat):
 Nova: Here's a number that shouldn't exist: emergency room visits went UP forty percent — \
 right after people GOT health insurance. Stay with me, because the reason tells you \
-everything about how incentives really work.
+everything about how incentives really work. [surprised]
 
 Example 2 (in medias res):
 Nova: The server room went silent at 2:14 in the morning. Not quiet — silent. And for the \
-engineers on call, silence was the worst sound in the world.
+engineers on call, silence was the worst sound in the world. [fearful]
+"""
+
+_EMOTION_GUIDE = """
+# EMOTION（逐行標，MiniMax TTS 用來調語氣，不要整段都同一個值）
+- 每行 JSON 都要有 `emotion`，只能是以下 7 個值之一：
+  happy / sad / angry / fearful / disgusted / surprised / neutral。
+- 預設 neutral；hook、反直覺轉折、驚訝發現 → happy/surprised；
+  立場分歧、輕度反駁 → angry（輕度用，不要每次分歧都套）；
+  深沉話題、recap、收尾洞察 → neutral/sad；
+  fearful/disgusted 少用，只在內容本身談風險/負面案例時才用。
+- `text` 裡不要用 `...`（刪節號）表示停頓——MiniMax TTS 會把它唸成明顯拖長的停頓，
+  搭配 A2 CEFR 的慢速再疊加會變得過慢。要停頓改用句號/逗號斷句，或用 em dash `—`。
 """
 
 
@@ -637,14 +652,18 @@ def _build_segment_messages(
         + "# BILINGUAL\n"
         "- Every line MUST have `zh` in natural Taiwan Mandarin (台灣正體中文), "
         "translate the meaning naturally, NOT word-for-word.\n"
+        "- `zh` 絕對不能出現簡體字（例如「两」「国」「时」寫成簡體），一律用台灣正體字，"
+        "這是程式會擋下來的硬性規則。\n"
         "- `zh` 只能翻譯「這一行自己的」`text`，禁止把下一行的內容提前挪進這一行的 zh，"
         "也禁止兩個連續行的 zh 一模一樣（這是程式會擋下來的硬性規則）。\n\n"
         "# SOURCES\n"
         f"{_sources_block(sources or [], avoid_facts)}\n\n"
         f"{few_shots}\n\n"
+        f"{_EMOTION_GUIDE}\n"
         "JSON SCHEMA (must match exactly, ONLY the script array):\n"
         '{"script": [{"speaker": ' + schema_speaker + ', "text": str, "zh": str, '
-        '"pause_before": bool}]}\n'
+        '"pause_before": bool, "emotion": "happy"|"sad"|"angry"|"fearful"|"disgusted"'
+        '|"surprised"|"neutral"}]}\n'
         "Output ONLY the JSON object. No markdown, no code fences, no commentary."
     )
 
@@ -721,9 +740,7 @@ Return ONLY JSON with this exact shape:
 Give 1-6 non-overlapping questions. Prefer questions that can be checked against cited sources."""
 
 
-async def decompose_research_node(
-    state: PodState, config: RunnableConfig
-) -> dict[str, Any]:
+async def decompose_research_node(state: PodState, config: RunnableConfig) -> dict[str, Any]:
     """用既有 MiniMax chat 拆研究問題；任何失敗都退回原題單問。"""
     ctx = _ctx(config)
     collector = _collector(config)
@@ -810,9 +827,7 @@ def _evidence_source_type(snippet: SourceSnippet, provider_name: str) -> str:
     return prefix if separator and prefix else provider_name
 
 
-async def gather_evidence_node(
-    state: PodState, config: RunnableConfig
-) -> dict[str, Any]:
+async def gather_evidence_node(state: PodState, config: RunnableConfig) -> dict[str, Any]:
     """逐題抓證據；單一 provider/fetch/close 失敗只記錄，不阻斷其他來源。"""
     ctx = _ctx(config)
     collector = _collector(config)
@@ -858,10 +873,7 @@ async def gather_evidence_node(
                     sources.append(snippet)
                     cards.append(
                         EvidenceCard(
-                            id=(
-                                f"e{question_index + 1}:"
-                                f"{provider_index + 1}:{snippet_index + 1}"
-                            ),
+                            id=(f"e{question_index + 1}:{provider_index + 1}:{snippet_index + 1}"),
                             claim=snippet.text,
                             source_ids=[snippet.id],
                             provider=raw_snippet.source or provider_name,
@@ -876,9 +888,7 @@ async def gather_evidence_node(
                     question.question,
                     exc,
                 )
-                errors.append(
-                    f"gather_evidence {provider_name} 失敗：{type(exc).__name__}"
-                )
+                errors.append(f"gather_evidence {provider_name} 失敗：{type(exc).__name__}")
             finally:
                 try:
                     await provider.aclose()
@@ -888,9 +898,7 @@ async def gather_evidence_node(
                         provider_name,
                         exc,
                     )
-                    errors.append(
-                        f"gather_evidence {provider_name} 關閉失敗：{type(exc).__name__}"
-                    )
+                    errors.append(f"gather_evidence {provider_name} 關閉失敗：{type(exc).__name__}")
 
     if collector is not None:
         provider_counts: dict[str, int] = {}
@@ -935,9 +943,7 @@ def _unverified_claims(cards: list[EvidenceCard]) -> list[VerifiedClaim]:
     ]
 
 
-async def cross_verify_node(
-    state: PodState, config: RunnableConfig
-) -> dict[str, Any]:
+async def cross_verify_node(state: PodState, config: RunnableConfig) -> dict[str, Any]:
     """用 MiniMax 交叉比對證據；失敗時絕不把原始卡片假裝成已驗證。"""
     cards = list(state.get("evidence_cards") or [])
     collector = _collector(config)
@@ -991,16 +997,12 @@ async def cross_verify_node(
         if not isinstance(raw_claims, list) or not isinstance(raw_conflicts, list):
             raise ValueError("交叉驗證回應欄位形狀錯誤")
 
-        available_ids = {
-            source_id for card in cards for source_id in card.source_ids
-        }
+        available_ids = {source_id for card in cards for source_id in card.source_ids}
         verified_claims: list[VerifiedClaim] = []
         for item in raw_claims:
             claim = VerifiedClaim.model_validate(item)
             supporting = [
-                source_id
-                for source_id in claim.supporting_source_ids
-                if source_id in available_ids
+                source_id for source_id in claim.supporting_source_ids if source_id in available_ids
             ]
             contradicting = [
                 source_id
@@ -1012,11 +1014,7 @@ async def cross_verify_node(
                     update={
                         "supporting_source_ids": supporting,
                         "contradicting_source_ids": contradicting,
-                        "usable": (
-                            claim.usable
-                            and bool(supporting)
-                            and not contradicting
-                        ),
+                        "usable": (claim.usable and bool(supporting) and not contradicting),
                     }
                 )
             )
@@ -1524,9 +1522,7 @@ async def _invoke_writer(
         base_segment_words = [(w, True) for w, _ in base_segment_words]
 
     for round_idx in range(_MAX_CONTRACT_RETRIES):
-        targets = [
-            (max(1, int(w * adjuster)), boundary) for (w, boundary) in base_segment_words
-        ]
+        targets = [(max(1, int(w * adjuster)), boundary) for (w, boundary) in base_segment_words]
         # 動態調高後仍維持加總對齊到 word_total（不引入可見長度漂移）。
         # 但 adjuster > 1 時 sum 已經超過 word_total，剩餘量為負，硬補會把最後一段
         # 變成負數（實測 adjuster=2 → 末段變 -504，_generate_segment 那邊 max(1,…) 才
@@ -1647,9 +1643,7 @@ async def _invoke_writer(
         # 短缺比例 × 1.2 給保險係數（避免連續小幅短缺浪費回合）。
         ratio = (word_floor / max(word_count, 1)) * 1.2
         adjuster = max(adjuster, ratio)
-        last_exc = GenerationError(
-            f"整集 {word_count} 字低於 {word_floor} 下限"
-        )
+        last_exc = GenerationError(f"整集 {word_count} 字低於 {word_floor} 下限")
 
     # 全部回合都因契約違規失敗（不是字數不足），用最長的一版出稿（best-draft fallback）。
     # 若 best_result 仍是 None 代表沒任何一輪過 Level 2 合併驗證——沒有「最長的一版」
@@ -1728,9 +1722,7 @@ def _empty_claim_verification() -> ClaimVerification:
     return ClaimVerification(checks=[], unsupported_ratio=0.0)
 
 
-async def verify_script_claims_node(
-    state: PodState, config: RunnableConfig
-) -> dict[str, Any]:
+async def verify_script_claims_node(state: PodState, config: RunnableConfig) -> dict[str, Any]:
     """核對成稿 extracted_facts；研究服務失敗時 fail-open，不阻斷既有出稿。"""
     script = state.get("script")
     sources = list(state.get("sources") or [])
@@ -1738,24 +1730,20 @@ async def verify_script_claims_node(
     if script is None or not script.extracted_facts or not sources:
         if collector is not None:
             collector.set_research_summary(
-                claim_check_total=0, claim_check_supported=0,
-                claim_check_unsupported=0, claim_check_unsupported_ratio=0.0,
+                claim_check_total=0,
+                claim_check_supported=0,
+                claim_check_unsupported=0,
+                claim_check_unsupported_ratio=0.0,
             )
         return {"claim_verification": _empty_claim_verification()}
 
     ctx = _ctx(config)
-    chat = (
-        ctx.get("chat_failover")
-        if state.get("engine_used") == "failover"
-        else ctx.get("chat")
-    )
+    chat = ctx.get("chat_failover") if state.get("engine_used") == "failover" else ctx.get("chat")
     if chat is None:
         return {"claim_verification": _empty_claim_verification()}
 
     facts_payload = [fact.model_dump(mode="json") for fact in script.extracted_facts]
-    sources_payload = [
-        {"id": source.id, "text": source.text[:800]} for source in sources
-    ]
+    sources_payload = [{"id": source.id, "text": source.text[:800]} for source in sources]
     user = json.dumps(
         {"extracted_facts": facts_payload, "sources": sources_payload},
         ensure_ascii=False,
@@ -1787,11 +1775,7 @@ async def verify_script_claims_node(
         checks_by_claim = {check.claim: check for check in verification.checks}
         checks: list[ClaimCheck] = []
         for fact in script.extracted_facts:
-            allowed_ids = [
-                source_id
-                for source_id in fact.source_ids
-                if source_id in available_ids
-            ]
+            allowed_ids = [source_id for source_id in fact.source_ids if source_id in available_ids]
             raw_check = checks_by_claim.get(fact.claim)
             if raw_check is None:
                 checks.append(
@@ -1804,9 +1788,7 @@ async def verify_script_claims_node(
                 continue
 
             cited_ids = [
-                source_id
-                for source_id in raw_check.source_ids
-                if source_id in allowed_ids
+                source_id for source_id in raw_check.source_ids if source_id in allowed_ids
             ]
             status = raw_check.status
             if status == "supported" and not cited_ids:
@@ -1821,9 +1803,7 @@ async def verify_script_claims_node(
                 )
             )
 
-        unsupported_count = sum(
-            check.status != "supported" for check in checks
-        )
+        unsupported_count = sum(check.status != "supported" for check in checks)
         normalized = ClaimVerification(
             checks=checks,
             unsupported_ratio=unsupported_count / len(checks),

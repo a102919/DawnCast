@@ -6,14 +6,53 @@ API 契約（camelCase，鏡像前端 types.ts）在 sibling 的 api.py；兩者
 
 from __future__ import annotations
 
+import difflib
 import re
+from functools import lru_cache
 from typing import Literal
 
+import opencc
 from pydantic import BaseModel, Field, model_validator
 
 from shared.lemmatize import lemmatize
 
 _WORD_RE = re.compile(r"[A-Za-z']+")
+
+
+@lru_cache(maxsize=1)
+def _s2t_converter() -> opencc.OpenCC:
+    # 用 s2t（純字元級簡轉繁）偵測，不用 s2twp：s2twp 除了轉繁體字，還會把已經是繁體的
+    # 詞彙改寫成台灣慣用詞（如 循環→迴圈），拿來當「是不是簡體字」的判準會誤殺正常
+    # 繁體句子。s2t 只做字元對字元的簡繁映射，不動已經是繁體的詞。
+    return opencc.OpenCC("s2t")
+
+
+# s2t 的目標是 OpenCC「標準繁體」，跟台灣教育部正體字用字習慣不完全一致：這些字在台灣
+# 本來就是正體慣用寫法（台/臺、唇/脣、秘/祕……），但 s2t 仍會判定為「被轉換」而誤標成
+# 簡體字。前 39 字取自 opencc 套件內建 TWVariants.txt（col2，官方維護的字元變體表）；
+# 台/布不在該表（屬 STCharacters.txt 的多義字判斷），是實測補上的已知誤判。
+# ponytail: 白名單基於實測樣本，不保證窮盡；新誤判照這個模式補字即可，不必整套換演算法。
+_TW_ACCEPTED_VARIANTS = frozenset(
+    "偽啟吃嫻媯峰么抬稜簷汙洩溈潀為床痺痴皂著睪秘灶粽韁才群唇參蒍眾裡核踴缽針鯰麵顎台布"
+)
+
+
+def _simplified_chars_in(text: str) -> list[str]:
+    """回傳 text 裡被 s2t（簡轉繁）轉換掉、且非台灣慣用變體字的字元，代表原文含簡體字。
+
+    用 difflib 對齊而不是逐字 zip：即使是字元級轉換，個別字元也可能一對多，轉換前後
+    長度不一定相同。
+    """
+    converted = _s2t_converter().convert(text)
+    if converted == text:
+        return []
+
+    offenders: list[str] = []
+    for tag, start, end, _, _ in difflib.SequenceMatcher(a=text, b=converted).get_opcodes():
+        if tag in ("replace", "delete"):
+            offenders.extend(ch for ch in text[start:end] if ch not in _TW_ACCEPTED_VARIANTS)
+    return offenders
+
 
 Speaker = Literal["Alex", "Sarah", "Nova"]
 
@@ -53,6 +92,10 @@ class ScriptLine(BaseModel):
     # chapter/話題轉換邊界：True 時 concat_segments 在這行「之前」插入較長停頓。
     # 預設 False（沿用現有均一停頓行為），只有 long tier 的 chapter 分界會標 True。
     pause_before: bool = False
+    # MiniMax voice_setting.emotion 逐行標註，讓語氣不再整集一個模板。刻意用 str
+    # 不用 Literal[7 值]：LLM 是 prompt-instructed JSON，不是 schema-enforced structured
+    # output，拼錯值不該讓整份腳本 parse 失敗——無效值在 TTS payload 組裝那層忽略即可。
+    emotion: str | None = None
 
 
 class TargetVocab(BaseModel):
@@ -194,6 +237,17 @@ class ScriptJSON(BaseModel):
 
         if missing:
             raise ValueError(f"target_vocab 有字沒真的出現在腳本裡（含詞形變化都沒有）: {missing}")
+        return self
+
+    @model_validator(mode="after")
+    def _zh_no_simplified_chars(self) -> ScriptJSON:
+        offenders: list[str] = []
+        for i, line in enumerate(self.script):
+            bad = _simplified_chars_in(line.zh)
+            if bad:
+                offenders.append(f"script[{i}].zh 出現簡體字 {bad!r}: {line.zh!r}")
+        if offenders:
+            raise ValueError("zh 必須是台灣正體中文，偵測到簡體字：\n" + "\n".join(offenders))
         return self
 
 

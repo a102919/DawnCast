@@ -63,6 +63,11 @@ plugins = ["pydantic.mypy"]
 module = ["pywebpush.*"]
 ignore_missing_imports = true
 
+# opencc-python-reimplemented 同樣沒有 py.typed / stubs。
+[[tool.mypy.overrides]]
+module = ["opencc.*"]
+ignore_missing_imports = true
+
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]

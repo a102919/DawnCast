@@ -154,9 +154,7 @@ def _make_passing_chat(
 ) -> FakeChatModel:
     """Happy-path: 1 個 outline + n_segments 個段落 + 1 個 judge（全過）。"""
     responses = [_outline_json(n_segments=n_segments, extra_vocab=extra_vocab)]
-    responses.extend(
-        _segment_json(seg_index=i, format=format) for i in range(n_segments)
-    )
+    responses.extend(_segment_json(seg_index=i, format=format) for i in range(n_segments))
     return FakeChatModel(
         responses=responses,
         judge_responses=[_judge_json(0.8)],
@@ -588,9 +586,9 @@ def test_storage_decision_does_not_accept_stale_fallback_file() -> None:
     }
 
     assert storage_decision(failed_state, config) == "dead_letter"
-    assert storage_decision(
-        {**failed_state, "local_fallback_written": True}, config
-    ) == "update_keys"
+    assert (
+        storage_decision({**failed_state, "local_fallback_written": True}, config) == "update_keys"
+    )
 
 
 # ── 6. rate-limit + 無 failover → degrade（raise RateLimitError）
@@ -622,8 +620,7 @@ async def test_rate_limit_degrade_raises_without_failover() -> None:
 async def test_rate_limit_triggers_failover_chat() -> None:
     chat = FakeChatModel(responses=[RateLimitError("429 primary")])
     chat_failover = FakeChatModel(
-        responses=[_outline_json()]
-        + [_segment_json(seg_index=i) for i in range(3)],
+        responses=[_outline_json()] + [_segment_json(seg_index=i) for i in range(3)],
         judge_responses=[_judge_json(0.8)],
     )
     repo, r2, queue = get_mocks(reset=True)
@@ -685,6 +682,13 @@ def test_duplicate_adjacent_zh_rejected() -> None:
     payload = json.loads(_script_json())
     payload["script"][1]["zh"] = payload["script"][0]["zh"]  # 製造相鄰 zh 完全相同
     with pytest.raises(ValueError, match="zh 完全相同"):
+        ScriptJSON.model_validate(payload)
+
+
+def test_simplified_char_in_zh_rejected() -> None:
+    payload = json.loads(_script_json())
+    payload["script"][0]["zh"] = "两杯咖啡"  # 简体字，应转成「兩杯咖啡」
+    with pytest.raises(ValueError, match="簡體字"):
         ScriptJSON.model_validate(payload)
 
 

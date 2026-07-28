@@ -54,10 +54,17 @@ MINIMAX_VOICES: dict[str, str] = {
 }
 
 # CEFR → 語速。A2 學習者需要慢速輸入（自然語速 ~170wpm 對 A2 是牆），
-# B1/B2 維持原速（向下相容既有集聽感）。
+# B1/B2 維持原速（向下相容既有集聽感）。0.8 曾跟句中的刪節號停頓疊加變得過慢
+# （實測 1.7 wps），跟 prompt 端「別用 ... 表示停頓」的修正一起，速度調鬆到 0.85。
 # ponytail: 固定三檔，之後要 per-user 微調再開進 user_settings。
-CEFR_SPEED: dict[str, float] = {"A2": 0.8, "B1": 1.0, "B2": 1.0}  # MiniMax speed 參數
-_CEFR_RATE_EDGE: dict[str, str] = {"A2": "-20%", "B1": "+0%", "B2": "+0%"}  # edge-tts rate
+CEFR_SPEED: dict[str, float] = {"A2": 0.85, "B1": 1.0, "B2": 1.0}  # MiniMax speed 參數
+_CEFR_RATE_EDGE: dict[str, str] = {"A2": "-15%", "B1": "+0%", "B2": "+0%"}  # edge-tts rate
+
+# MiniMax voice_setting.emotion 合法值。ScriptLine.emotion 是寬鬆 str（LLM prompt-instructed
+# JSON 難免拼錯/给無效值），不在這個集合裡就當沒標，退化成現況行為（不帶 emotion key）。
+_MINIMAX_EMOTIONS = frozenset(
+    {"happy", "sad", "angry", "fearful", "disgusted", "surprised", "neutral"}
+)
 
 
 @dataclass(frozen=True)
@@ -159,10 +166,15 @@ async def _synth_line_edge(
     index: int,
     speaker: str,
     text: str,
+    emotion: str | None,
     out_path: Path,
     rate: str = "+0%",
 ) -> float:
-    """edge-tts 合成單行：stream 寫檔、去頭尾靜音，回傳修剪後的真實時長（秒）。"""
+    """edge-tts 合成單行：stream 寫檔、去頭尾靜音，回傳修剪後的真實時長（秒）。
+
+    emotion 吃進來直接忽略——edge-tts 不支援情緒調整，且 SSML markup 會被跳脫，
+    這裡只是讓呼叫端跟 MiniMax 路徑共用同一個 synth_line 簽章。
+    """
     voice = VOICES.get(speaker)
     if voice is None:
         raise TTSError(f"未知主持人 {speaker!r}，無對應 voice")
@@ -236,20 +248,25 @@ async def _minimax_tts_request(
 
 def _make_minimax_line_synth(
     client: httpx.AsyncClient, settings: Settings, speed: float
-) -> Callable[[int, str, str, Path], Awaitable[float]]:
+) -> Callable[[int, str, str, str | None, Path], Awaitable[float]]:
     """綁定 client/speed 的 MiniMax 單行合成器（與 edge 路徑同簽名）。"""
 
-    async def synth_line(index: int, speaker: str, text: str, out_path: Path) -> float:
+    async def synth_line(
+        index: int, speaker: str, text: str, emotion: str | None, out_path: Path
+    ) -> float:
         voice = MINIMAX_VOICES.get(speaker)
         if voice is None:
             raise TTSError(f"未知主持人 {speaker!r}，無對應 MiniMax voice")
+        voice_setting: dict[str, object] = {"voice_id": voice, "speed": speed}
+        if emotion in _MINIMAX_EMOTIONS:
+            voice_setting["emotion"] = emotion
         audio = await _minimax_tts_request(
             client,
             settings,
             {
                 "model": settings.minimax_tts_model,
                 "text": text,
-                "voice_setting": {"voice_id": voice, "speed": speed},
+                "voice_setting": voice_setting,
                 "audio_setting": {"format": "mp3", "sample_rate": 32000},
             },
         )
@@ -266,14 +283,15 @@ def _make_minimax_line_synth(
 async def _run_lines(
     script: ScriptJSON,
     workdir: Path,
-    synth_line: Callable[[int, str, str, Path], Awaitable[float]],
+    synth_line: Callable[[int, str, str, str | None, Path], Awaitable[float]],
 ) -> list[SynthSegment]:
     """逐行跑指定合成器，組出 SynthSegment list（順序即播放順序）。"""
     workdir.mkdir(parents=True, exist_ok=True)
     segments: list[SynthSegment] = []
     for i, line in enumerate(script.script):
         out_path = workdir / f"line_{i:03d}_{line.speaker}.mp3"
-        duration = await synth_line(i, line.speaker, line.text, out_path)
+        emotion = getattr(line, "emotion", None)
+        duration = await synth_line(i, line.speaker, line.text, emotion, out_path)
         segments.append(
             SynthSegment(
                 index=i,
@@ -321,7 +339,9 @@ async def synth_script(
 
     rate = _CEFR_RATE_EDGE.get(cefr, "+0%")
 
-    async def edge_line(index: int, speaker: str, text: str, out_path: Path) -> float:
-        return await _synth_line_edge(index, speaker, text, out_path, rate)
+    async def edge_line(
+        index: int, speaker: str, text: str, emotion: str | None, out_path: Path
+    ) -> float:
+        return await _synth_line_edge(index, speaker, text, emotion, out_path, rate)
 
     return await _run_lines(script, workdir, edge_line), "edge"
