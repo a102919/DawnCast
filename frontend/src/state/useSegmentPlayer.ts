@@ -78,6 +78,9 @@ export function useSegmentPlayer(): SegmentPlayer {
   const rateRef = useRef<number>(1)
   const pendingRef = useRef<'play' | null>(null)
   const decodingRef = useRef<Set<number>>(new Set())
+  /** 暫停/seek/換段當下的全域播放位置，play() 靠它算 resume 要從段內哪個 offset 接續，
+   *  不能吃 currentTime state（rAF 節流，可能落後一幀）。 */
+  const pausedAtRef = useRef<number>(0)
 
   const [loadState, setLoadState] = useState<SegmentLoadState>('idle')
   const [isPlaying, setIsPlaying] = useState<boolean>(false)
@@ -110,6 +113,8 @@ export function useSegmentPlayer(): SegmentPlayer {
   const stopActive = useCallback(() => {
     const a = activeRef.current
     if (a) {
+      const ctx = ctxRef.current
+      if (ctx) pausedAtRef.current = a.globalStartSec + (ctx.currentTime - a.ctxAnchorSec) * rateRef.current
       try { a.source.stop() } catch { /* already stopped */ }
       a.source.disconnect()
       activeRef.current = null
@@ -227,7 +232,9 @@ export function useSegmentPlayer(): SegmentPlayer {
     const buf = await ensureBuffer(segIdxRef.current)
     if (!buf) return
     stopActive()
-    startSource(segIdxRef.current, 0)
+    const seg = ep.segments[segIdxRef.current]
+    const offsetSec = seg ? Math.max(0, Math.min(pausedAtRef.current - seg.start, seg.duration)) : 0
+    startSource(segIdxRef.current, offsetSec)
     void prefetchAround(segIdxRef.current)
   }, [ensureBuffer, loadState, prefetchAround, startSource, stopActive])
 
@@ -254,6 +261,7 @@ export function useSegmentPlayer(): SegmentPlayer {
     const offsetSec = Math.max(0, Math.min(globalSec - seg.start, seg.duration))
     const wasPlaying = isPlayingRef.current
     stopActive()
+    pausedAtRef.current = globalSec
     segIdxRef.current = idx
     void prefetchAround(idx)
     if (wasPlaying) void ensureBuffer(idx).then(b => { if (b) startSource(idx, offsetSec) })
@@ -288,6 +296,7 @@ export function useSegmentPlayer(): SegmentPlayer {
     pendingRef.current = null
     episodeRef.current = episode
     segIdxRef.current = 0
+    pausedAtRef.current = 0
     isPlayingRef.current = false
     setIsPlaying(false)
     setCurrentTime(0)

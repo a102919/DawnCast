@@ -2,6 +2,7 @@ import { useCallback, useEffect, useLayoutEffect, useRef, useState, type ReactNo
 import { storageGet, storageSet } from '../lib/storage'
 import { PlayerContext, type PlayerContextValue } from './playerContextValue'
 import { useSegmentPlayer } from './useSegmentPlayer'
+import { useMediaSession } from './useMediaSession'
 import type { Episode } from '../types/episode'
 
 const LS_KEY_CURRENT_TIME = 'dawncast:player:currentTime'
@@ -51,10 +52,13 @@ export function PlayerProvider({ children, lastPlayedEpisodeId, lastPlayedPositi
   }, [setLastPlayed])
 
   const setCurrentEpisode = useCallback((episode: Episode | null) => {
-    // 同集重推（例：MiniPlayer 點回播放頁 → PlayerRoute 重 fetch 拿到新 segments）
-    // 保留舊物件，避免 PlayerProvider 內部 state 變動觸發重渲染風暴。
+    // 同集重推（例：首頁→再點回同一集 / PlayerRoute 重 fetch 拿到新物件參考）：
+    // 只認 id，不認物件參考。id 相同就是「同一集」，跳過 loadEpisode 避免打斷正在播放的音訊
+    // （loadEpisode 會清 buffer cache + 把 currentTime 砍回 0）；換到不同集才需要真的重載。
+    const isSameEpisode = episode !== null && episode.id === currentEpisodeIdRef.current
     setCurrentEpisodeState(prev => (prev && episode && prev.id === episode.id ? prev : episode))
     currentEpisodeIdRef.current = episode?.id ?? null
+    if (isSameEpisode) return
     void playerRef.current.loadEpisode(episode)
   }, [])
 
@@ -107,6 +111,9 @@ export function PlayerProvider({ children, lastPlayedEpisodeId, lastPlayedPositi
   const play = useCallback(() => playerRef.current.play(), [])
   const pause = useCallback(() => { playerRef.current.pause() }, [])
   const getSegmentPlayer = useCallback(() => playerRef.current, [])
+  const getCurrentTime = useCallback(() => playerRef.current.currentTime, [])
+
+  useMediaSession({ episode: currentEpisode, isPlaying: player.isPlaying, getCurrentTime, play, pause, seekTo })
 
   const value: PlayerContextValue = {
     currentTime: player.currentTime,

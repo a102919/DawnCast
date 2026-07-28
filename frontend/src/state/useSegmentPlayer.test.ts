@@ -220,6 +220,27 @@ describe('useSegmentPlayer', () => {
     h.unmount()
   })
 
+  it('pause 後 play 從暫停位置接續，不是從段落開頭重播', async () => {
+    const h = mountHook()
+    await act(async () => {
+      await h.getPlayer().loadEpisode(makeEpisode(2))
+    })
+    await act(async () => {
+      await h.getPlayer().play()
+    })
+    expect(sources.at(-1)!.start).toHaveBeenCalledWith(0, 0, undefined)
+
+    fakeCtx.currentTime = 0.4 // 播了 0.4 秒
+    act(() => {
+      h.getPlayer().pause()
+    })
+    await act(async () => {
+      await h.getPlayer().play()
+    })
+    expect(sources.at(-1)!.start).toHaveBeenCalledWith(0, expect.closeTo(0.4), undefined)
+    h.unmount()
+  })
+
   it('setPlaybackRate updates active source playbackRate.value', async () => {
     const h = mountHook()
     // 用 playSegment 觸發 source 建立（play() 受 closure loadState 問題干擾，
