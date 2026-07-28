@@ -290,11 +290,14 @@ async def _run_lines(
 
 async def synth_script(
     script: ScriptJSON, workdir: Path, *, cefr: str = "B1"
-) -> list[SynthSegment]:
+) -> tuple[list[SynthSegment], str]:
     """合成整份腳本。MiniMax 優先（token 有設時），任一行失敗整份 fallback edge-tts。
 
     整份為單位切換供應商：中途換聲線的聽感不可接受，寧可重跑已合成的行。
     cefr 決定語速（MiniMax 用 speed 參數，edge-tts 用 rate 字串）。
+
+    回傳 (segments, provider)；provider ∈ {"minimax", "edge"}——edge-tts 免費，
+    呼叫端算 TTS 成本時要用這個欄位排除 fallback 集數，不能只看字數。
     """
     settings = get_settings()
     if settings.minimax_auth_token:
@@ -309,9 +312,10 @@ async def synth_script(
             headers={"Authorization": f"Bearer {settings.minimax_auth_token}"},
         ) as client:
             try:
-                return await _run_lines(
+                segs = await _run_lines(
                     script, workdir, _make_minimax_line_synth(client, settings, speed)
                 )
+                return segs, "minimax"
             except TTSError as exc:
                 logger.warning("MiniMax TTS 失敗，整份腳本 fallback 到 edge-tts：%s", exc)
 
@@ -320,4 +324,4 @@ async def synth_script(
     async def edge_line(index: int, speaker: str, text: str, out_path: Path) -> float:
         return await _synth_line_edge(index, speaker, text, out_path, rate)
 
-    return await _run_lines(script, workdir, edge_line)
+    return await _run_lines(script, workdir, edge_line), "edge"

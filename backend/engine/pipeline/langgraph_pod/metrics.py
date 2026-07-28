@@ -32,6 +32,7 @@ class MetricsCollector:
         self._stage_attempts: dict[str, int] = {}
         self.stages: list[dict[str, Any]] = []
         self.llm_calls: list[dict[str, Any]] = []
+        self.tts: dict[str, Any] | None = None
         self.research: dict[str, Any] = {}
         self.status = "running"
         self.finished_at: datetime | None = None
@@ -87,6 +88,10 @@ class MetricsCollector:
             entry["segment_index"] = segment_index
         self.llm_calls.append(entry)
 
+    def record_tts_usage(self, *, provider: str, characters: int) -> None:
+        """render_episode_node 結束後呼叫一次；provider="edge" 時該集 TTS 免費（fallback）。"""
+        self.tts = {"provider": provider, "characters": characters}
+
     def set_research_summary(self, **fields: Any) -> None:
         """研究節點結束時呼叫；同一個 key 後到的呼叫覆寫先前值（非 append）。"""
         self.research.update(fields)
@@ -114,6 +119,7 @@ class MetricsCollector:
             "wall_ms": wall_ms,
             "stages": self.stages,
             "llm_calls": self.llm_calls,
+            "tts": self.tts,
             "totals": {
                 "llm_call_count": len(self.llm_calls),
                 "input_tokens": total_in,

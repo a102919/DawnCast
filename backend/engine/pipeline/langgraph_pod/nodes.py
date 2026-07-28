@@ -744,6 +744,7 @@ async def decompose_research_node(
         f"Angle: {state.get('angle') or '定義'}"
     )
     usage: dict[str, object] | None = None
+    call_start = time.monotonic()
     try:
         msg = await chat.ainvoke(
             [
@@ -752,6 +753,14 @@ async def decompose_research_node(
             ]
         )
         usage = _usage_from_ai_msg(msg)
+        if collector is not None:
+            collector.record_llm_call(
+                node="research_decompose",
+                call="decompose",
+                duration_ms=int((time.monotonic() - call_start) * 1000),
+                input_tokens=cast(int, usage.get("input_tokens", 0)),
+                output_tokens=cast(int, usage.get("output_tokens", 0)),
+            )
         raw = msg.content
         if not isinstance(raw, str):
             raise ValueError("研究問題拆解回應不是文字")
@@ -954,6 +963,7 @@ async def cross_verify_node(
 
     evidence_payload = [card.model_dump(mode="json") for card in cards]
     usage: dict[str, object] | None = None
+    call_start = time.monotonic()
     try:
         msg = await chat.ainvoke(
             [
@@ -962,6 +972,14 @@ async def cross_verify_node(
             ]
         )
         usage = _usage_from_ai_msg(msg)
+        if collector is not None:
+            collector.record_llm_call(
+                node="research_cross_verify",
+                call="cross_verify",
+                duration_ms=int((time.monotonic() - call_start) * 1000),
+                input_tokens=cast(int, usage.get("input_tokens", 0)),
+                output_tokens=cast(int, usage.get("output_tokens", 0)),
+            )
         raw = msg.content
         if not isinstance(raw, str):
             raise ValueError("交叉驗證回應不是文字")
@@ -2195,6 +2213,11 @@ async def render_episode_node(state: PodState, config: RunnableConfig) -> dict[s
     _settings: Settings = ctx["settings"]  # noqa: F841  預留觀測 / 後續設定接入
     workdir = make_job_workdir()
     artifacts = await render_episode(script, workdir, cefr=state.get("cefr") or "B1")
+    collector = _collector(config)
+    if collector is not None:
+        collector.record_tts_usage(
+            provider=artifacts.tts_provider, characters=artifacts.tts_characters
+        )
     return {"artifacts": artifacts}
 
 

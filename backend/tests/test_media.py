@@ -192,8 +192,9 @@ async def test_synth_script_falls_back_to_edge_on_minimax_failure(
     monkeypatch.setattr(tts_mod, "_synth_line_edge", fake_edge)
 
     script = ScriptJSON.model_validate_json(_FIXTURE.read_text(encoding="utf-8"))
-    segs = await synth_script(script, tmp_path, cefr="A2")
+    segs, provider = await synth_script(script, tmp_path, cefr="A2")
 
+    assert provider == "edge"
     assert len(segs) == len(script.script)
     # 全部行都由 edge 合成，且 A2 語速（-20%）有帶到
     assert len(edge_calls) == len(script.script)

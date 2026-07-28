@@ -54,6 +54,8 @@ class EpisodeArtifacts:
     srt: str
     vtt: str
     cues: list[Cue]
+    tts_provider: str = ""
+    tts_characters: int = 0
 
 
 async def render_episode(
@@ -69,7 +71,8 @@ async def render_episode(
     settings = get_settings()
     workdir.mkdir(parents=True, exist_ok=True)
 
-    segs = await synth_script(script, workdir, cefr=cefr)
+    segs, tts_provider = await synth_script(script, workdir, cefr=cefr)
+    tts_characters = sum(len(seg.text) for seg in segs)
 
     cues = build_timeline(
         segs,
@@ -89,4 +92,6 @@ async def render_episode(
         srt=srt,
         vtt=vtt,
         cues=cues,
+        tts_provider=tts_provider,
+        tts_characters=tts_characters,
     )
