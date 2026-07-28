@@ -11,6 +11,16 @@ export const TOPIC_LABELS: Record<TopicKey, string> = {
   science: '科學',
 } as const
 
+// 把主題代碼陣列轉成「・」分隔的顯示字串，未知代碼過濾掉、全空時 fallback 提示文字。
+export function formatTopicSummary(topics: readonly string[]): string {
+  return (
+    topics
+      .map(t => TOPIC_LABELS[t as keyof typeof TOPIC_LABELS] ?? null)
+      .filter((s): s is string => s !== null)
+      .join('・') || '未指定主題'
+  )
+}
+
 export type CefrLevel = 'A2' | 'B1' | 'B2'
 
 export type MockEpisode = {

@@ -153,6 +153,21 @@ def _find_key(jwks: dict[str, Any], kid: str) -> dict[str, Any] | None:
     return None
 
 
+def _is_dev_bypass(authorization: str | None) -> bool:
+    """判斷是否符合 dev bypass 條件：environment=dev 且 dev_auth_bypass=true，
+    且 Authorization 是 'Bearer dev' 或缺。
+
+    get_current_user 與 account._jwt_email 共用此判斷，避免安全邏輯複製兩份。
+    """
+    settings = get_settings()
+    return (
+        settings.environment == "dev"
+        and settings.dev_auth_bypass
+        and bool(settings.dev_user_id)
+        and (authorization is None or authorization.lower() == "bearer dev")
+    )
+
+
 async def get_current_user(authorization: str | None = Header(default=None)) -> UserId:
     """從 Authorization: Bearer <jwt> 取出並驗證 user_id（sub）。
 
@@ -160,14 +175,8 @@ async def get_current_user(authorization: str | None = Header(default=None)) -> 
     'Bearer dev' 或缺 → 直接回 dev_user_id。本機預覽不繞 Supabase。
     prod 強制走 ES256 + JWKS（assert_secure 已擋預設 JWKS URL）。
     """
-    settings = get_settings()
-    if (
-        settings.environment == "dev"
-        and settings.dev_auth_bypass
-        and settings.dev_user_id
-        and (authorization is None or authorization.lower() == "bearer dev")
-    ):
-        return settings.dev_user_id
+    if _is_dev_bypass(authorization):
+        return get_settings().dev_user_id
     if not authorization or not authorization.lower().startswith("bearer "):
         raise AuthError("缺少授權標頭")
     token = authorization[7:].strip()

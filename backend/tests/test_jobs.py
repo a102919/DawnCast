@@ -25,6 +25,10 @@ from fastapi.testclient import TestClient
 from app.routers import daily_orders as daily_orders_router
 from shared.db import queue as db_queue
 from shared.db import repo as db_repo
+from tests._auth import auth_header
+from tests._db_fakes import FakeConnection as _BaseFakeConnection
+from tests._db_fakes import FakeCursor as _BaseFakeCursor
+from tests._db_fakes import fake_connection
 
 USER_A = "11111111-1111-1111-1111-111111111111"
 USER_B = "22222222-2222-2222-2222-222222222222"
@@ -37,18 +41,12 @@ ORDERS: dict[tuple[str, str], str] = {}
 SENT_MESSAGES: list[tuple[str, dict[str, Any]]] = []
 
 
-class FakeCursor:
+class FakeCursor(_BaseFakeCursor):
     def __init__(self) -> None:
-        self._rows: list[dict[str, Any]] = []
+        super().__init__()
         self._last_sql: str = ""
         self._last_params: tuple[Any, ...] = ()
         self.rowcount = 0
-
-    async def __aenter__(self) -> FakeCursor:
-        return self
-
-    async def __aexit__(self, *_: object) -> None:
-        return None
 
     async def execute(self, sql: str, params: tuple[Any, ...] = ()) -> None:
         s = " ".join(sql.split())  # 正規化空白
@@ -85,24 +83,10 @@ class FakeCursor:
 
         return
 
-    async def fetchall(self) -> list[dict[str, Any]]:
-        return self._rows
 
-    async def fetchone(self) -> dict[str, Any] | None:
-        return self._rows[0] if self._rows else None
-
-
-class FakeConnection:
+class FakeConnection(_BaseFakeConnection):
     def cursor(self, **_: object) -> FakeCursor:
         return FakeCursor()
-
-    async def commit(self) -> None:
-        return None
-
-
-@asynccontextmanager
-async def fake_connection() -> AsyncIterator[FakeConnection]:
-    yield FakeConnection()
 
 
 async def spy_queue_send(queue: str, body: dict[str, Any]) -> int:
@@ -120,12 +104,13 @@ def _reset_state() -> None:
 
 @pytest.fixture(autouse=True)
 def patch_deps(monkeypatch: pytest.MonkeyPatch) -> None:
+    conn = fake_connection(FakeConnection)
     # jobs.py 不直接 import connection（全走 repo），只 patch db_repo 就夠。
-    monkeypatch.setattr(db_repo, "connection", fake_connection)
+    monkeypatch.setattr(db_repo, "connection", conn)
     # spy pgmq.send
     monkeypatch.setattr(db_queue, "send", spy_queue_send)
     # daily_orders router 也會被測試 / 共用同個 connection
-    monkeypatch.setattr(daily_orders_router, "connection", fake_connection)
+    monkeypatch.setattr(daily_orders_router, "connection", conn)
 
 
 @pytest.fixture
@@ -133,16 +118,6 @@ def client() -> TestClient:
     from app.main import create_app
 
     return TestClient(create_app(), raise_server_exceptions=False)
-
-
-def _token(user_id: str) -> str:
-    from tests._auth import sign_test_token
-
-    return sign_test_token(user_id)
-
-
-def _auth(user_id: str) -> dict[str, str]:
-    return {"Authorization": f"Bearer {_token(user_id)}"}
 
 
 # ── (a) 授權 ────────────────────────────────────────────────────────────────
@@ -171,9 +146,7 @@ def test_bad_jwt_returns_401(client: TestClient) -> None:
 def test_pending_order_returns_202_and_enqueues(client: TestClient) -> None:
     ORDERS[(USER_A, TARGET_DATE)] = "pending"
 
-    res = client.post(
-        f"/jobs/orders/{TARGET_DATE}/generate", headers=_auth(USER_A)
-    )
+    res = client.post(f"/jobs/orders/{TARGET_DATE}/generate", headers=auth_header(USER_A))
     assert res.status_code == 202
     body = res.json()
     assert body["ok"] is True
@@ -196,9 +169,7 @@ def test_pending_order_returns_202_and_enqueues(client: TestClient) -> None:
 def test_queued_order_returns_409(client: TestClient) -> None:
     ORDERS[(USER_A, TARGET_DATE)] = "queued"
 
-    res = client.post(
-        f"/jobs/orders/{TARGET_DATE}/generate", headers=_auth(USER_A)
-    )
+    res = client.post(f"/jobs/orders/{TARGET_DATE}/generate", headers=auth_header(USER_A))
     assert res.status_code == 409
     body = res.json()
     assert body["ok"] is False
@@ -212,9 +183,7 @@ def test_queued_order_returns_409(client: TestClient) -> None:
 def test_played_order_returns_409(client: TestClient) -> None:
     ORDERS[(USER_A, TARGET_DATE)] = "played"
 
-    res = client.post(
-        f"/jobs/orders/{TARGET_DATE}/generate", headers=_auth(USER_A)
-    )
+    res = client.post(f"/jobs/orders/{TARGET_DATE}/generate", headers=auth_header(USER_A))
     assert res.status_code == 409
     assert res.json()["error"]["code"] == "conflict"
     assert SENT_MESSAGES == []
@@ -225,9 +194,7 @@ def test_played_order_returns_409(client: TestClient) -> None:
 
 def test_missing_order_returns_404(client: TestClient) -> None:
     # ORDERS 空 → 該 user 從未下過單
-    res = client.post(
-        f"/jobs/orders/{TARGET_DATE}/generate", headers=_auth(USER_A)
-    )
+    res = client.post(f"/jobs/orders/{TARGET_DATE}/generate", headers=auth_header(USER_A))
     assert res.status_code == 404
     body = res.json()
     assert body["ok"] is False
@@ -250,14 +217,10 @@ def test_concurrent_second_request_gets_409(client: TestClient) -> None:
     """
     ORDERS[(USER_A, TARGET_DATE)] = "pending"
 
-    res1 = client.post(
-        f"/jobs/orders/{TARGET_DATE}/generate", headers=_auth(USER_A)
-    )
+    res1 = client.post(f"/jobs/orders/{TARGET_DATE}/generate", headers=auth_header(USER_A))
     assert res1.status_code == 202
 
-    res2 = client.post(
-        f"/jobs/orders/{TARGET_DATE}/generate", headers=_auth(USER_A)
-    )
+    res2 = client.post(f"/jobs/orders/{TARGET_DATE}/generate", headers=auth_header(USER_A))
     assert res2.status_code == 409
     assert res2.json()["error"]["code"] == "conflict"
 
@@ -324,7 +287,7 @@ def test_save_daily_order_upsert_does_not_touch_status(
             "deliveryTime": "07:00",
             "status": "pending",  # 前端想覆蓋 → 後端必須忽略
         },
-        headers=_auth(USER_A),
+        headers=auth_header(USER_A),
     )
     assert res.status_code == 200
     assert res.json()["data"]["status"] == "queued"  # 維持 queued
@@ -340,9 +303,7 @@ def test_save_daily_order_upsert_does_not_touch_status(
 # ── (g) 授權：user_id 永遠取自 JWT，不信任 path ─────────────────────────────
 
 
-def test_auth_uses_jwt_user_not_path(
-    client: TestClient, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_auth_uses_jwt_user_not_path(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
     """user A 用自己的 token 觸發；但 path 寫成 user B 的識別（這裡用日期不變，
     改用 spy_connection 確認 SELECT 的第一個參數是 JWT 解析出的 user_id）。
     """
@@ -368,9 +329,7 @@ def test_auth_uses_jwt_user_not_path(
     ORDERS[(USER_B, TARGET_DATE)] = "played"  # B 的是 played，user_id 錯配會 409
 
     # 用 USER_A 的 token（正確所有者）
-    res = client.post(
-        f"/jobs/orders/{TARGET_DATE}/generate", headers=_auth(USER_A)
-    )
+    res = client.post(f"/jobs/orders/{TARGET_DATE}/generate", headers=auth_header(USER_A))
     assert res.status_code == 202
 
     # 所有看到 user_id 參數的位置都應該是 USER_A
@@ -385,18 +344,14 @@ def test_auth_uses_jwt_user_not_path(
 
 
 def test_404_message_says_no_order(client: TestClient) -> None:
-    res = client.post(
-        f"/jobs/orders/{TARGET_DATE}/generate", headers=_auth(USER_A)
-    )
+    res = client.post(f"/jobs/orders/{TARGET_DATE}/generate", headers=auth_header(USER_A))
     assert res.status_code == 404
     assert "訂單" in res.json()["error"]["message"]
 
 
 def test_409_message_says_already_queued(client: TestClient) -> None:
     ORDERS[(USER_A, TARGET_DATE)] = "queued"
-    res = client.post(
-        f"/jobs/orders/{TARGET_DATE}/generate", headers=_auth(USER_A)
-    )
+    res = client.post(f"/jobs/orders/{TARGET_DATE}/generate", headers=auth_header(USER_A))
     assert res.status_code == 409
     msg = res.json()["error"]["message"]
     # 訊息至少能區分 404（請先下單）vs 409（已排入/已播放），不需逐字一致
@@ -408,9 +363,7 @@ def test_409_message_says_already_queued(client: TestClient) -> None:
 
 def test_envelope_shape_202(client: TestClient) -> None:
     ORDERS[(USER_A, TARGET_DATE)] = "pending"
-    body = client.post(
-        f"/jobs/orders/{TARGET_DATE}/generate", headers=_auth(USER_A)
-    ).json()
+    body = client.post(f"/jobs/orders/{TARGET_DATE}/generate", headers=auth_header(USER_A)).json()
     assert set(body.keys()) == {"ok", "data", "error"}
     assert body["ok"] is True
     assert body["error"] is None

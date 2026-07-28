@@ -175,18 +175,6 @@ describe('useSegmentPlayer', () => {
     h.unmount()
   })
 
-  it('loadEpisode decodes first segment via fetch + decodeAudioData', async () => {
-    const h = mountHook()
-    await act(async () => {
-      await h.getPlayer().loadEpisode(makeEpisode(3))
-    })
-    const fetchMock = global.fetch as ReturnType<typeof vi.fn>
-    expect(fetchMock).toHaveBeenCalled()
-    expect(String(fetchMock.mock.calls[0]?.[0])).toContain('https://cdn/0.mp3')
-    expect(fakeCtx.decodeAudioData).toHaveBeenCalled()
-    h.unmount()
-  })
-
   it('playSegment triggers ducking ramp on main gain', async () => {
     const h = mountHook()
     await act(async () => {

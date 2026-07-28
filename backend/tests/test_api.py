@@ -14,8 +14,6 @@ user_id 參數回傳預置的 in-memory 列。重點驗 router 邏輯與授權�
 from __future__ import annotations
 
 import json
-from collections.abc import AsyncIterator
-from contextlib import asynccontextmanager
 from datetime import date, timedelta
 from typing import Any
 
@@ -27,6 +25,10 @@ from app.routers import daily_orders as daily_orders_router
 from app.routers import episodes as episodes_router
 from app.routers import vocab as vocab_router
 from shared.db import repo as db_repo
+from tests._auth import auth_header
+from tests._db_fakes import FakeConnection as _BaseFakeConnection
+from tests._db_fakes import FakeCursor as _BaseFakeCursor
+from tests._db_fakes import fake_connection
 
 # ── 測試資料：兩個 user，各自的 vocab；三集（免費 / A 有授權 / 都無授權）──
 
@@ -109,16 +111,7 @@ DELIVERIES_BY_DATE: dict[tuple[str, str], list[str]] = {
 ACTIVITY_BY_USER: dict[str, dict[str, Any]] = {}
 
 
-class FakeCursor:
-    def __init__(self) -> None:
-        self._rows: list[dict[str, Any]] = []
-
-    async def __aenter__(self) -> FakeCursor:
-        return self
-
-    async def __aexit__(self, *_: object) -> None:
-        return None
-
+class FakeCursor(_BaseFakeCursor):
     async def execute(self, sql: str, params: tuple[Any, ...] = ()) -> None:
         s = " ".join(sql.split())  # 正規化空白
         self._rows = []
@@ -203,24 +196,10 @@ class FakeCursor:
         # 其餘查詢測試不涉及，回空
         return
 
-    async def fetchall(self) -> list[dict[str, Any]]:
-        return self._rows
 
-    async def fetchone(self) -> dict[str, Any] | None:
-        return self._rows[0] if self._rows else None
-
-
-class FakeConnection:
+class FakeConnection(_BaseFakeConnection):
     def cursor(self, **_: object) -> FakeCursor:
         return FakeCursor()
-
-    async def commit(self) -> None:
-        return None
-
-
-@asynccontextmanager
-async def fake_connection() -> AsyncIterator[FakeConnection]:
-    yield FakeConnection()
 
 
 @pytest.fixture(autouse=True)
@@ -234,13 +213,14 @@ def _reset_activity() -> None:
 
 @pytest.fixture(autouse=True)
 def patch_db(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(vocab_router, "connection", fake_connection)
-    monkeypatch.setattr(episodes_router, "connection", fake_connection)
-    monkeypatch.setattr(daily_orders_router, "connection", fake_connection)
-    monkeypatch.setattr(activity_router, "connection", fake_connection)
+    conn = fake_connection(FakeConnection)
+    monkeypatch.setattr(vocab_router, "connection", conn)
+    monkeypatch.setattr(episodes_router, "connection", conn)
+    monkeypatch.setattr(daily_orders_router, "connection", conn)
+    monkeypatch.setattr(activity_router, "connection", conn)
     # repo.py 用 `from shared.db.pool import connection`，import 時把 connection
     # 綁進 db_repo 自己的 namespace；patch shared.db.pool 不夠，必須 patch db_repo。
-    monkeypatch.setattr(db_repo, "connection", fake_connection)
+    monkeypatch.setattr(db_repo, "connection", conn)
     # presign 不打真 R2
     monkeypatch.setattr(
         episodes_router.r2,
@@ -259,16 +239,6 @@ def client() -> TestClient:
     from app.main import create_app
 
     return TestClient(create_app(), raise_server_exceptions=False)
-
-
-def _token(user_id: str) -> str:
-    from tests._auth import sign_test_token
-
-    return sign_test_token(user_id)
-
-
-def _auth(user_id: str) -> dict[str, str]:
-    return {"Authorization": f"Bearer {_token(user_id)}"}
 
 
 # ── (a) 無 JWT → 401 ──────────────────────────────────────────────
@@ -292,14 +262,14 @@ def test_bad_jwt_returns_401(client: TestClient) -> None:
 
 
 def test_vocab_scoped_to_owner(client: TestClient) -> None:
-    res_a = client.get("/vocab", headers=_auth(USER_A))
+    res_a = client.get("/vocab", headers=auth_header(USER_A))
     assert res_a.status_code == 200
     data_a = res_a.json()["data"]
     words_a = {v["word"] for v in data_a}
     assert words_a == {"serendipity"}
     assert "ephemeral" not in words_a  # 拿不到 B 的
 
-    res_b = client.get("/vocab", headers=_auth(USER_B))
+    res_b = client.get("/vocab", headers=auth_header(USER_B))
     words_b = {v["word"] for v in res_b.json()["data"]}
     assert words_b == {"ephemeral"}
 
@@ -308,7 +278,7 @@ def test_vocab_scoped_to_owner(client: TestClient) -> None:
 
 
 def test_envelope_shape_success(client: TestClient) -> None:
-    body = client.get("/vocab", headers=_auth(USER_A)).json()
+    body = client.get("/vocab", headers=auth_header(USER_A)).json()
     assert set(body.keys()) == {"ok", "data", "error"}
     assert body["ok"] is True
     assert body["error"] is None
@@ -335,9 +305,7 @@ def test_envelope_shape_error(client: TestClient) -> None:
 
 
 def test_get_delivered_episode_returns_slug(client: TestClient) -> None:
-    res = client.get(
-        "/daily-orders/2026-07-15/episode", headers=_auth(USER_A)
-    )
+    res = client.get("/daily-orders/2026-07-15/episode", headers=auth_header(USER_A))
     assert res.status_code == 200
     body = res.json()
     assert body["ok"] is True
@@ -348,9 +316,7 @@ def test_get_delivered_episode_returns_slug(client: TestClient) -> None:
 
 def test_get_delivered_episode_null_when_no_delivery(client: TestClient) -> None:
     # USER_A 在 2026-07-16 沒交付記錄 → data 應為 null（不是 404，前端要 fallback）
-    res = client.get(
-        "/daily-orders/2026-07-16/episode", headers=_auth(USER_A)
-    )
+    res = client.get("/daily-orders/2026-07-16/episode", headers=auth_header(USER_A))
     assert res.status_code == 200
     body = res.json()
     assert body["ok"] is True
@@ -359,9 +325,7 @@ def test_get_delivered_episode_null_when_no_delivery(client: TestClient) -> None
 
 def test_get_delivered_episode_owner_scoped(client: TestClient) -> None:
     # USER_B 查 USER_A 有交付的日期 → 200 + null（WHERE 過濾掉別人的交付）
-    res = client.get(
-        "/daily-orders/2026-07-15/episode", headers=_auth(USER_B)
-    )
+    res = client.get("/daily-orders/2026-07-15/episode", headers=auth_header(USER_B))
     assert res.status_code == 200
     assert res.json()["data"] is None
 
@@ -390,7 +354,7 @@ def test_no_jwt_activity_401(client: TestClient) -> None:
 
 
 def test_get_activity_default_when_no_row(client: TestClient) -> None:
-    res = client.get("/activity", headers=_auth(USER_A))
+    res = client.get("/activity", headers=auth_header(USER_A))
     assert res.status_code == 200
     data = res.json()["data"]
     assert data["streakDates"] == []
@@ -405,10 +369,10 @@ def test_get_activity_default_when_no_row(client: TestClient) -> None:
 def test_patch_add_streak_date_dedup(client: TestClient) -> None:
     for _ in range(2):
         res = client.patch(
-            "/activity", json={"addStreakDate": "2026-07-16"}, headers=_auth(USER_A)
+            "/activity", json={"addStreakDate": "2026-07-16"}, headers=auth_header(USER_A)
         )
         assert res.status_code == 200
-    data = client.get("/activity", headers=_auth(USER_A)).json()["data"]
+    data = client.get("/activity", headers=auth_header(USER_A)).json()["data"]
     assert data["streakDates"] == ["2026-07-16"]
 
 
@@ -425,7 +389,7 @@ def test_patch_streak_dates_caps_365(client: TestClient) -> None:
         "last_played_at": None,
     }
     res = client.patch(
-        "/activity", json={"addStreakDate": "2027-01-01"}, headers=_auth(USER_A)
+        "/activity", json={"addStreakDate": "2027-01-01"}, headers=auth_header(USER_A)
     )
     assert res.status_code == 200
     streak_dates = res.json()["data"]["streakDates"]
@@ -439,10 +403,10 @@ def test_patch_add_listen_minutes_increments(client: TestClient) -> None:
         res = client.patch(
             "/activity",
             json={"addListenMinutes": {"month": "2026-07", "minutes": 5}},
-            headers=_auth(USER_A),
+            headers=auth_header(USER_A),
         )
         assert res.status_code == 200
-    data = client.get("/activity", headers=_auth(USER_A)).json()["data"]
+    data = client.get("/activity", headers=auth_header(USER_A)).json()["data"]
     assert data["listenMinutes"] == {"2026-07": 10}
 
 
@@ -451,20 +415,20 @@ def test_patch_add_lookup_count_increments(client: TestClient) -> None:
         res = client.patch(
             "/activity",
             json={"addLookupCount": {"month": "2026-07", "count": 1}},
-            headers=_auth(USER_A),
+            headers=auth_header(USER_A),
         )
         assert res.status_code == 200
-    data = client.get("/activity", headers=_auth(USER_A)).json()["data"]
+    data = client.get("/activity", headers=auth_header(USER_A)).json()["data"]
     assert data["lookupCount"] == {"2026-07": 3}
 
 
 def test_patch_add_listened_episode_id_dedup(client: TestClient) -> None:
     for _ in range(2):
         res = client.patch(
-            "/activity", json={"addListenedEpisodeId": "ep-free"}, headers=_auth(USER_A)
+            "/activity", json={"addListenedEpisodeId": "ep-free"}, headers=auth_header(USER_A)
         )
         assert res.status_code == 200
-    data = client.get("/activity", headers=_auth(USER_A)).json()["data"]
+    data = client.get("/activity", headers=auth_header(USER_A)).json()["data"]
     assert data["listenedEpisodeIds"] == ["ep-free"]
 
 
@@ -474,15 +438,15 @@ def test_patch_last_played_newer_wins(client: TestClient) -> None:
     client.patch(
         "/activity",
         json={"lastPlayed": {"episodeId": "ep-a-only", "position": 10.0, "at": t1}},
-        headers=_auth(USER_A),
+        headers=auth_header(USER_A),
     )
     res = client.patch(
         "/activity",
         json={"lastPlayed": {"episodeId": "ep-free", "position": 20.0, "at": t2}},
-        headers=_auth(USER_A),
+        headers=auth_header(USER_A),
     )
     assert res.status_code == 200
-    data = client.get("/activity", headers=_auth(USER_A)).json()["data"]
+    data = client.get("/activity", headers=auth_header(USER_A)).json()["data"]
     assert data["lastPlayedEpisodeId"] == "ep-free"
     assert data["lastPlayedPosition"] == 20.0
     assert data["lastPlayedAt"] == t2
@@ -494,15 +458,15 @@ def test_patch_last_played_ignores_stale_out_of_order(client: TestClient) -> Non
     client.patch(
         "/activity",
         json={"lastPlayed": {"episodeId": "ep-free", "position": 20.0, "at": t2}},
-        headers=_auth(USER_A),
+        headers=auth_header(USER_A),
     )
     res = client.patch(
         "/activity",
         json={"lastPlayed": {"episodeId": "ep-a-only", "position": 10.0, "at": t1}},
-        headers=_auth(USER_A),
+        headers=auth_header(USER_A),
     )
     assert res.status_code == 200
-    data = client.get("/activity", headers=_auth(USER_A)).json()["data"]
+    data = client.get("/activity", headers=auth_header(USER_A)).json()["data"]
     # 較舊的節流請求（t1）不得覆蓋較新的進度（t2）
     assert data["lastPlayedEpisodeId"] == "ep-free"
     assert data["lastPlayedPosition"] == 20.0
@@ -513,9 +477,9 @@ def test_activity_scoped_to_owner(client: TestClient) -> None:
     client.patch(
         "/activity",
         json={"addStreakDate": "2026-07-16", "addListenedEpisodeId": "ep-free"},
-        headers=_auth(USER_A),
+        headers=auth_header(USER_A),
     )
-    res_b = client.get("/activity", headers=_auth(USER_B))
+    res_b = client.get("/activity", headers=auth_header(USER_B))
     assert res_b.status_code == 200
     data_b = res_b.json()["data"]
     assert data_b["streakDates"] == []
@@ -524,7 +488,7 @@ def test_activity_scoped_to_owner(client: TestClient) -> None:
 
 def test_patch_activity_envelope_shape(client: TestClient) -> None:
     res = client.patch(
-        "/activity", json={"addStreakDate": "2026-07-16"}, headers=_auth(USER_A)
+        "/activity", json={"addStreakDate": "2026-07-16"}, headers=auth_header(USER_A)
     )
     body = res.json()
     assert set(body.keys()) == {"ok", "data", "error"}
@@ -551,12 +515,12 @@ def test_patch_activity_partial_body_untouched_fields(client: TestClient) -> Non
             "addListenMinutes": {"month": "2026-07", "minutes": 5},
             "lastPlayed": {"episodeId": "ep-free", "position": 10.0, "at": "2026-07-16T08:00:00Z"},
         },
-        headers=_auth(USER_A),
+        headers=auth_header(USER_A),
     )
     res = client.patch(
         "/activity",
         json={"addLookupCount": {"month": "2026-07", "count": 1}},
-        headers=_auth(USER_A),
+        headers=auth_header(USER_A),
     )
     assert res.status_code == 200
     data = res.json()["data"]
@@ -573,7 +537,7 @@ def test_patch_activity_partial_body_untouched_fields(client: TestClient) -> Non
 def test_get_episode_references_empty_when_no_sources(client: TestClient) -> None:
     """沒 sources 的集數 → references 預設空 list（非 null）。"""
     EPISODES["ep-free"]["sources"] = []
-    res = client.get("/episodes/ep-free", headers=_auth(USER_A))
+    res = client.get("/episodes/ep-free", headers=auth_header(USER_A))
     assert res.status_code == 200
     body = res.json()
     assert body["ok"] is True
@@ -597,7 +561,7 @@ def test_get_episode_references_maps_safe_urls(client: TestClient) -> None:
             "text": "another leaked body",
         },
     ]
-    res = client.get("/episodes/ep-free", headers=_auth(USER_A))
+    res = client.get("/episodes/ep-free", headers=auth_header(USER_A))
     assert res.status_code == 200
     refs = res.json()["data"]["references"]
     assert refs == [
@@ -629,7 +593,7 @@ def test_get_episode_references_filters_dangerous_schemes(client: TestClient) ->
         {"id": "empty", "title": "empty", "url": ""},
         {"id": "nonstr", "title": "nonstr", "url": None},
     ]
-    res = client.get("/episodes/ep-free", headers=_auth(USER_A))
+    res = client.get("/episodes/ep-free", headers=auth_header(USER_A))
     assert res.status_code == 200
     refs = res.json()["data"]["references"]
     assert [r["id"] for r in refs] == ["ok"]
@@ -644,7 +608,7 @@ def test_get_episode_references_skips_malformed_entries(client: TestClient) -> N
         {"id": "good", "title": "good", "url": "  https://trim.example  "},
         {"id": "ok2", "url": "https://ok2"},
     ]
-    res = client.get("/episodes/ep-free", headers=_auth(USER_A))
+    res = client.get("/episodes/ep-free", headers=auth_header(USER_A))
     assert res.status_code == 200
     refs = res.json()["data"]["references"]
     assert refs == [
@@ -656,7 +620,7 @@ def test_get_episode_references_skips_malformed_entries(client: TestClient) -> N
 def test_get_episode_references_empty_when_sources_null(client: TestClient) -> None:
     """DB row sources 為 NULL（極舊資料）→ 不爆，回空 references。"""
     EPISODES["ep-free"]["sources"] = None
-    res = client.get("/episodes/ep-free", headers=_auth(USER_A))
+    res = client.get("/episodes/ep-free", headers=auth_header(USER_A))
     assert res.status_code == 200
     assert res.json()["data"]["references"] == []
 
@@ -669,14 +633,16 @@ def test_get_episode_returns_signed_segments_aligned_with_cues(client: TestClien
     cues: list[dict[str, Any]] = []
     t = 0.0
     for i in range(5):
-        cues.append({
-            "index": i,
-            "speaker": "Alex" if i % 2 == 0 else "Sarah",
-            "text": f"line {i}",
-            "zh": f"第 {i} 行",
-            "start": t,
-            "end": t + 4.0,
-        })
+        cues.append(
+            {
+                "index": i,
+                "speaker": "Alex" if i % 2 == 0 else "Sarah",
+                "text": f"line {i}",
+                "zh": f"第 {i} 行",
+                "start": t,
+                "end": t + 4.0,
+            }
+        )
         t += 4.3
     EPISODES["ep-free"]["keys"] = [f"episodes/ep-free/segments/{i:03d}.mp3" for i in range(5)]
 
@@ -715,7 +681,7 @@ def test_get_episode_returns_signed_segments_aligned_with_cues(client: TestClien
     monkeypatch_setattr = pytest.MonkeyPatch()
     monkeypatch_setattr.setattr(FakeCursor, "execute", execute_with_cues)
     try:
-        res = client.get("/episodes/ep-free", headers=_auth(USER_A))
+        res = client.get("/episodes/ep-free", headers=auth_header(USER_A))
         assert res.status_code == 200
         payload = res.json()["data"]
         segs = payload["segments"]

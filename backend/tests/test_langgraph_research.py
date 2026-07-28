@@ -762,50 +762,6 @@ async def test_claim_verification_parse_failure_fails_open() -> None:
     assert result["errors"]
 
 
-async def test_retrieve_sources_shim_keeps_legacy_output_shape() -> None:
-    from engine.pipeline.langgraph_pod.nodes import retrieve_sources_node
-    from shared.config import get_settings
-    from shared.models import SourceSnippet
-
-    class Provider:
-        name = "legacy"
-
-        async def fetch(self, query: str) -> list[SourceSnippet]:
-            return [
-                SourceSnippet(
-                    id="legacy:1",
-                    title="舊介面",
-                    url="https://example.com/legacy",
-                    text="內容",
-                )
-            ]
-
-        async def aclose(self) -> None:
-            return None
-
-    result = await retrieve_sources_node(
-        {"big_topic": "科技", "canonical_topic": "量子", "topic_type": "evergreen"},
-        {
-            "configurable": {
-                "settings": get_settings(),
-                "source_provider_factory": lambda topic_type, settings: Provider(),
-            }
-        },
-    )
-
-    assert result == {
-        "sources": [
-            SourceSnippet(
-                id="legacy:1",
-                title="舊介面",
-                url="https://example.com/legacy",
-                text="內容",
-            )
-        ],
-        "grounded": True,
-    }
-
-
 async def test_skill_research_nodes_skip_external_calls() -> None:
     from engine.pipeline.langgraph_pod.chat import FakeChatModel
     from engine.pipeline.langgraph_pod.nodes import (

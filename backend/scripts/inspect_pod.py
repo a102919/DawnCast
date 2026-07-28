@@ -9,8 +9,8 @@
   uv run python -m scripts.inspect_pod --topic "..." --mock    # 對照組（mock 全部）
 
 輸出格式：
-  [00.0] ▶ enter retrieve_sources_node
-  [03.2] ✓ retrieve_sources_node   (3.21s)
+  [00.0] ▶ enter gather_evidence_node
+  [03.2] ✓ gather_evidence_node   (3.21s)
   [03.2] ▶ enter tone_selector_node
   ...
   [60.4] ✓ backfill_dict_node     (0.05s)    ← 收尾
@@ -351,7 +351,7 @@ async def _run_with_events(args: argparse.Namespace) -> int:
                             _emit(now, f"   ↳ judge_feedback={state_delta['judge_feedback']}")
 
     except asyncio.TimeoutError:
-        print(f"[{timer.stamp():6.2f}] ⏰ TIMEOUT ({args.timeout_sec}s) 抵達；node_entered={list(node_entered)}")
+        print(f"[{timer.stamp():6.2f}] ⏰ TIMEOUT ({args.timeout_sec}s) 抵達；node_entered={[n for _, n, _ in events]}")
         await trace.close()
         return 3
     except Exception as exc:

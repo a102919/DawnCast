@@ -36,8 +36,6 @@ interface EpisodeCoverProps {
   readonly topic?: TopicKey
   /** AI 自動推薦的專屬圖示名稱（例如 'cpu', 'bot', 'trending-up', 'rocket' 等） */
   readonly coverIcon?: string | null
-  /** 是否顯示 Icon / 徽章，預設為 true */
-  readonly showIcon?: boolean
   /** 未來接真封面圖：有值時直接 render <img>，不跑生成邏輯。 */
   readonly imageUrl?: string | null
   readonly className?: string

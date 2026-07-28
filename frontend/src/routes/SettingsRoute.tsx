@@ -9,6 +9,7 @@ import { Toggle, Chip, SectionLabel } from '../components/primitives'
 import { AlertTriangle, ShieldCheck } from 'lucide-react'
 import { TOPIC_LABELS, isPushSupported, getPushEnabled, enablePush, disablePush } from '../lib'
 import type { TopicKey } from '../lib'
+import { RATES } from '../lib/playback'
 
 const TOPIC_CHOICES: readonly Exclude<TopicKey, 'all'>[] = ['tech', 'business', 'culture', 'science'] as const
 
@@ -62,8 +63,6 @@ export function SettingsRoute() {
       setPushBusy(false)
     }
   }
-
-  const RATES = [0.75, 1, 1.25, 1.5] as const
 
   const THEME_OPTIONS = [
     { value: 'light' as const, label: '淺色' },

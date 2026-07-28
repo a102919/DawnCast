@@ -1,7 +1,7 @@
 export { splitTextToWords, type WordToken } from './tokenize'
 export { lookupDict, lemmatize } from './dict'
 export { findActiveCueIndex, formatTime, type Cue } from './time'
-export { storageGet, storageSet, storageRemove } from './storage'
+export { storageGet, storageSet } from './storage'
 export { formatTimestamp, formatPos, formatExchange, formatDateZhTW, formatMultiline } from './format'
 export { TOPIC_LABELS, CEFR_COLOR, type TopicKey, type CefrLevel, type MockEpisode } from './episode'
 export { springs, reducedMotionSprings, useSprings, type SpringName } from './motion'

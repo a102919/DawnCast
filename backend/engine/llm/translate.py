@@ -32,6 +32,55 @@ def _resolve_llm_creds(settings: Settings) -> tuple[str, str, str]:
     return settings.minimax_anthropic_base_url, settings.minimax_auth_token, settings.minimax_model
 
 
+async def _call_minimax(payload: dict[str, Any], read_timeout: float) -> dict[str, Any]:
+    """打 MiniMax `/v1/messages`，回傳 {"text": <content blocks 抽出的文字>}。
+
+    非 200 拋 GenerationError（帶 status code）；連線 / JSON 解析錯誤原樣往上拋，
+    交給呼叫端統一 except (httpx.HTTPError, json.JSONDecodeError, ValueError, GenerationError)。
+    """
+    settings = get_settings()
+    base_url, token, _ = _resolve_llm_creds(settings)
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "anthropic-version": "2023-06-01",
+        "content-type": "application/json",
+    }
+    timeout = httpx.Timeout(
+        connect=settings.http_connect_timeout,
+        read=read_timeout,
+        write=read_timeout,
+        pool=settings.http_connect_timeout,
+    )
+    url = f"{base_url.rstrip('/')}/v1/messages"
+    async with httpx.AsyncClient(timeout=timeout) as client:
+        resp = await client.post(url, json=payload, headers=headers)
+    if resp.status_code != 200:
+        raise GenerationError(f"MiniMax API 非 200: status={resp.status_code}")
+    body = resp.json()
+    text = "".join(
+        blk.get("text", "") for blk in body.get("content", []) if blk.get("type") == "text"
+    )
+    return {"text": text}
+
+
+def _parse_fenced_json(text: str, open_ch: str, close_ch: str) -> Any | None:
+    """剝 code fence → json.loads；失敗退路抓第一個 open_ch...close_ch 區段再試一次。"""
+    s = text.strip()
+    if s.startswith("```"):
+        # ```json ... ``` 或 ``` ... ```
+        s = s.split("\n", 1)[-1].rsplit("```", 1)[0].strip()
+    try:
+        return json.loads(s)
+    except json.JSONDecodeError:
+        start, end = s.find(open_ch), s.rfind(close_ch)
+        if start < 0 or end <= start:
+            return None
+        try:
+            return json.loads(s[start : end + 1])
+        except json.JSONDecodeError:
+            return None
+
+
 async def translate_word(word: str) -> dict[str, Any] | None:
     """翻一個英文單字到台繁中文。
 
@@ -56,7 +105,7 @@ async def translate_word(word: str) -> dict[str, Any] | None:
         "5. 輸出嚴格 JSON，不要解釋、不要 code fence。\n"
         f"單字：{word}"
     )
-    base_url, token, model = _resolve_llm_creds(settings)
+    _, _, model = _resolve_llm_creds(settings)
     payload = {
         "model": model,
         # MiniMax-M2.7 是推理模型，回答前會先吐一段 thinking block（實測 ~1800 tokens）；
@@ -64,29 +113,9 @@ async def translate_word(word: str) -> dict[str, Any] | None:
         "max_tokens": 4096,
         "messages": [{"role": "user", "content": prompt}],
     }
-    headers = {
-        "Authorization": f"Bearer {token}",
-        "anthropic-version": "2023-06-01",
-        "content-type": "application/json",
-    }
-    timeout = httpx.Timeout(
-        connect=settings.http_connect_timeout,
-        read=settings.http_read_timeout,
-        write=settings.http_read_timeout,
-        pool=settings.http_connect_timeout,
-    )
-    url = f"{base_url.rstrip('/')}/v1/messages"
     try:
-        async with httpx.AsyncClient(timeout=timeout) as client:
-            resp = await client.post(url, json=payload, headers=headers)
-        if resp.status_code != 200:
-            logger.warning("MiniMax 翻譯非 200 word=%s status=%d", word, resp.status_code)
-            return None
-        body = resp.json()
-        text = "".join(
-            blk.get("text", "") for blk in body.get("content", []) if blk.get("type") == "text"
-        )
-        return _parse_text(text)
+        result = await _call_minimax(payload, settings.http_read_timeout)
+        return _parse_text(result["text"])
     except (httpx.HTTPError, json.JSONDecodeError, ValueError, GenerationError) as exc:
         logger.warning("MiniMax 翻譯失敗 word=%s: %s", word, exc)
         return None
@@ -94,21 +123,7 @@ async def translate_word(word: str) -> dict[str, Any] | None:
 
 def _parse_text(text: str) -> dict[str, Any] | None:
     """剝 code fence → JSON parse → 回 dict（含健壯性退路）。"""
-    s = text.strip()
-    if s.startswith("```"):
-        # ```json ... ``` 或 ``` ... ```
-        s = s.split("\n", 1)[-1].rsplit("```", 1)[0].strip()
-    try:
-        obj = json.loads(s)
-    except json.JSONDecodeError:
-        # 退路：抓第一個 {...}
-        start, end = s.find("{"), s.rfind("}")
-        if start < 0 or end <= start:
-            return None
-        try:
-            obj = json.loads(s[start : end + 1])
-        except json.JSONDecodeError:
-            return None
+    obj = _parse_fenced_json(text, "{", "}")
     if not isinstance(obj, dict):
         return None
     return _normalize_payload(obj)
@@ -172,40 +187,20 @@ async def translate_batch(words: list[str]) -> dict[str, dict[str, Any] | None]:
         "6. 嚴格只輸出 JSON 陣列，不要解釋、不要 code fence。\n"
         f"單字列表（每行一個，順序固定）：\n{word_list}"
     )
-    base_url, token, model = _resolve_llm_creds(settings)
+    _, _, model = _resolve_llm_creds(settings)
     payload = {
         "model": model,
         "max_tokens": _BATCH_MAX_TOKENS,
         "messages": [{"role": "user", "content": prompt}],
     }
-    headers = {
-        "Authorization": f"Bearer {token}",
-        "anthropic-version": "2023-06-01",
-        "content-type": "application/json",
-    }
-    timeout = httpx.Timeout(
-        connect=settings.http_connect_timeout,
-        read=_BATCH_READ_TIMEOUT,
-        write=_BATCH_READ_TIMEOUT,
-        pool=settings.http_connect_timeout,
-    )
-    url = f"{base_url.rstrip('/')}/v1/messages"
     try:
-        async with httpx.AsyncClient(timeout=timeout) as client:
-            resp = await client.post(url, json=payload, headers=headers)
-    except Exception as exc:
+        result = await _call_minimax(payload, _BATCH_READ_TIMEOUT)
+        text = result["text"]
+        items = _parse_batch_text(text)
+    except (httpx.HTTPError, json.JSONDecodeError, ValueError, GenerationError) as exc:
         logger.warning("MiniMax 批次翻譯例外 n=%d: %s: %s", len(words), type(exc).__name__, exc)
         return {}
 
-    if resp.status_code != 200:
-        logger.warning("MiniMax 批次翻譯非 200 n=%d status=%d", len(words), resp.status_code)
-        return {}
-
-    body = resp.json()
-    text = "".join(
-        blk.get("text", "") for blk in body.get("content", []) if blk.get("type") == "text"
-    )
-    items = _parse_batch_text(text)
     if items is None:
         logger.warning("MiniMax 批次翻譯解析失敗 n=%d text_head=%s", len(words), text[:200])
         return {}
@@ -226,19 +221,7 @@ async def translate_batch(words: list[str]) -> dict[str, dict[str, Any] | None]:
 
 def _parse_batch_text(text: str) -> list[dict[str, Any]] | None:
     """剝 code fence → JSON parse → 回 list[dict]（容錯退路：抓 [...] 區段）。"""
-    s = text.strip()
-    if s.startswith("```"):
-        s = s.split("\n", 1)[-1].rsplit("```", 1)[0].strip()
-    try:
-        obj = json.loads(s)
-    except json.JSONDecodeError:
-        start, end = s.find("["), s.rfind("]")
-        if start < 0 or end <= start:
-            return None
-        try:
-            obj = json.loads(s[start : end + 1])
-        except json.JSONDecodeError:
-            return None
+    obj = _parse_fenced_json(text, "[", "]")
     if isinstance(obj, list):
         return [x for x in obj if isinstance(x, dict)]
     return None

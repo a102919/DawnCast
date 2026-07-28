@@ -29,6 +29,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from psycopg.rows import dict_row
+
 from shared.db.pool import close_pool, connection
 from shared.storage import r2
 
@@ -95,13 +97,10 @@ async def _list_legacy_episodes(limit: int) -> list[dict[str, Any]]:
       limit %s
     """
     async with connection() as conn:
-        async with conn.cursor() as cur:
+        async with conn.cursor(row_factory=dict_row) as cur:
             await cur.execute(sql, (limit,))
             rows = await cur.fetchall()
-    # pool row_factory=dict_row → fetchall 回 list[dict]；tuple 模式用 cols 重建。
-    if rows and isinstance(rows[0], dict):
-        return list(rows)
-    return [dict(zip([d.name for d in cur.description] if cur.description else [], r)) for r in rows]
+    return list(rows)
 
 
 async def _process_one(row: dict[str, Any], dry_run: bool, tmp_root: Path) -> tuple[int, int]:
@@ -135,7 +134,11 @@ async def _process_one(row: dict[str, Any], dry_run: bool, tmp_root: Path) -> tu
         # UPDATE audio_r2_keys（單集 transaction）。
         # audio_r2_key 留原值不動：backfill 完後下個 migration drop；保留
         # 這欄期間任何舊 client 仍能拿到舊整集 URL 當 fallback。
-        async with connection() as conn, conn.cursor() as cur, conn.transaction():
+        async with (
+            connection() as conn,
+            conn.cursor(row_factory=dict_row) as cur,
+            conn.transaction(),
+        ):
             await cur.execute(
                 """
                 update public.episodes
@@ -152,7 +155,7 @@ async def _process_one(row: dict[str, Any], dry_run: bool, tmp_root: Path) -> tu
 async def _run(limit: int, slug: str | None, dry_run: bool) -> tuple[int, int]:
     if slug:
         # 單集模式
-        async with connection() as conn, conn.cursor() as cur:
+        async with connection() as conn, conn.cursor(row_factory=dict_row) as cur:
             await cur.execute(
                 """
                 select id, slug, audio_r2_key, audio_r2_keys, script_json
@@ -164,11 +167,7 @@ async def _run(limit: int, slug: str | None, dry_run: bool) -> tuple[int, int]:
             if row is None:
                 logger.error("[backfill] 找不到 slug=%s", slug)
                 return 0, 0
-            # pool 預設 row_factory=dict_row → fetchone 直接回 dict；tuple 模式
-            # 退路用 zip(cols, row) 重建。下方 _process_one 兩種都吃 dict-like。
-            rows = [row] if isinstance(row, dict) else [
-                dict(zip([d.name for d in cur.description] if cur.description else [], row))
-            ]
+            rows = [row]
     else:
         rows = await _list_legacy_episodes(limit)
     if not rows:

@@ -21,6 +21,7 @@ from fastapi.testclient import TestClient
 from shared import push as push_mod
 from shared.config import Settings
 from shared.db import repo
+from tests._auth import auth_header
 
 USER_A = "11111111-1111-1111-1111-111111111111"
 USER_B = "22222222-2222-2222-2222-222222222222"
@@ -80,12 +81,6 @@ def client() -> TestClient:
     return TestClient(create_app(), raise_server_exceptions=False)
 
 
-def _auth(user_id: str) -> dict[str, str]:
-    from tests._auth import sign_test_token
-
-    return {"Authorization": f"Bearer {sign_test_token(user_id)}"}
-
-
 _NEW_SUB: dict[str, Any] = {
     "endpoint": "https://push.example/new",
     "keys": {"p256dh": "p-new", "auth": "auth-new"},
@@ -114,7 +109,7 @@ def test_unsubscribe_no_jwt_returns_401_and_deletes_nothing(client: TestClient) 
 
 
 def test_subscribe_stores_subscription(client: TestClient) -> None:
-    res = client.post("/notifications/subscription", json=_NEW_SUB, headers=_auth(USER_A))
+    res = client.post("/notifications/subscription", json=_NEW_SUB, headers=auth_header(USER_A))
     assert res.status_code == 200
     assert res.json()["ok"] is True
     assert (USER_A, "https://push.example/new", "p-new", "auth-new") in SUBS
@@ -122,14 +117,17 @@ def test_subscribe_stores_subscription(client: TestClient) -> None:
 
 def test_subscribe_is_idempotent(client: TestClient) -> None:
     for _ in range(2):
-        res = client.post("/notifications/subscription", json=_NEW_SUB, headers=_auth(USER_A))
+        res = client.post("/notifications/subscription", json=_NEW_SUB, headers=auth_header(USER_A))
         assert res.status_code == 200
     assert sum(1 for _, e, _, _ in SUBS if e == "https://push.example/new") == 1
 
 
 def test_unsubscribe_removes_own_subscription(client: TestClient) -> None:
     res = client.request(
-        "DELETE", "/notifications/subscription", json={"endpoint": EP_A}, headers=_auth(USER_A)
+        "DELETE",
+        "/notifications/subscription",
+        json={"endpoint": EP_A},
+        headers=auth_header(USER_A),
     )
     assert res.status_code == 200
     assert all(e != EP_A for _, e, _, _ in SUBS)
@@ -140,7 +138,7 @@ def test_unsubscribe_unknown_endpoint_still_ok(client: TestClient) -> None:
         "DELETE",
         "/notifications/subscription",
         json={"endpoint": "https://push.example/nope"},
-        headers=_auth(USER_A),
+        headers=auth_header(USER_A),
     )
     assert res.status_code == 200
 
@@ -149,7 +147,7 @@ def test_subscribe_rejects_non_https_endpoint(client: TestClient) -> None:
     res = client.post(
         "/notifications/subscription",
         json={**_NEW_SUB, "endpoint": "http://push.example/x"},
-        headers=_auth(USER_A),
+        headers=auth_header(USER_A),
     )
     # app 的 validation handler 把 Pydantic 422 統一轉成 400（見 app/main.py）
     assert res.status_code == 400
@@ -160,7 +158,10 @@ def test_subscribe_rejects_non_https_endpoint(client: TestClient) -> None:
 
 def test_unsubscribe_cannot_delete_other_users_endpoint(client: TestClient) -> None:
     res = client.request(
-        "DELETE", "/notifications/subscription", json={"endpoint": EP_B}, headers=_auth(USER_A)
+        "DELETE",
+        "/notifications/subscription",
+        json={"endpoint": EP_B},
+        headers=auth_header(USER_A),
     )
     assert res.status_code == 200
     # B 的訂閱必須還在——router 若漏掉 user_id 條件，這行會炸。
@@ -358,10 +359,7 @@ async def test_push_daily_truncates_body_when_more_than_three(
         return 0
 
     async def _fake_claim(_deliver_date: str, _hhmm: str) -> list[dict[str, str]]:
-        return [
-            {"user_id": USER_A, "slug": f"ep-{i}", "title": f"集 {i}"}
-            for i in range(1, 6)
-        ]
+        return [{"user_id": USER_A, "slug": f"ep-{i}", "title": f"集 {i}"} for i in range(1, 6)]
 
     monkeypatch.setattr(worker.repo, "claim_daily_notifications", _fake_claim)
     monkeypatch.setattr(worker, "notify_user", _fake_notify)

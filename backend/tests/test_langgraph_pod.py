@@ -22,8 +22,10 @@ import pytest
 from engine.pipeline.langgraph_pod import run_pod
 from engine.pipeline.langgraph_pod.chat import FakeChatModel, make_langchain_chat
 from engine.pipeline.langgraph_pod.mock import (
+    MockQueue,
     MockR2,
     MockRenderer,
+    MockRepo,
     get_mocks,
     make_mock_workdir,
     safe_local_fallback,
@@ -241,13 +243,23 @@ def _body() -> dict[str, Any]:
     }
 
 
+PodMocks = tuple[MockRepo, MockR2, MockQueue, MockRenderer]
+
+
+@pytest.fixture
+def pod_mocks() -> PodMocks:
+    """跑 run_pod 用的一組全新 mock：repo / r2 / queue 全重置 + 獨立 workdir renderer。"""
+    repo, r2, queue = get_mocks(reset=True)
+    renderer = MockRenderer(make_mock_workdir())
+    return repo, r2, queue, renderer
+
+
 # ── 1. happy path ────────────────────────────────────────────
 
 
-async def test_pod_happy_path() -> None:
+async def test_pod_happy_path(pod_mocks: PodMocks) -> None:
     chat = _make_passing_chat()
-    repo, r2, queue = get_mocks(reset=True)
-    renderer = MockRenderer(make_mock_workdir())
+    repo, r2, queue, renderer = pod_mocks
 
     eid = await run_pod(
         _body(),
@@ -284,7 +296,7 @@ async def test_pod_happy_path() -> None:
 # ── 2. judge 不及格 → rewrite → 及格 ──────────────────────
 
 
-async def test_judge_triggers_rewrite_then_passes() -> None:
+async def test_judge_triggers_rewrite_then_passes(pod_mocks: PodMocks) -> None:
     # 1 個 outline + 3 段 × 2 輪 = 7 writer + 2 judge = 9 calls
     chat = FakeChatModel(
         responses=[_outline_json()]
@@ -296,8 +308,7 @@ async def test_judge_triggers_rewrite_then_passes() -> None:
             _judge_json(0.8),  # 第二次及格
         ],
     )
-    repo, r2, queue = get_mocks(reset=True)
-    renderer = MockRenderer(make_mock_workdir())
+    repo, r2, queue, renderer = pod_mocks
 
     eid = await run_pod(
         _body(),
@@ -314,7 +325,7 @@ async def test_judge_triggers_rewrite_then_passes() -> None:
 # ── 3. judge 持續不及格 → cap 後放行 ─────────────────────
 
 
-async def test_judge_rewrite_cap_respected() -> None:
+async def test_judge_rewrite_cap_respected(pod_mocks: PodMocks) -> None:
     """judge 永遠給爛分 → max_rewrite_iterations 次後放行，不無限循環。"""
     # max_rewrite_iterations=1：round0 + 1 次 rewrite = 2 輪
     # 2 輪 × (1 outline + 3 segments) = 8 writer + 2 judge = 10
@@ -323,8 +334,7 @@ async def test_judge_rewrite_cap_respected() -> None:
         responses=block * 3,
         judge_responses=[_judge_json(0.3, ["bad"])] * 4,
     )
-    repo, r2, queue = get_mocks(reset=True)
-    renderer = MockRenderer(make_mock_workdir())
+    repo, r2, queue, renderer = pod_mocks
 
     eid = await run_pod(
         _body(),
@@ -339,7 +349,7 @@ async def test_judge_rewrite_cap_respected() -> None:
     # 不會到 15（不會無限循環，第 3 輪不會發生）
 
 
-async def test_judge_cap_publishes_best_draft_not_last() -> None:
+async def test_judge_cap_publishes_best_draft_not_last(pod_mocks: PodMocks) -> None:
     """撞 cap 時若最後一輪比先前輪次還爛，發布歷史最佳版而非最後一版。"""
     rounds = [
         (0.5, "roundone"),  # 最佳（min=0.5）
@@ -353,8 +363,7 @@ async def test_judge_cap_publishes_best_draft_not_last() -> None:
         responses=responses,
         judge_responses=[_judge_json(score, ["bad"]) for score, _ in rounds],
     )
-    repo, r2, queue = get_mocks(reset=True)
-    renderer = MockRenderer(make_mock_workdir())
+    repo, r2, queue, renderer = pod_mocks
 
     eid = await run_pod(
         _body(),
@@ -375,7 +384,7 @@ async def test_judge_cap_publishes_best_draft_not_last() -> None:
 # ── 3b. 字數低於 length_tier 下限 → 帶字數回饋重打 ───────────
 
 
-async def test_short_script_triggers_length_retry_then_passes() -> None:
+async def test_short_script_triggers_length_retry_then_passes(pod_mocks: PodMocks) -> None:
     """第一輪 3 段各 ~30 字（合計 ~90 字遠低於 floor 1026）→ 合併後觸發 Level 2
     重打，第二輪 3 段各 ~400 字（合計 ~1200 字過 floor）→ 放行。"""
     chat = FakeChatModel(
@@ -391,8 +400,7 @@ async def test_short_script_triggers_length_retry_then_passes() -> None:
         ],
         judge_responses=[_judge_json(0.8)],
     )
-    repo, r2, queue = get_mocks(reset=True)
-    renderer = MockRenderer(make_mock_workdir())
+    repo, r2, queue, renderer = pod_mocks
 
     eid = await run_pod(
         _body(),
@@ -411,7 +419,7 @@ async def test_short_script_triggers_length_retry_then_passes() -> None:
     assert chat._call_count == 9  # 2 輪 × (1 outline + 3 segments) + 1 judge
 
 
-async def test_persistently_short_script_falls_back_to_longest_draft() -> None:
+async def test_persistently_short_script_falls_back_to_longest_draft(pod_mocks: PodMocks) -> None:
     """3 輪 Level 2 重打都還偏短 → 字數是軟性品質目標，用歷來最長的一版出稿。"""
     block_round = [
         _outline_json(),
@@ -423,8 +431,7 @@ async def test_persistently_short_script_falls_back_to_longest_draft() -> None:
         responses=block_round * 3,  # 3 輪都故意拼成 ~45 字，遠低於 floor 1026
         judge_responses=[_judge_json(0.8)],
     )
-    repo, r2, queue = get_mocks(reset=True)
-    renderer = MockRenderer(make_mock_workdir())
+    repo, r2, queue, renderer = pod_mocks
 
     eid = await run_pod(
         _body(),
@@ -450,15 +457,14 @@ async def test_persistently_short_script_falls_back_to_longest_draft() -> None:
 # ── 4. 冪等鍵：同 body 第二次呼叫 already_rendered=True ─
 
 
-async def test_idempotent_second_call_skips_render() -> None:
+async def test_idempotent_second_call_skips_render(pod_mocks: PodMocks) -> None:
     # 第二次 run_pod 仍會從頭跑 graph，writer/judge pool 要乘 2
     # （每次 1 outline + 3 segments + 1 judge）。
     chat = FakeChatModel(
         responses=([_outline_json()] + [_segment_json(seg_index=i) for i in range(3)]) * 2,
         judge_responses=[_judge_json(0.8)] * 2,
     )
-    repo, r2, queue = get_mocks(reset=True)
-    renderer = MockRenderer(make_mock_workdir())
+    repo, r2, queue, renderer = pod_mocks
 
     eid1 = await run_pod(
         _body(),
@@ -492,7 +498,7 @@ async def test_idempotent_second_call_skips_render() -> None:
 # ── 5. R2 失敗 → local fallback，R2 key 全 None ──────────
 
 
-async def test_r2_failure_falls_back_to_local_keys_null() -> None:
+async def test_r2_failure_falls_back_to_local_keys_null(pod_mocks: PodMocks) -> None:
     """新方案下 segments 多檔沒本地 fallback：R2 失敗直接 dead_letter → DELETE row。
 
     舊行為：R2 失敗 → safe_local_fallback 寫整集 mp3 → update_episode_keys 帶 null key
@@ -504,10 +510,9 @@ async def test_r2_failure_falls_back_to_local_keys_null() -> None:
     test_r2_failure_with_no_local_fallback_deletes_row 完全重複因此註解說明。
     """
     chat = _make_passing_chat()
-    repo, _, queue = get_mocks(reset=True)
+    repo, _, queue, renderer = pod_mocks
     r2 = MockR2()
     r2.fail_put = True
-    renderer = MockRenderer(make_mock_workdir())
 
     eid = await run_pod(
         _body(),
@@ -528,7 +533,7 @@ async def test_r2_failure_falls_back_to_local_keys_null() -> None:
 # ── 5b. R2 失敗 + 本機 fallback 也失敗 → DELETE row + raise ────
 
 
-async def test_r2_failure_with_no_local_fallback_deletes_row() -> None:
+async def test_r2_failure_with_no_local_fallback_deletes_row(pod_mocks: PodMocks) -> None:
     """媒體雙重失敗不能留殭屍 row：先 DELETE 再 graceful END。
 
     觸發條件：local_media_dir 沒設 → safe_local_fallback 不寫檔 →
@@ -541,9 +546,8 @@ async def test_r2_failure_with_no_local_fallback_deletes_row() -> None:
     完成（read_ct 不累積），episode 被 compensation DELETE 不留殭屍。
     """
     chat = _make_passing_chat()
-    repo, r2, queue = get_mocks(reset=True)
+    repo, r2, queue, renderer = pod_mocks
     r2.fail_put = True
-    renderer = MockRenderer(make_mock_workdir())
 
     # local_media_dir=None → 沒有任何本機 fallback 機會
     settings = get_settings().model_copy(update={"local_media_dir": None})
@@ -594,11 +598,10 @@ def test_storage_decision_does_not_accept_stale_fallback_file() -> None:
 # ── 6. rate-limit + 無 failover → degrade（raise RateLimitError）
 
 
-async def test_rate_limit_degrade_raises_without_failover() -> None:
+async def test_rate_limit_degrade_raises_without_failover(pod_mocks: PodMocks) -> None:
     """primary 撞 429、沒給 chat_failover → run_pod 應 raise RateLimitError。"""
     chat = FakeChatModel(responses=[RateLimitError("429 mock")])
-    repo, r2, queue = get_mocks(reset=True)
-    renderer = MockRenderer(make_mock_workdir())
+    repo, r2, queue, renderer = pod_mocks
 
     with pytest.raises(RateLimitError):
         await run_pod(
@@ -617,14 +620,13 @@ async def test_rate_limit_degrade_raises_without_failover() -> None:
 # ── 7. rate-limit + 有 failover → 切到 chat_failover ──────
 
 
-async def test_rate_limit_triggers_failover_chat() -> None:
+async def test_rate_limit_triggers_failover_chat(pod_mocks: PodMocks) -> None:
     chat = FakeChatModel(responses=[RateLimitError("429 primary")])
     chat_failover = FakeChatModel(
         responses=[_outline_json()] + [_segment_json(seg_index=i) for i in range(3)],
         judge_responses=[_judge_json(0.8)],
     )
-    repo, r2, queue = get_mocks(reset=True)
-    renderer = MockRenderer(make_mock_workdir())
+    repo, r2, queue, renderer = pod_mocks
 
     # failover_mode=failover 才會啟用 conditional edge 切到 chat_failover
     settings = get_settings().model_copy(update={"failover_mode": "failover"})
@@ -670,12 +672,10 @@ def test_make_langchain_chat_unsupported_engine_raises() -> None:
 
 
 def test_fake_chat_response_parses_to_script_json() -> None:
-    """ScriptJSON 契約：合法 full script JSON 可直接 parse_engine_result 解析。"""
-    from engine.pipeline.langgraph_pod.prompt import parse_engine_result
-
-    result = parse_engine_result(_script_json(), engine="fake", model="m", usage={})
-    assert isinstance(result.script, ScriptJSON)
-    assert len(result.script.script) == 8
+    """ScriptJSON 契約：合法 full script JSON 可直接驗證成 ScriptJSON。"""
+    result = ScriptJSON.model_validate(json.loads(_script_json()))
+    assert isinstance(result, ScriptJSON)
+    assert len(result.script) == 8
 
 
 def test_duplicate_adjacent_zh_rejected() -> None:
@@ -755,10 +755,9 @@ def test_resolve_format_product_always_dialogue() -> None:
 # ── 11. 單人口白格式端到端：news topic_type → Nova 單人稿 ─────
 
 
-async def test_pod_monologue_format_end_to_end() -> None:
+async def test_pod_monologue_format_end_to_end(pod_mocks: PodMocks) -> None:
     chat = _make_passing_chat(format="monologue")
-    repo, r2, queue = get_mocks(reset=True)
-    renderer = MockRenderer(make_mock_workdir())
+    repo, r2, queue, renderer = pod_mocks
 
     body = {
         "big_topic": "AI News",
@@ -780,7 +779,9 @@ async def test_pod_monologue_format_end_to_end() -> None:
 # ── 12. Grounding：注入 source_provider_factory 後 sources 進到 state ─
 
 
-async def test_retrieve_sources_populates_grounded_state(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_retrieve_sources_populates_grounded_state(
+    monkeypatch: pytest.MonkeyPatch, pod_mocks: PodMocks
+) -> None:
     from shared.models import SourceSnippet
 
     class _StubProvider:
@@ -796,8 +797,7 @@ async def test_retrieve_sources_populates_grounded_state(monkeypatch: pytest.Mon
         return _StubProvider() if topic_type == "evergreen" else None
 
     chat = _make_research_passing_chat(source_id="q1:s1")
-    repo, r2, queue = get_mocks(reset=True)
-    renderer = MockRenderer(make_mock_workdir())
+    repo, r2, queue, renderer = pod_mocks
 
     eid = await run_pod(
         _body(),
@@ -823,11 +823,10 @@ async def test_retrieve_sources_populates_grounded_state(monkeypatch: pytest.Mon
     ]
 
 
-async def test_retrieve_sources_no_provider_keeps_ungrounded() -> None:
+async def test_retrieve_sources_no_provider_keeps_ungrounded(pod_mocks: PodMocks) -> None:
     """factory 回 None（如 skill 類型）→ 空 sources，episode 標記未 grounded。"""
     chat = _make_research_passing_chat(source_id=None)
-    repo, r2, queue = get_mocks(reset=True)
-    renderer = MockRenderer(make_mock_workdir())
+    repo, r2, queue, renderer = pod_mocks
 
     def factory(topic_type: str, settings: object) -> None:
         return None
@@ -849,24 +848,22 @@ async def test_retrieve_sources_no_provider_keeps_ungrounded() -> None:
 # ── judge 韌性：code fence 與 fail-open ────────────────────
 
 
-async def test_judge_fenced_json_still_parses() -> None:
+async def test_judge_fenced_json_still_parses(pod_mocks: PodMocks) -> None:
     """judge 回應包 ```json fence → 剝掉照常解析，不觸發 rewrite、不殺 graph。"""
     chat = _make_passing_chat()
     chat.judge_responses = [f"```json\n{_judge_json(0.8)}\n```"]
-    repo, r2, queue = get_mocks(reset=True)
-    renderer = MockRenderer(make_mock_workdir())
+    repo, r2, queue, renderer = pod_mocks
 
     eid = await run_pod(_body(), chat=chat, repo=repo, r2=r2, queue=queue, renderer=renderer)
     assert eid
     assert chat._call_count == 5  # 1 outline + 3 segments + 1 judge，無 rewrite
 
 
-async def test_judge_garbage_fails_open() -> None:
+async def test_judge_garbage_fails_open(pod_mocks: PodMocks) -> None:
     """judge 回垃圾（非 JSON）→ fail-open 視為通過，稿子照常出，不整集重跑。"""
     chat = _make_passing_chat()
     chat.judge_responses = ["oops not json at all"]
-    repo, r2, queue = get_mocks(reset=True)
-    renderer = MockRenderer(make_mock_workdir())
+    repo, r2, queue, renderer = pod_mocks
 
     eid = await run_pod(_body(), chat=chat, repo=repo, r2=r2, queue=queue, renderer=renderer)
     assert eid
@@ -877,11 +874,10 @@ async def test_judge_garbage_fails_open() -> None:
 # ── CEFR 全鏈路：state → prompt → 落庫 ─────────────────────
 
 
-async def test_cefr_flows_from_body_to_episode_row() -> None:
+async def test_cefr_flows_from_body_to_episode_row(pod_mocks: PodMocks) -> None:
     """body 帶 cefr=A2 → episodes.cefr_level 落 A2（不再硬寫 B1）。"""
     chat = _make_passing_chat()
-    repo, r2, queue = get_mocks(reset=True)
-    renderer = MockRenderer(make_mock_workdir())
+    repo, r2, queue, renderer = pod_mocks
 
     body = {**_body(), "cefr": "A2"}
     eid = await run_pod(body, chat=chat, repo=repo, r2=r2, queue=queue, renderer=renderer)
@@ -1063,11 +1059,10 @@ async def test_mock_repo_update_episode_keys_sources_none_preserves_existing() -
 # ── 14. Pipeline metrics：分階段耗時 + forensic run row ─────────────
 
 
-async def test_pod_happy_path_records_gen_and_research_metrics() -> None:
+async def test_pod_happy_path_records_gen_and_research_metrics(pod_mocks: PodMocks) -> None:
     """成功路徑：episode row 有完整 gen_metrics/research_metrics，forensic run 標 success。"""
     chat = _make_passing_chat()
-    repo, r2, queue = get_mocks(reset=True)
-    renderer = MockRenderer(make_mock_workdir())
+    repo, r2, queue, renderer = pod_mocks
 
     eid = await run_pod(
         _body(),
@@ -1117,7 +1112,7 @@ async def test_pod_happy_path_records_gen_and_research_metrics() -> None:
     assert runs[0].status == "success"
 
 
-async def test_pod_pre_upsert_failure_leaves_forensic_run() -> None:
+async def test_pod_pre_upsert_failure_leaves_forensic_run(pod_mocks: PodMocks) -> None:
     """decompose 前置階段直接炸掉（無 chat/factory）不影響——改用「researcher 全滅仍完成」
     的情境驗證正向路徑已覆蓋；這裡改測「寫稿重試耗盡直接 raise」時 forensic run 仍留下
     status=failed 記錄，即使從未建立 episode row。
@@ -1127,8 +1122,7 @@ async def test_pod_pre_upsert_failure_leaves_forensic_run() -> None:
     # outline 一律回不合法 JSON，逼 _generate_outline 重試耗盡後 raise GenerationError，
     # RetryPolicy 3 次仍失敗 → graph.ainvoke 整個炸給 run_pod 的 except 分支接住。
     chat = FakeChatModel(responses=["not json"] * 10, judge_responses=[_judge_json(0.8)])
-    repo, r2, queue = get_mocks(reset=True)
-    renderer = MockRenderer(make_mock_workdir())
+    repo, r2, queue, renderer = pod_mocks
 
     with pytest.raises(GenerationError):
         await run_pod(

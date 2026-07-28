@@ -13,14 +13,16 @@ user_settings。並不重新實作 DB 行為，只驗 router 對 user_id 的收�
 from __future__ import annotations
 
 import json
-from collections.abc import AsyncIterator
-from contextlib import asynccontextmanager
 from typing import Any
 
 import pytest
 from fastapi.testclient import TestClient
 
 from app.routers import settings as settings_router
+from tests._auth import auth_header
+from tests._db_fakes import FakeConnection as _BaseFakeConnection
+from tests._db_fakes import FakeCursor as _BaseFakeCursor
+from tests._db_fakes import fake_connection
 
 USER_A = "11111111-1111-1111-1111-111111111111"
 USER_B = "22222222-2222-2222-2222-222222222222"
@@ -67,16 +69,7 @@ def _reset_state() -> None:
     }
 
 
-class FakeCursor:
-    def __init__(self) -> None:
-        self._rows: list[dict[str, Any]] = []
-
-    async def __aenter__(self) -> FakeCursor:
-        return self
-
-    async def __aexit__(self, *_: object) -> None:
-        return None
-
+class FakeCursor(_BaseFakeCursor):
     async def execute(self, sql: str, params: tuple[Any, ...] = ()) -> None:
         s = " ".join(sql.split())
 
@@ -110,9 +103,7 @@ class FakeCursor:
                 "playback_rate": params[2]
                 if params[2] is not None
                 else existing.get("playback_rate", 1.0),
-                "theme": params[3]
-                if params[3] is not None
-                else existing.get("theme", "auto"),
+                "theme": params[3] if params[3] is not None else existing.get("theme", "auto"),
                 "preferred_topics": json.loads(params[4])
                 if params[4] is not None
                 else existing.get("preferred_topics", []),
@@ -127,24 +118,10 @@ class FakeCursor:
         self._rows = []
         return
 
-    async def fetchall(self) -> list[dict[str, Any]]:
-        return self._rows
 
-    async def fetchone(self) -> dict[str, Any] | None:
-        return self._rows[0] if self._rows else None
-
-
-class FakeConnection:
+class FakeConnection(_BaseFakeConnection):
     def cursor(self, **_: object) -> FakeCursor:
         return FakeCursor()
-
-    async def commit(self) -> None:
-        return None
-
-
-@asynccontextmanager
-async def fake_connection() -> AsyncIterator[FakeConnection]:
-    yield FakeConnection()
 
 
 @pytest.fixture(autouse=True)
@@ -154,7 +131,7 @@ def _reset_fixtures() -> None:
 
 @pytest.fixture(autouse=True)
 def patch_db(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(settings_router, "connection", fake_connection)
+    monkeypatch.setattr(settings_router, "connection", fake_connection(FakeConnection))
 
 
 @pytest.fixture
@@ -162,16 +139,6 @@ def client() -> TestClient:
     from app.main import create_app
 
     return TestClient(create_app(), raise_server_exceptions=False)
-
-
-def _token(user_id: str) -> str:
-    from tests._auth import sign_test_token
-
-    return sign_test_token(user_id)
-
-
-def _auth(user_id: str) -> dict[str, str]:
-    return {"Authorization": f"Bearer {_token(user_id)}"}
 
 
 # ── (a) 無 JWT → 401（兩個 endpoint）───────────────────────────
@@ -195,7 +162,7 @@ def test_patch_settings_no_jwt_returns_401(client: TestClient) -> None:
 
 
 def test_get_settings_returns_stored_row(client: TestClient) -> None:
-    res = client.get("/settings", headers=_auth(USER_A))
+    res = client.get("/settings", headers=auth_header(USER_A))
     assert res.status_code == 200
     data = res.json()["data"]
     assert data["playbackRate"] == 1.0
@@ -206,7 +173,7 @@ def test_get_settings_returns_stored_row(client: TestClient) -> None:
 def test_get_settings_returns_defaults_when_no_row(client: TestClient) -> None:
     # 暫時拔掉 USER_A 的列 → router 端應走 Settings() 預設工廠
     SETTINGS_BY_USER[USER_A] = None
-    res = client.get("/settings", headers=_auth(USER_A))
+    res = client.get("/settings", headers=auth_header(USER_A))
     assert res.status_code == 200
     data = res.json()["data"]
     # 對齊 Settings() 預設值（CamelModel alias 序列化為 camelCase）
@@ -223,7 +190,7 @@ def test_patch_settings_partial_update_only_touches_given_fields(
     res = client.patch(
         "/settings",
         json={"playbackRate": 2.0, "theme": "dark"},
-        headers=_auth(USER_A),
+        headers=auth_header(USER_A),
     )
     assert res.status_code == 200
     data = res.json()["data"]
@@ -240,8 +207,8 @@ def test_patch_settings_partial_update_only_touches_given_fields(
 
 
 def test_get_settings_scoped_to_owner(client: TestClient) -> None:
-    res_a = client.get("/settings", headers=_auth(USER_A))
-    res_b = client.get("/settings", headers=_auth(USER_B))
+    res_a = client.get("/settings", headers=auth_header(USER_A))
+    res_b = client.get("/settings", headers=auth_header(USER_B))
     assert res_a.status_code == 200
     assert res_b.status_code == 200
     data_a = res_a.json()["data"]
@@ -255,8 +222,8 @@ def test_get_settings_scoped_to_owner(client: TestClient) -> None:
 
 
 def test_patch_settings_does_not_leak_to_other_user(client: TestClient) -> None:
-    client.patch("/settings", json={"playbackRate": 3.0}, headers=_auth(USER_B))
-    res_a = client.get("/settings", headers=_auth(USER_A))
+    client.patch("/settings", json={"playbackRate": 3.0}, headers=auth_header(USER_B))
+    res_a = client.get("/settings", headers=auth_header(USER_A))
     data_a = res_a.json()["data"]
     # A 必須維持原值（1.0）；B 改 3.0 不應擴散
     assert data_a["playbackRate"] == 1.0
@@ -266,17 +233,17 @@ def test_patch_settings_does_not_leak_to_other_user(client: TestClient) -> None:
 
 
 def test_patch_cefr_level_updates_users_table(client: TestClient) -> None:
-    res = client.patch("/settings", json={"cefrLevel": "A2"}, headers=_auth(USER_A))
+    res = client.patch("/settings", json={"cefrLevel": "A2"}, headers=auth_header(USER_A))
     assert res.status_code == 200
     assert res.json()["data"]["cefrLevel"] == "A2"
     assert CEFR_BY_USER[USER_A] == "A2"
     # 不帶 cefrLevel 的 PATCH 不動它
-    client.patch("/settings", json={"theme": "dark"}, headers=_auth(USER_A))
+    client.patch("/settings", json={"theme": "dark"}, headers=auth_header(USER_A))
     assert CEFR_BY_USER[USER_A] == "A2"
     # 其他 user 不受影響
     assert CEFR_BY_USER[USER_B] == "B1"
 
 
 def test_patch_cefr_level_rejects_unknown_value(client: TestClient) -> None:
-    res = client.patch("/settings", json={"cefrLevel": "C2"}, headers=_auth(USER_A))
+    res = client.patch("/settings", json={"cefrLevel": "C2"}, headers=auth_header(USER_A))
     assert res.status_code in (400, 422)  # Literal 驗證擋在邊界層

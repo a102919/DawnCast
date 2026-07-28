@@ -12,8 +12,6 @@
 
 from __future__ import annotations
 
-from collections.abc import AsyncIterator
-from contextlib import asynccontextmanager
 from typing import Any
 
 import pytest
@@ -21,6 +19,9 @@ from fastapi.testclient import TestClient
 
 from app.routers import admin as admin_router
 from shared.config import Settings
+from tests._db_fakes import FakeConnection as _BaseFakeConnection
+from tests._db_fakes import FakeCursor as _BaseFakeCursor
+from tests._db_fakes import fake_connection
 
 ADMIN_TOKEN = "test-admin-token"
 
@@ -101,16 +102,7 @@ _TOKEN_ITEM_ROWS: list[dict[str, Any]] = [
 ]
 
 
-class FakeCursor:
-    def __init__(self) -> None:
-        self._rows: list[dict[str, Any]] = []
-
-    async def __aenter__(self) -> FakeCursor:
-        return self
-
-    async def __aexit__(self, *_: object) -> None:
-        return None
-
+class FakeCursor(_BaseFakeCursor):
     async def execute(self, sql: str, params: tuple[Any, ...] = ()) -> None:
         s = " ".join(sql.split())  # 正規化空白
 
@@ -141,24 +133,10 @@ class FakeCursor:
         self._rows = []
         return
 
-    async def fetchall(self) -> list[dict[str, Any]]:
-        return self._rows
 
-    async def fetchone(self) -> dict[str, Any] | None:
-        return self._rows[0] if self._rows else None
-
-
-class FakeConnection:
+class FakeConnection(_BaseFakeConnection):
     def cursor(self, **_: object) -> FakeCursor:
         return FakeCursor()
-
-    async def commit(self) -> None:
-        return None
-
-
-@asynccontextmanager
-async def fake_connection() -> AsyncIterator[FakeConnection]:
-    yield FakeConnection()
 
 
 SENT_MESSAGES: list[tuple[str, dict[str, Any]]] = []
@@ -180,7 +158,7 @@ def _today_in_app_tz() -> str:
 @pytest.fixture(autouse=True)
 def patch_admin_db(monkeypatch: pytest.MonkeyPatch) -> None:
     SENT_MESSAGES.clear()
-    monkeypatch.setattr(admin_router, "connection", fake_connection)
+    monkeypatch.setattr(admin_router, "connection", fake_connection(FakeConnection))
     monkeypatch.setattr(admin_router.queue, "send", spy_queue_send)
     # 獨立於全域 get_settings() 的 lru_cache 單例，避免污染其他測試檔。
     monkeypatch.setattr(

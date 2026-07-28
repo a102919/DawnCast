@@ -9,10 +9,14 @@
 from __future__ import annotations
 
 import asyncio
+from typing import Any
 from unittest.mock import patch
 
 from engine.llm.translate import _parse_text
 from scripts.seed_dict_cache import _normalize_pos
+from tests._db_fakes import FakeConnection as _BaseFakeConnection
+from tests._db_fakes import FakeCursor as _BaseFakeCursor
+from tests._db_fakes import fake_connection
 
 # ── _parse_text ───────────────────────────────────────
 
@@ -73,27 +77,15 @@ async def test_backfill_dict_only_sends_missing() -> None:
     existing_in_db = {"alpha", "gamma"}  # alpha + gamma 已在 DB
     sent_words: list[str] = []
 
-    class _FakeCursor:
-        async def __aenter__(self) -> _FakeCursor:
-            return self
-
-        async def __aexit__(self, *_: object) -> None:
-            return None
-
-        async def execute(self, _sql: str, _params: object) -> None:
+    class _FakeCursor(_BaseFakeCursor):
+        async def execute(self, _sql: str, _params: tuple[Any, ...] = ()) -> None:
             return None
 
         async def fetchall(self) -> list[tuple[str]]:
             return [(w,) for w in existing_in_db]
 
-    class _FakeConn:
-        async def __aenter__(self) -> _FakeConn:
-            return self
-
-        async def __aexit__(self, *_: object) -> None:
-            return None
-
-        def cursor(self) -> _FakeCursor:
+    class _FakeConn(_BaseFakeConnection):
+        def cursor(self, **_: object) -> _FakeCursor:
             return _FakeCursor()
 
     async def _send(queue: str, body: dict[str, object]) -> int:
@@ -101,7 +93,7 @@ async def test_backfill_dict_only_sends_missing() -> None:
         return 1
 
     with (
-        patch.object(post_process, "connection", _FakeConn),
+        patch.object(post_process, "connection", fake_connection(_FakeConn)),
         patch.object(post_process, "send", _send),
     ):
         n = await post_process.backfill_dict(

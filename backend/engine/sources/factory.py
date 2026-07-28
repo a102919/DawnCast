@@ -6,25 +6,15 @@
   evergreen → 深度知識，Wikipedia + Tavily 都查，結果合併當 grounding（Wikipedia 免費但
               不夠即時，Tavily 補即時網路搜尋）
   skill     → 語言技能類內容（口語、慣用語）本質上教學導向、非事實導向，
-              不需要外部 grounding，回 None 讓 retrieve_sources_node 跳過抓取。
+              不需要外部 grounding，回 None 讓 gather_evidence_node 跳過抓取。
 """
 
 from __future__ import annotations
-
-from typing import cast
 
 from shared.config import Settings, get_settings
 
 from .base import CombinedProvider, SourceProvider
 from .news import GdeltProvider
-from .providers import (
-    CrossrefProvider,
-    FREDProvider,
-    GoogleFactCheckProvider,
-    InternetArchiveProvider,
-    OpenAlexProvider,
-    WorldBankProvider,
-)
 from .search import TavilyProvider
 from .wiki import WikipediaProvider
 
@@ -39,26 +29,11 @@ def make_source_provider(
         return TavilyProvider(cfg)
     if topic_type == "evergreen":
         return CombinedProvider([WikipediaProvider(cfg), TavilyProvider(cfg)])
-    providers = {
-        "openalex": OpenAlexProvider,
-        "crossref": CrossrefProvider,
-        "world_bank": WorldBankProvider,
-        "fred": FREDProvider,
-        "fact_check": GoogleFactCheckProvider,
-        "internet_archive": InternetArchiveProvider,
-    }
-    cls = providers.get(topic_type)
-    return cast(SourceProvider, cls(cfg)) if cls else None
+    return None
 
 
 __all__ = [
     "make_source_provider",
     "SourceProvider",
     "CombinedProvider",
-    "OpenAlexProvider",
-    "CrossrefProvider",
-    "WorldBankProvider",
-    "FREDProvider",
-    "GoogleFactCheckProvider",
-    "InternetArchiveProvider",
 ]

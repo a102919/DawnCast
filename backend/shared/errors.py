@@ -67,7 +67,7 @@ class TTSError(EngineError):
 class SourceFetchError(EngineError):
     """真實資料來源抓取失敗（news/search/wiki provider）。
 
-    retrieve_sources_node 會捕捉此例外並降級成空 sources，不阻斷生成主流程。
+    gather_evidence_node 會捕捉此例外並降級成空 sources，不阻斷生成主流程。
     """
 
     code = "source_fetch_failed"

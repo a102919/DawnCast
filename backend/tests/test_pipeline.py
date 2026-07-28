@@ -23,7 +23,7 @@ from engine.pipeline.langgraph_pod import nodes
 from engine.pipeline.langgraph_pod.chat import FakeChatModel
 from engine.pipeline.langgraph_pod.mock import MockRenderer, make_mock_workdir
 from shared.errors import RateLimitError
-from shared.models import Cue, ScriptJSON
+from shared.models import ScriptJSON
 
 # ── 共用：fake repo / queue ────────────────────────────────────────
 
@@ -417,15 +417,6 @@ def _sample_script(format: str = "dialogue") -> ScriptJSON:
     return script
 
 
-def _sample_artifacts(tmp: Path) -> Any:
-    from engine.media import EpisodeArtifacts
-
-    mp3 = tmp / "episode.mp3"
-    mp3.write_bytes(b"FAKE_MP3")
-    cues = [Cue(index=1, speaker="Alex", text="hi", zh="嗨", start=0.0, end=1.0)]
-    return EpisodeArtifacts(mp3_path=mp3, srt="1\n", vtt="WEBVTT\n", cues=cues)
-
-
 class _GenRepoSpy:
     # Class-level 累積器：跨 instance 收集所有 upsert 呼叫，方便新測試斷言
     # 「同 big_topic/angle/tier 但不同 topic_type 會產生不同 key」。
@@ -575,8 +566,8 @@ async def test_generate_job_happy_path(monkeypatch: pytest.MonkeyPatch) -> None:
     assert repo_spy.inserted["topic"] == "tech"
     assert repo_spy.inserted["big_topic"] == "科技"
     # R2 key 格式：per-line segments + episode.srt（不再有整集 episode.mp3）。
-    # 動態從實際 segments 數量推導 expected keys，避免 fixture 變動 / _split_long_lines
-    # 拆句影響斷言：seg_keys 必須是連續 0..N-1 編號 + 1 個 srt。
+    # 動態從實際 segments 數量推導 expected keys，避免 fixture 變動影響斷言：
+    # seg_keys 必須是連續 0..N-1 編號 + 1 個 srt。
     keys = {u[0] for u in uploads}
     seg_keys = sorted(k for k in keys if "/segments/" in k and k.endswith(".mp3"))
     n = len(seg_keys)

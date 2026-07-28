@@ -26,7 +26,10 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app.routers import account as account_router
-from shared.config import get_settings
+from tests._auth import auth_header
+from tests._db_fakes import FakeConnection as _BaseFakeConnection
+from tests._db_fakes import FakeCursor as _BaseFakeCursor
+from tests._db_fakes import fake_connection
 
 USER_A = "11111111-1111-1111-1111-111111111111"
 USER_B = "22222222-2222-2222-2222-222222222222"
@@ -199,16 +202,10 @@ CHILD_TABLES: tuple[tuple[str, dict[str, list[dict[str, Any]]]], ...] = (
 )
 
 
-class FakeCursor:
+class FakeCursor(_BaseFakeCursor):
     def __init__(self) -> None:
-        self._rows: list[dict[str, Any]] = []
+        super().__init__()
         self._rowcount: int = 0
-
-    async def __aenter__(self) -> FakeCursor:
-        return self
-
-    async def __aexit__(self, *_: object) -> None:
-        return None
 
     @property
     def rowcount(self) -> int:  # noqa: D401  # psycopg cursor 介面
@@ -243,14 +240,8 @@ class FakeCursor:
         self._rowcount = 0
         return
 
-    async def fetchall(self) -> list[dict[str, Any]]:
-        return self._rows
 
-    async def fetchone(self) -> dict[str, Any] | None:
-        return self._rows[0] if self._rows else None
-
-
-class FakeConnection:
+class FakeConnection(_BaseFakeConnection):
     """計數 commit 次數，驗 DELETE 在同一 transaction 內執行（commit = 1）。"""
 
     def __init__(self) -> None:
@@ -263,11 +254,6 @@ class FakeConnection:
         self.commit_count += 1
 
 
-@asynccontextmanager
-async def fake_connection() -> AsyncIterator[FakeConnection]:
-    yield FakeConnection()
-
-
 @pytest.fixture(autouse=True)
 def _reset_fixtures() -> None:
     _reset_state()
@@ -275,7 +261,7 @@ def _reset_fixtures() -> None:
 
 @pytest.fixture(autouse=True)
 def patch_db(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(account_router, "connection", fake_connection)
+    monkeypatch.setattr(account_router, "connection", fake_connection(FakeConnection))
 
 
 @pytest.fixture
@@ -283,16 +269,6 @@ def client() -> TestClient:
     from app.main import create_app
 
     return TestClient(create_app(), raise_server_exceptions=False)
-
-
-def _auth(user_id: str, *, email: str | None = None) -> dict[str, str]:
-    from tests._auth import sign_test_token
-
-    settings = get_settings()
-    payload: dict[str, Any] = {"sub": user_id, "aud": settings.supabase_jwt_audience}
-    if email is not None:
-        payload["email"] = email
-    return {"Authorization": f"Bearer {sign_test_token(user_id, **payload)}"}
 
 
 # ── (e) 授權 ──────────────────────────────────────────────────────
@@ -324,7 +300,7 @@ def test_delete_me_bad_jwt_returns_401(client: TestClient) -> None:
 
 
 def test_get_me_returns_account_info(client: TestClient) -> None:
-    res = client.get("/me", headers=_auth(USER_A, email="alice@example.com"))
+    res = client.get("/me", headers=auth_header(USER_A, email="alice@example.com"))
     assert res.status_code == 200
     body = res.json()
     assert body["ok"] is True
@@ -337,7 +313,7 @@ def test_get_me_returns_account_info(client: TestClient) -> None:
 
 
 def test_get_me_envelope_shape(client: TestClient) -> None:
-    res = client.get("/me", headers=_auth(USER_A))
+    res = client.get("/me", headers=auth_header(USER_A))
     body = res.json()
     assert set(body.keys()) == {"ok", "data", "error"}
     assert body["error"] is None
@@ -348,7 +324,7 @@ def test_get_me_envelope_shape(client: TestClient) -> None:
 
 def test_get_me_without_email_claim_returns_empty_string(client: TestClient) -> None:
     # 沒 email claim 的 JWT：email 欄位回空字串（不丟錯）
-    res = client.get("/me", headers=_auth(USER_A))
+    res = client.get("/me", headers=auth_header(USER_A))
     assert res.status_code == 200
     data = res.json()["data"]
     assert data["email"] == ""
@@ -356,8 +332,8 @@ def test_get_me_without_email_claim_returns_empty_string(client: TestClient) -> 
 
 def test_get_me_scoped_to_caller(client: TestClient) -> None:
     # A 取自己的、B 取自己的，兩者 id 不同；不可交錯
-    res_a = client.get("/me", headers=_auth(USER_A))
-    res_b = client.get("/me", headers=_auth(USER_B))
+    res_a = client.get("/me", headers=auth_header(USER_A))
+    res_b = client.get("/me", headers=auth_header(USER_B))
     assert res_a.json()["data"]["id"] == USER_A
     assert res_b.json()["data"]["id"] == USER_B
     assert res_a.json()["data"]["tz"] == "Asia/Taipei"
@@ -368,7 +344,7 @@ def test_get_me_scoped_to_caller(client: TestClient) -> None:
 
 
 def test_delete_me_removes_user_from_public_users(client: TestClient) -> None:
-    res = client.delete("/me", headers=_auth(USER_A))
+    res = client.delete("/me", headers=auth_header(USER_A))
     assert res.status_code == 200
     body = res.json()
     assert body["ok"] is True
@@ -385,7 +361,7 @@ def test_delete_me_clears_all_eight_cascade_tables(client: TestClient) -> None:
     for table, store in CHILD_TABLES:
         assert USER_A in store, f"測試前置失敗：A 在 {table} 應有資料"
 
-    res = client.delete("/me", headers=_auth(USER_A))
+    res = client.delete("/me", headers=auth_header(USER_A))
     assert res.status_code == 200
 
     # 逐表斷言：A 的列已清空
@@ -403,7 +379,7 @@ def test_delete_me_other_users_data_intact(client: TestClient) -> None:
         assert USER_A in store
         assert USER_B in store
 
-    client.delete("/me", headers=_auth(USER_A))
+    client.delete("/me", headers=auth_header(USER_A))
 
     # B 的 public.users 列必須還在
     assert USER_B in USERS_BY_ID
@@ -418,7 +394,7 @@ def test_delete_me_other_users_data_intact(client: TestClient) -> None:
 
 
 def test_delete_me_returns_ok_envelope(client: TestClient) -> None:
-    res = client.delete("/me", headers=_auth(USER_A))
+    res = client.delete("/me", headers=auth_header(USER_A))
     body = res.json()
     assert set(body.keys()) == {"ok", "data", "error"}
     assert body["ok"] is True
@@ -451,7 +427,7 @@ def test_delete_me_uses_single_transaction() -> None:
     account_router.connection = capture_connection
     try:
         with TestClient(app, raise_server_exceptions=False) as c:
-            res = c.delete("/me", headers=_auth(USER_A))
+            res = c.delete("/me", headers=auth_header(USER_A))
             assert res.status_code == 200
     finally:
         account_router.connection = original_connection
@@ -469,9 +445,9 @@ def test_delete_me_uses_single_transaction() -> None:
 
 def test_delete_me_twice_idempotent(client: TestClient) -> None:
     """第一次 DELETE 200，第二次 DELETE 也是 200（user row 已不存在，但 router 不應炸）。"""
-    res1 = client.delete("/me", headers=_auth(USER_A))
+    res1 = client.delete("/me", headers=auth_header(USER_A))
     assert res1.status_code == 200
-    res2 = client.delete("/me", headers=_auth(USER_A))
+    res2 = client.delete("/me", headers=auth_header(USER_A))
     # 第二輪：public.users 已無列，DELETE 影響 0 列但不報錯
     assert res2.status_code == 200
     assert res2.json()["ok"] is True

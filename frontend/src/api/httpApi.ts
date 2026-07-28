@@ -14,7 +14,7 @@ import type {
   VocabItem,
 } from './types'
 import type { components } from './generated'
-import type { Cue, SourceReference } from '../types/episode'
+import type { Cue, Episode, SourceReference } from '../types/episode'
 import type { MockEpisode } from '../lib/episode'
 import { getAccessToken } from '../lib/supabaseClient'
 
@@ -334,6 +334,22 @@ const AdminTokenUsageResponseSchema = z.object({
   ),
 }) satisfies z.ZodType<AdminTokenUsageResponse> & z.ZodType<components['schemas']['AdminTokenUsageResponse']>
 
+// getEpisode / getDeliveredEpisode 共用的 EpisodeContentSchema → Episode 映射。
+function toEpisode(content: z.infer<typeof EpisodeContentSchema>): Episode {
+  return {
+    id: content.id,
+    title: content.title,
+    audioUrl: content.audioUrl ?? null,
+    segments: content.segments,
+    cues: content.cues,
+    // 「無來源」語意對齊：後端沒送 references、或送空陣列 → 不帶欄位，
+    // UI 一律靠 `episode.references?.length > 0` 判斷，避免下游做兩種判斷。
+    ...(content.references && content.references.length > 0
+      ? { references: content.references }
+      : {}),
+  }
+}
+
 // ─── 實作 ─────────────────────────────────────────────────────────────────
 
 export const httpApi: Api = {
@@ -446,18 +462,7 @@ export const httpApi: Api = {
       `/episodes/${encodeURIComponent(slug)}`,
       { schema: EpisodeContentSchema },
     )
-    return {
-      id: content.id,
-      title: content.title,
-      audioUrl: content.audioUrl ?? null,
-      segments: content.segments,
-      cues: content.cues,
-      // 「無來源」語意對齊：後端沒送 references、或送空陣列 → 不帶欄位，
-      // UI 一律靠 `episode.references?.length > 0` 判斷，避免下游做兩種判斷。
-      ...(content.references && content.references.length > 0
-        ? { references: content.references }
-        : {}),
-    }
+    return toEpisode(content)
   },
 
   async getDeliveredEpisode(date) {
@@ -468,16 +473,7 @@ export const httpApi: Api = {
       { schema: EpisodeContentSchema, nullable: true },
     )
     if (content === null) return null
-    return {
-      id: content.id,
-      title: content.title,
-      audioUrl: content.audioUrl ?? null,
-      segments: content.segments,
-      cues: content.cues,
-      ...(content.references && content.references.length > 0
-        ? { references: content.references }
-        : {}),
-    }
+    return toEpisode(content)
   },
 
   async triggerGenerateJob(date) {

@@ -2,6 +2,7 @@ import { useEffect, useCallback, useRef } from 'react'
 import { Play, Pause, Repeat1, Volume2, VolumeX } from 'lucide-react'
 import { usePlayer } from '../../state'
 import { formatTime } from '../../lib'
+import { RATES, computeProgress } from '../../lib/playback'
 import { IconButton } from '../primitives'
 
 interface PlayerControlsProps {
@@ -10,8 +11,6 @@ interface PlayerControlsProps {
   readonly canLoopCue: boolean
   readonly onCueLoopToggle: () => void
 }
-
-const RATES = [0.75, 1, 1.25, 1.5] as const
 
 export function PlayerControls({ duration, isCueLooping, canLoopCue, onCueLoopToggle }: PlayerControlsProps) {
   const { currentTime, isPlaying, seekTo, play, pause, playbackRate, setPlaybackRate, volume, setVolume } = usePlayer()
@@ -57,7 +56,7 @@ export function PlayerControls({ duration, isCueLooping, canLoopCue, onCueLoopTo
     return () => window.removeEventListener('keydown', handler)
   }, [isPlaying, currentTime, duration, play, pause, seekTo])
 
-  const progress = duration > 0 ? (currentTime / duration) * 100 : 0
+  const progress = computeProgress(currentTime, duration)
 
   return (
     <div className="space-y-2">

@@ -293,7 +293,6 @@ mcp__zeabur__get-runtime-logs \
 - `backend/scripts/generate_one.py` — 觸發一集 podcast 落庫（CLI 版，需 `DATABASE_URL` 直連）
 - `backend/scripts/backfill_cues_align.py` — 對既有集 cues 等比縮放對齊 mp3（dry-run / commit 模式，見 `--help`）
 - `backend/scripts/inspect_pod.py` — 跳過 pgmq 本地跑 pipeline，debug 用（見 `tasks/lessons.md`）
-- `backend/scripts/seed_episodes.py` — 把 fixture 集塞進 DB
 
 ---
 

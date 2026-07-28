@@ -32,10 +32,6 @@ export function isPast(iso: string, now: Date = new Date()): boolean {
   return iso < toIsoDate(now)
 }
 
-export function isFuture(iso: string, now: Date = new Date()): boolean {
-  return iso > toIsoDate(now)
-}
-
 export function isToday(iso: string, now: Date = new Date()): boolean {
   return iso === toIsoDate(now)
 }

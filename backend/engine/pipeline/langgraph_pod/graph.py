@@ -95,7 +95,7 @@ def build_pod(*, checkpointer: MemorySaver | None = None) -> Any:
     builder = StateGraph(PodState)
 
     # ── nodes ─────────────────────────────────────────────
-    # retrieve_sources_node 保留給舊 caller；主線改走四段研究管線。
+    # 主線走四段研究管線：decompose_research → gather_evidence → cross_verify → tone_selector。
     # 研究節點刻意不掛 RetryPolicy：任何外部/LLM 失敗由節點內安全降級。
     # 每個 node 用 _timed() 包一層記分階段耗時（見 metrics.py）。
     builder.add_node("decompose_research", _timed("decompose_research", decompose_research_node))

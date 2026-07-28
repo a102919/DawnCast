@@ -20,6 +20,7 @@ import { TOPIC_LABELS, formatDateZhTW } from '../../lib'
 import type { TopicKey } from '../../lib'
 import type { DailyOrder, EntryMode, LengthTier } from '../../api'
 import { isOrderLocked, isPast, getWeekdayLabel } from '../../lib/dailyOrderDate'
+import { formatTopicSummary } from '../../lib/episode'
 
 type TopicChoice = Exclude<TopicKey, 'all'>
 
@@ -361,10 +362,7 @@ function CollapsedSummaryCard({
   readonly locked: boolean
   readonly onExpand: () => void
 }) {
-  const topicSummary = (existing?.selectedTopics ?? [])
-    .map(t => TOPIC_LABELS[t as keyof typeof TOPIC_LABELS] ?? null)
-    .filter((s): s is string => s !== null)
-    .join('・') || '未指定主題'
+  const topicSummary = formatTopicSummary(existing?.selectedTopics ?? [])
 
   // Phase 4：把「入口・長度」加到摘要列；舊訂單沒帶欄位時不顯示而非出 undefined。
   const mode = isEntryMode(existing?.entryMode) ? existing.entryMode : null

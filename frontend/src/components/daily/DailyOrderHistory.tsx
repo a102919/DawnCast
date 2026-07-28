@@ -4,9 +4,10 @@ import { motion, AnimatePresence } from 'framer-motion'
 import { ChevronDown, Play } from 'lucide-react'
 import { Button, SectionLabel } from '../primitives'
 import { StatusBadge } from './StatusBadge'
-import { TOPIC_LABELS, formatDateZhTW } from '../../lib'
+import { formatDateZhTW } from '../../lib'
 import type { DailyOrder } from '../../api'
 import { isOrderLocked, isToday, getWeekdayLabel } from '../../lib/dailyOrderDate'
+import { formatTopicSummary } from '../../lib/episode'
 
 const COLLAPSED_LIMIT = 3
 
@@ -131,10 +132,7 @@ function OrderRow({
   const navigate = useNavigate()
   const locked = isOrderLocked(order)
   const playable = order.status === 'played' || (order.status === 'queued' && order.ready === true)
-  const topicSummary = order.selectedTopics
-    .map(t => TOPIC_LABELS[t as keyof typeof TOPIC_LABELS] ?? null)
-    .filter((s): s is string => s !== null)
-    .join('・') || '未指定主題'
+  const topicSummary = formatTopicSummary(order.selectedTopics)
 
   return (
     <button

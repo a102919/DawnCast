@@ -71,8 +71,8 @@ _MINIMAX_EMOTIONS = frozenset(
 class SynthSegment:
     """單行合成結果：文字、音檔路徑與該行真實時長（秒）。
 
-    pause_before：該行是否為 chapter/話題轉換邊界，串接時前面該行的停頓
-    要拉長（見 audio.concat_segments 的 long_pause_sec）。
+    pause_before：該行是否為 chapter/話題轉換邊界，時間軸計算時前面該行的停頓
+    要拉長（見 subtitles.build_timeline 的 long_pause_sec）。
     """
 
     index: int

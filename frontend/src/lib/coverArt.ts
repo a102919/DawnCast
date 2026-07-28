@@ -20,8 +20,6 @@ function mulberry32(seed: number) {
   }
 }
 
-export type TopicKey = 'all' | 'tech' | 'business' | 'culture' | 'science'
-
 /** 依主題分類特調的 Apple Music / Podcasts 質感色票庫 (深底, 中景, 高光) */
 const TOPIC_PALETTES: Record<string, readonly (readonly [string, string, string])[]> = {
   tech: [

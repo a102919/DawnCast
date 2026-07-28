@@ -14,8 +14,6 @@
 from __future__ import annotations
 
 import json
-from collections.abc import AsyncIterator
-from contextlib import asynccontextmanager
 from typing import Any
 
 import pytest
@@ -23,6 +21,10 @@ from fastapi.testclient import TestClient
 
 from app.routers import daily_orders as daily_orders_router
 from shared.db import repo as db_repo
+from tests._auth import auth_header
+from tests._db_fakes import FakeConnection as _BaseFakeConnection
+from tests._db_fakes import FakeCursor as _BaseFakeCursor
+from tests._db_fakes import fake_connection
 
 USER_A = "11111111-1111-1111-1111-111111111111"
 USER_B = "22222222-2222-2222-2222-222222222222"
@@ -123,16 +125,10 @@ def _reset_state() -> None:
     )
 
 
-class FakeCursor:
+class FakeCursor(_BaseFakeCursor):
     def __init__(self) -> None:
-        self._rows: list[dict[str, Any]] = []
+        super().__init__()
         self._rowcount: int = 0
-
-    async def __aenter__(self) -> FakeCursor:
-        return self
-
-    async def __aexit__(self, *_: object) -> None:
-        return None
 
     @property
     def rowcount(self) -> int:
@@ -239,29 +235,13 @@ class FakeCursor:
         self._rowcount = 0
         return
 
-    async def fetchall(self) -> list[dict[str, Any]]:
-        return self._rows
 
-    async def fetchone(self) -> dict[str, Any] | None:
-        return self._rows[0] if self._rows else None
-
-
-class FakeConnection:
+class FakeConnection(_BaseFakeConnection):
     def cursor(self, **_: object) -> FakeCursor:
         return FakeCursor()
 
-    async def commit(self) -> None:
-        return None
 
-
-@asynccontextmanager
-async def fake_connection() -> AsyncIterator[FakeConnection]:
-    yield FakeConnection()
-
-
-async def fake_find_delivered_episode(
-    user_id: str, deliver_date: str
-) -> dict[str, Any] | None:
+async def fake_find_delivered_episode(user_id: str, deliver_date: str) -> dict[str, Any] | None:
     """簡化：USER_A 在 2026-07-15 有交付，其他都 null。
 
     回傳原始 row（不是 Episode）：router 層改用 build_episode() 組裝，
@@ -290,7 +270,7 @@ def _reset_fixtures() -> None:
 
 @pytest.fixture(autouse=True)
 def patch_db(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(daily_orders_router, "connection", fake_connection)
+    monkeypatch.setattr(daily_orders_router, "connection", fake_connection(FakeConnection))
     # /daily-orders/{date}/episode 走 repo.find_delivered_episode，直接 patch
     monkeypatch.setattr(db_repo, "find_delivered_episode", fake_find_delivered_episode)
 
@@ -300,16 +280,6 @@ def client() -> TestClient:
     from app.main import create_app
 
     return TestClient(create_app(), raise_server_exceptions=False)
-
-
-def _token(user_id: str) -> str:
-    from tests._auth import sign_test_token
-
-    return sign_test_token(user_id)
-
-
-def _auth(user_id: str) -> dict[str, str]:
-    return {"Authorization": f"Bearer {_token(user_id)}"}
 
 
 # ── (a) 無 JWT → 401（六 endpoint）───────────────────────────
@@ -334,9 +304,7 @@ def test_save_daily_order_no_jwt_returns_401(client: TestClient) -> None:
 
 
 def test_mark_played_no_jwt_returns_401(client: TestClient) -> None:
-    res = client.post(
-        "/daily-orders/2026-07-16/played", json={"playedAt": "2026-07-16T08:00:00Z"}
-    )
+    res = client.post("/daily-orders/2026-07-16/played", json={"playedAt": "2026-07-16T08:00:00Z"})
     assert res.status_code == 401
     assert res.json()["error"]["code"] == "unauthorized"
 
@@ -357,7 +325,7 @@ def test_get_episode_no_jwt_returns_401(client: TestClient) -> None:
 
 
 def test_get_daily_order_returns_saved_order(client: TestClient) -> None:
-    res = client.get("/daily-orders/2026-07-15", headers=_auth(USER_A))
+    res = client.get("/daily-orders/2026-07-15", headers=auth_header(USER_A))
     assert res.status_code == 200
     data = res.json()["data"]
     assert data is not None
@@ -368,7 +336,7 @@ def test_get_daily_order_returns_saved_order(client: TestClient) -> None:
 
 
 def test_get_daily_order_returns_null_when_no_row(client: TestClient) -> None:
-    res = client.get("/daily-orders/2099-01-01", headers=_auth(USER_A))
+    res = client.get("/daily-orders/2099-01-01", headers=auth_header(USER_A))
     assert res.status_code == 200
     assert res.json()["data"] is None
 
@@ -385,7 +353,7 @@ def test_save_daily_order_upserts_and_returns(client: TestClient) -> None:
             "entryMode": "knowledge",
             "lengthTier": "medium",
         },
-        headers=_auth(USER_A),
+        headers=auth_header(USER_A),
     )
     assert res.status_code == 200
     data = res.json()["data"]
@@ -398,7 +366,7 @@ def test_save_daily_order_upserts_and_returns(client: TestClient) -> None:
 def test_list_daily_orders_filters_by_range(client: TestClient) -> None:
     res = client.get(
         "/daily-orders?from_date=2026-07-15&to_date=2026-07-16",
-        headers=_auth(USER_A),
+        headers=auth_header(USER_A),
     )
     assert res.status_code == 200
     dates = [row["date"] for row in res.json()["data"]]
@@ -410,7 +378,7 @@ def test_mark_played_updates_status(client: TestClient) -> None:
     res = client.post(
         "/daily-orders/2026-07-16/played",
         json={"playedAt": played_at},
-        headers=_auth(USER_A),
+        headers=auth_header(USER_A),
     )
     assert res.status_code == 200
     data = res.json()["data"]
@@ -423,20 +391,20 @@ def test_mark_played_returns_null_when_no_row(client: TestClient) -> None:
     res = client.post(
         "/daily-orders/2099-01-01/played",
         json={"playedAt": "2026-07-16T08:30:00Z"},
-        headers=_auth(USER_A),
+        headers=auth_header(USER_A),
     )
     assert res.status_code == 200
     assert res.json()["data"] is None
 
 
 def test_delete_daily_order_removes_row(client: TestClient) -> None:
-    res = client.delete("/daily-orders/2026-07-16", headers=_auth(USER_A))
+    res = client.delete("/daily-orders/2026-07-16", headers=auth_header(USER_A))
     assert res.status_code == 200
     assert (USER_A, "2026-07-16") not in ORDERS
 
 
 def test_get_daily_order_episode_returns_delivered(client: TestClient) -> None:
-    res = client.get("/daily-orders/2026-07-15/episode", headers=_auth(USER_A))
+    res = client.get("/daily-orders/2026-07-15/episode", headers=auth_header(USER_A))
     assert res.status_code == 200
     data = res.json()["data"]
     assert data is not None
@@ -448,8 +416,8 @@ def test_get_daily_order_episode_returns_delivered(client: TestClient) -> None:
 
 def test_get_daily_order_scoped_to_owner(client: TestClient) -> None:
     # A、B 在 2026-07-15 各自有訂單；token 不同 → selectedTopics 不一樣
-    res_a = client.get("/daily-orders/2026-07-15", headers=_auth(USER_A))
-    res_b = client.get("/daily-orders/2026-07-15", headers=_auth(USER_B))
+    res_a = client.get("/daily-orders/2026-07-15", headers=auth_header(USER_A))
+    res_b = client.get("/daily-orders/2026-07-15", headers=auth_header(USER_B))
     assert res_a.json()["data"]["selectedTopics"] == ["tech"]
     assert res_b.json()["data"]["selectedTopics"] == ["food"]
 
@@ -459,18 +427,18 @@ def test_get_daily_order_returns_null_when_other_user_has_it(
 ) -> None:
     # A 查 B 沒訂單的日期 → null（owner scope，不是 200 + 別人的資料）
     # B 沒 2026-07-16 的訂單；以 A 視角查 2026-07-16 → 自己的，看到資料
-    res_b_16 = client.get("/daily-orders/2026-07-16", headers=_auth(USER_B))
+    res_b_16 = client.get("/daily-orders/2026-07-16", headers=auth_header(USER_B))
     assert res_b_16.json()["data"] is None
 
 
 def test_list_daily_orders_scoped_to_owner(client: TestClient) -> None:
     res_a = client.get(
         "/daily-orders?from_date=2026-07-14&to_date=2026-07-17",
-        headers=_auth(USER_A),
+        headers=auth_header(USER_A),
     )
     res_b = client.get(
         "/daily-orders?from_date=2026-07-14&to_date=2026-07-17",
-        headers=_auth(USER_B),
+        headers=auth_header(USER_B),
     )
     dates_a = [r["date"] for r in res_a.json()["data"]]
     dates_b = [r["date"] for r in res_b.json()["data"]]
@@ -480,15 +448,15 @@ def test_list_daily_orders_scoped_to_owner(client: TestClient) -> None:
 
 def test_delete_daily_order_scoped_to_owner(client: TestClient) -> None:
     # A 嘗試刪 B 在 2026-07-15 的訂單 → B 不可被誤刪
-    client.delete("/daily-orders/2026-07-15", headers=_auth(USER_A))
+    client.delete("/daily-orders/2026-07-15", headers=auth_header(USER_A))
     assert (USER_B, "2026-07-15") in ORDERS
-    res_b = client.get("/daily-orders/2026-07-15", headers=_auth(USER_B))
+    res_b = client.get("/daily-orders/2026-07-15", headers=auth_header(USER_B))
     assert res_b.json()["data"]["selectedTopics"] == ["food"]
 
 
 def test_get_daily_order_episode_scoped_to_owner(client: TestClient) -> None:
     # USER_A 在 2026-07-15 有交付；USER_B 同日 → null
-    res_a = client.get("/daily-orders/2026-07-15/episode", headers=_auth(USER_A))
-    res_b = client.get("/daily-orders/2026-07-15/episode", headers=_auth(USER_B))
+    res_a = client.get("/daily-orders/2026-07-15/episode", headers=auth_header(USER_A))
+    res_b = client.get("/daily-orders/2026-07-15/episode", headers=auth_header(USER_B))
     assert res_a.json()["data"] is not None
     assert res_b.json()["data"] is None

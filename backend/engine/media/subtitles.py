@@ -25,9 +25,9 @@ def build_timeline(
 ) -> list[Cue]:
     """依序為每段指派 start/end 時間戳（cursor += dur + pause），回傳 Cue list。
 
-    long_pause_sec 必須跟音檔邊界插的靜音長度一致（目前 concat_segments
-    已拿掉，但 pause_before 邊界的長靜音仍由前端在 source.onended 後 setTimeout
-    模擬），否則字幕時間軸會跟前端實際播放脫鉤。
+    long_pause_sec 必須跟前端播放器插入的靜音長度一致（音檔已不再合併成整集 mp3，
+    pause_before 邊界的長靜音改由前端在 source.onended 後 setTimeout 模擬），
+    否則字幕時間軸會跟前端實際播放脫鉤。
     """
     long_pause = pause_sec if long_pause_sec is None else long_pause_sec
     cues: list[Cue] = []

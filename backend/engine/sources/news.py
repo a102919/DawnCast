@@ -6,7 +6,7 @@ GDELT DOC 2.0 API 免費、無需 key、每 15 分鐘更新，但回傳的是文
 策略：GDELT 找出真實、有時效性的新聞候選 → 若有設定 Tavily key，用
 TavilyProvider.extract_urls 補全文；沒設 key 時退化成「標題 + 網域」當
 極簡 snippet（依然是真實、有日期的資料，只是內容較薄）。抓取失敗一律
-不阻斷主流程（由 retrieve_sources_node 兜底）。
+不阻斷主流程（由 gather_evidence_node 兜底）。
 """
 
 from __future__ import annotations

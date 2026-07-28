@@ -12,8 +12,6 @@
 
 from __future__ import annotations
 
-from collections.abc import AsyncIterator
-from contextlib import asynccontextmanager
 from typing import Any
 
 import pytest
@@ -23,6 +21,9 @@ from fastapi.testclient import TestClient
 from app.routers import dict as dict_router
 from shared.config import Settings, get_settings
 from shared.db import pool as db_pool
+from tests._db_fakes import FakeConnection as _BaseFakeConnection
+from tests._db_fakes import FakeCursor as _BaseFakeCursor
+from tests._db_fakes import fake_connection
 
 USER_ID = "11111111-1111-1111-1111-111111111111"
 LOOKUP_PATH = "/dict/lookup"
@@ -39,16 +40,7 @@ def _set_cache(row: dict[str, Any] | None) -> None:
     _CACHE_ROW = row
 
 
-class _FakeCursor:
-    def __init__(self) -> None:
-        self._rows: list[dict[str, Any]] = []
-
-    async def __aenter__(self) -> _FakeCursor:
-        return self
-
-    async def __aexit__(self, *_: object) -> None:
-        return None
-
+class _FakeCursor(_BaseFakeCursor):
     async def execute(self, sql: str, params: tuple[Any, ...] = ()) -> None:
         self._rows = []
         normalized = " ".join(sql.split())
@@ -63,24 +55,10 @@ class _FakeCursor:
                 self._rows = [dict(_CACHE_ROW)]
             return
 
-    async def fetchall(self) -> list[dict[str, Any]]:
-        return self._rows
 
-    async def fetchone(self) -> dict[str, Any] | None:
-        return self._rows[0] if self._rows else None
-
-
-class _FakeConnection:
+class _FakeConnection(_BaseFakeConnection):
     def cursor(self, **_: object) -> _FakeCursor:
         return _FakeCursor()
-
-    async def commit(self) -> None:
-        return None
-
-
-@asynccontextmanager
-async def fake_connection() -> AsyncIterator[_FakeConnection]:
-    yield _FakeConnection()
 
 
 # ── Fixtures ─────────────────────────────────────────────────────────
@@ -105,8 +83,9 @@ def _reset_state() -> None:
 
 @pytest.fixture(autouse=True)
 def patch_db(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(dict_router, "connection", fake_connection)
-    monkeypatch.setattr(db_pool, "connection", fake_connection)
+    conn = fake_connection(_FakeConnection)
+    monkeypatch.setattr(dict_router, "connection", conn)
+    monkeypatch.setattr(db_pool, "connection", conn)
 
 
 @pytest.fixture(autouse=True)

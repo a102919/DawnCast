@@ -14,11 +14,7 @@ export function formatMultiline(text: string): string {
   return text.replaceAll('\\n', '\n')
 }
 
-export function formatTimestamp(seconds: number): string {
-  const m = Math.floor(seconds / 60)
-  const s = Math.floor(seconds % 60)
-  return `${m}:${s.toString().padStart(2, '0')}`
-}
+export { formatTime as formatTimestamp } from './time'
 
 export function formatPos(pos: readonly string[]): string {
   const map: Record<string, string> = {

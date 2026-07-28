@@ -189,7 +189,7 @@ class Settings(BaseSettings):
         "product": "debate",
     }
 
-    # ── 真實資料來源（retrieve_sources_node 用，PRD 重新設計 §1）───
+    # ── 真實資料來源（gather_evidence_node 用，PRD 重新設計 §1）───
     # 抓取失敗一律降級成空 sources（不阻斷生成），故這裡沒有「必填」欄位；
     # 沒設 key 的 provider 在 factory 裡直接跳過。
     tavily_api_key: str = ""

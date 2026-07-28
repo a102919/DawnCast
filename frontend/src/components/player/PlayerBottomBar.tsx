@@ -2,10 +2,8 @@ import { RotateCcw, Play, Pause, ChevronRight, Repeat1, BookMarked, MessageCircl
 import { IconButton } from '../primitives'
 import { usePlayer } from '../../state'
 import { formatTime } from '../../lib'
+import { RATES, computeProgress, type PlaybackRate } from '../../lib/playback'
 import type { Cue } from '../../types/episode'
-
-const RATES = [0.75, 1, 1.25, 1.5] as const
-type Rate = typeof RATES[number]
 
 interface PlayerBottomBarProps {
   readonly duration: number
@@ -33,13 +31,13 @@ export function PlayerBottomBar({
   const { currentTime, isPlaying, seekTo, play, pause, playbackRate, setPlaybackRate } = usePlayer()
 
   const cycleRate = () => {
-    const idx = RATES.indexOf(playbackRate as Rate)
+    const idx = RATES.indexOf(playbackRate as PlaybackRate)
     setPlaybackRate(RATES[(idx + 1) % RATES.length])
   }
 
   const handleRewind = () => seekTo(Math.max(0, currentTime - 10))
 
-  const progress = duration > 0 ? (currentTime / duration) * 100 : 0
+  const progress = computeProgress(currentTime, duration)
 
   return (
     <nav

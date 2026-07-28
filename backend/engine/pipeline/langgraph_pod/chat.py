@@ -9,7 +9,8 @@
 
 設計重點：
   * 不掛 with_structured_output（MiniMax 沒原生 tool calling）；
-    node 端直接呼叫 ainvoke() 拿 AIMessage，再用既有的 parse_engine_result 解。
+    node 端直接呼叫 ainvoke() 拿 AIMessage，再用 nodes.py 的
+    _parse_outline / _parse_segment_script 解析成 outline / 段落腳本。
   * SecretStr 藏 auth token，metadata 不外洩。
 """
 

@@ -305,4 +305,6 @@ async def test_時間軸對照ground_truth(tmp_path: Path, monkeypatch: pytest.M
         assert abs(bs - ns) <= _TOLERANCE, f"cue {i} start 差 {abs(bs - ns):.3f}s"
         assert abs(be - ne) <= _TOLERANCE, f"cue {i} end 差 {abs(be - ne):.3f}s"
 
-    assert artifacts.mp3_path.exists() and artifacts.mp3_path.stat().st_size > 0
+    assert artifacts.segments and all(
+        seg.audio_path.exists() and seg.audio_path.stat().st_size > 0 for seg in artifacts.segments
+    )

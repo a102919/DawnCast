@@ -51,7 +51,7 @@ class PodState(TypedDict, total=False):
     tone: str  # curious / playful / contemplative / debate
     format: ScriptFormat  # dialogue / monologue，由 resolve_format 依 topic_type×length_tier 決定
 
-    # ── grounding（retrieve_sources_node 填）──────────────────
+    # ── grounding（gather_evidence_node 填）──────────────────
     sources: list[SourceSnippet]
     grounded: bool  # sources 非空才 True；空 sources 時 judge 的 groundedness 軸跳過不計分
 

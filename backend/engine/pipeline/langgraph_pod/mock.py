@@ -54,7 +54,7 @@ class _EpisodeRow:
     cues: list[dict[str, Any]] | None = None
     extracted_facts: list[dict[str, Any]] | None = None
     target_vocab: list[dict[str, Any]] | None = None
-    # retrieve_sources_node 抓到的真實資料片段；鏡像 repo.sources jsonb。
+    # gather_evidence_node 抓到的真實資料片段；鏡像 repo.sources jsonb。
     # 內部存 SourceSnippet 序列化後的 dict list（含 text），對外過濾由 router 處理。
     sources: list[dict[str, Any]] = field(default_factory=list)
     # 分階段耗時 + 研究過程摘要；鏡像 repo.gen_metrics / research_metrics jsonb。

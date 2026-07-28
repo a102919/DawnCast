@@ -16,7 +16,7 @@ Node 邊界規則：
 
 from __future__ import annotations
 
-import asyncio
+import functools
 import json
 import logging
 import re
@@ -40,11 +40,12 @@ from engine.pipeline.langgraph_pod.prompt import (
     _strip_code_fence,
 )
 from shared.config import Settings
-from shared.errors import GenerationError, RateLimitError, SourceFetchError
+from shared.errors import GenerationError, RateLimitError
 from shared.idempotency import compute_idempotency_key
 from shared.models import (
     ClaimCheck,
     ClaimVerification,
+    Cue,
     EvidenceCard,
     JudgeVerdict,
     ResearchQuestion,
@@ -1052,42 +1053,6 @@ async def cross_verify_node(state: PodState, config: RunnableConfig) -> dict[str
     }
 
 
-# ── Node 0: retrieve_sources（相容 shim）────────────────────
-
-
-async def retrieve_sources_node(state: PodState, config: RunnableConfig) -> dict[str, Any]:
-    """依 topic_type 抓真實資料當 grounding 素材。
-
-    factory 未注入（mock/test 模式）或該 topic_type 沒有對應 provider（如 skill）
-    → 回空 sources，寫稿照舊走純 LLM 生成（等同現況行為，不阻斷主流程）。
-    抓取失敗（timeout / API 掛掉）同樣降級成空 sources，不 raise 給 RetryPolicy——
-    真實資料是加分項，不是生成的硬依賴。
-    """
-    ctx = _ctx(config)
-    factory = ctx.get("source_provider_factory")
-    if factory is None:
-        return {"sources": [], "grounded": False}
-
-    settings = ctx["settings"]
-    topic_type = state.get("topic_type", "evergreen")
-    provider = factory(topic_type, settings)
-    if provider is None:
-        return {"sources": [], "grounded": False}
-
-    query = state.get("canonical_topic") or state["big_topic"]
-    try:
-        sources = await provider.fetch(query)
-    except SourceFetchError as exc:
-        logger.warning(
-            "retrieve_sources 失敗，降級成無 grounding topic_type=%s: %s", topic_type, exc
-        )
-        sources = []
-    finally:
-        await provider.aclose()
-
-    return {"sources": sources, "grounded": bool(sources)}
-
-
 # ── Node 1: tone_selector ─────────────────────────────────
 
 
@@ -1186,9 +1151,7 @@ def _merge_outline_and_segments(
 async def _generate_outline(
     chat: Any,
     state: PodState,
-    settings: Settings,
     *,
-    engine_label: str,
     usage_node: str,
     cefr: str,
     length_tier: str,
@@ -1200,7 +1163,8 @@ async def _generate_outline(
     失敗重試 _MAX_OUTLINE_RETRIES 次（純 parse fix），耗盡 raise GenerationError
     給外層 RetryPolicy 接手。RateLimitError 改回傳特殊 sentinel 給 caller 路由。
     """
-    msgs = _build_outline_messages(
+    build_msgs = functools.partial(
+        _build_outline_messages,
         canonical_topic=state["canonical_topic"],
         big_topic=state["big_topic"],
         topic_type=state["topic_type"],
@@ -1213,8 +1177,8 @@ async def _generate_outline(
         avoid_facts=tuple(state.get("avoid_facts") or ()),
         verified_claims=state.get("verified_claims"),
         source_conflicts=state.get("source_conflicts"),
-        feedback=feedback,
     )
+    msgs = build_msgs(feedback=feedback)
 
     last_exc: GenerationError | None = None
     total_usage = {"input_tokens": 0, "output_tokens": 0}
@@ -1252,21 +1216,7 @@ async def _generate_outline(
                 exc,
             )
             if attempt < _MAX_OUTLINE_RETRIES:
-                msgs = _build_outline_messages(
-                    canonical_topic=state["canonical_topic"],
-                    big_topic=state["big_topic"],
-                    topic_type=state["topic_type"],
-                    angle=state["angle"],
-                    cefr=cefr,
-                    tone=state.get("tone", "playful"),
-                    length_tier=length_tier,
-                    format=state.get("format", "dialogue"),
-                    sources=state.get("sources"),
-                    avoid_facts=tuple(state.get("avoid_facts") or ()),
-                    verified_claims=state.get("verified_claims"),
-                    source_conflicts=state.get("source_conflicts"),
-                    feedback=[f"上一版大綱無法解析成合法結構：{exc}"],
-                )
+                msgs = build_msgs(feedback=[f"上一版大綱無法解析成合法結構：{exc}"])
                 continue
     assert last_exc is not None
     raise last_exc
@@ -1275,9 +1225,7 @@ async def _generate_outline(
 async def _generate_segment(  # type: ignore[return]
     chat: Any,
     state: PodState,
-    settings: Settings,
     *,
-    engine_label: str,
     usage_node: str,
     cefr: str,
     length_tier: str,
@@ -1300,7 +1248,8 @@ async def _generate_segment(  # type: ignore[return]
     RateLimitError 讓 _invoke_writer 整段路由（不 raise 自身）。
     """
     fmt = state.get("format", "dialogue")
-    msgs = _build_segment_messages(
+    build_msgs = functools.partial(
+        _build_segment_messages,
         canonical_topic=state["canonical_topic"],
         big_topic=state["big_topic"],
         topic_type=state["topic_type"],
@@ -1320,8 +1269,8 @@ async def _generate_segment(  # type: ignore[return]
         is_final_segment=is_final_segment,
         previous_tail_lines=previous_tail_lines,
         extracted_facts=extracted_facts,
-        feedback=feedback,
     )
+    msgs = build_msgs(feedback=feedback)
 
     total_usage = {"input_tokens": 0, "output_tokens": 0}
     last_exc: GenerationError | None = None
@@ -1367,28 +1316,7 @@ async def _generate_segment(  # type: ignore[return]
                 exc,
             )
             if attempt < _MAX_SEGMENT_RETRIES:
-                msgs = _build_segment_messages(
-                    canonical_topic=state["canonical_topic"],
-                    big_topic=state["big_topic"],
-                    topic_type=state["topic_type"],
-                    angle=state["angle"],
-                    cefr=cefr,
-                    tone=state.get("tone", "playful"),
-                    length_tier=length_tier,
-                    format=fmt,
-                    sources=state.get("sources"),
-                    avoid_facts=tuple(state.get("avoid_facts") or ()),
-                    segment_index=segment_index,
-                    segment_count=segment_count,
-                    segment_focus=segment_focus,
-                    segment_vocab=segment_vocab,
-                    segment_word_target=segment_word_target,
-                    is_chapter_boundary=is_chapter_boundary,
-                    is_final_segment=is_final_segment,
-                    previous_tail_lines=previous_tail_lines,
-                    extracted_facts=extracted_facts,
-                    feedback=[f"上一版這段 JSON 解析失敗：{exc}"],
-                )
+                msgs = build_msgs(feedback=[f"上一版這段 JSON 解析失敗：{exc}"])
                 continue
             raise
 
@@ -1419,28 +1347,7 @@ async def _generate_segment(  # type: ignore[return]
         )
         last_exc = GenerationError(f"段落 {segment_index + 1} 段內契約失敗：{feedback_msgs}")
         if attempt < _MAX_SEGMENT_RETRIES:
-            msgs = _build_segment_messages(
-                canonical_topic=state["canonical_topic"],
-                big_topic=state["big_topic"],
-                topic_type=state["topic_type"],
-                angle=state["angle"],
-                cefr=cefr,
-                tone=state.get("tone", "playful"),
-                length_tier=length_tier,
-                format=fmt,
-                sources=state.get("sources"),
-                avoid_facts=tuple(state.get("avoid_facts") or ()),
-                segment_index=segment_index,
-                segment_count=segment_count,
-                segment_focus=segment_focus,
-                segment_vocab=segment_vocab,
-                segment_word_target=segment_word_target,
-                is_chapter_boundary=is_chapter_boundary,
-                is_final_segment=is_final_segment,
-                previous_tail_lines=previous_tail_lines,
-                extracted_facts=extracted_facts,
-                feedback=feedback_msgs,
-            )
+            msgs = build_msgs(feedback=feedback_msgs)
             continue
         # mypy 不追蹤「for 跑完 last_exc 必非 None」這個 invariant——assert 在 strict
         # 模式不會 narrow，raise last_exc 在 mypy 看來仍可能為 None。
@@ -1489,8 +1396,6 @@ async def _invoke_writer(
         outline, _, outline_usage = await _generate_outline(
             chat,
             state,
-            settings,
-            engine_label=engine_label,
             usage_node=usage_node,
             cefr=cefr,
             length_tier=length_tier,
@@ -1547,8 +1452,6 @@ async def _invoke_writer(
                 lines, seg_usage = await _generate_segment(
                     chat,
                     state,
-                    settings,
-                    engine_label=engine_label,
                     usage_node=usage_node,
                     cefr=cefr,
                     length_tier=length_tier,
@@ -2183,7 +2086,7 @@ async def render_episode_node(state: PodState, config: RunnableConfig) -> dict[s
                 segments=segments,
                 srt=srt,
                 vtt="",  # mock 不產
-                cues=[__import__("shared.models", fromlist=["Cue"]).Cue(**c) for c in cues],
+                cues=[Cue(**c) for c in cues],
             ),
         }
 
@@ -2501,10 +2404,3 @@ def failover_decision(state: PodState) -> Literal["judge", "__end__"]:
     if state.get("rate_limited"):
         return END  # type: ignore[return-value]
     return "judge"
-
-
-# ── 確保 asyncio 在 mock 渲染的 sync 路徑下不卡 ────────────
-
-
-async def _noop() -> None:
-    await asyncio.sleep(0)

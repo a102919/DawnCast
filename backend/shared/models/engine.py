@@ -89,7 +89,7 @@ class ScriptLine(BaseModel):
     speaker: Speaker
     text: str = Field(min_length=1)
     zh: str = Field(min_length=1)  # 每行強制有 zh —— 契約核心（PRD §0 阻塞已修）
-    # chapter/話題轉換邊界：True 時 concat_segments 在這行「之前」插入較長停頓。
+    # chapter/話題轉換邊界：True 時時間軸計算在這行「之前」插入較長停頓。
     # 預設 False（沿用現有均一停頓行為），只有 long tier 的 chapter 分界會標 True。
     pause_before: bool = False
     # MiniMax voice_setting.emotion 逐行標註，讓語氣不再整集一個模板。刻意用 str
@@ -104,7 +104,7 @@ class TargetVocab(BaseModel):
 
 
 class SourceSnippet(BaseModel):
-    """真實資料來源片段：retrieve_sources_node 抓回來、prompt 會編號注入。"""
+    """真實資料來源片段：gather_evidence_node 抓回來、prompt 會編號注入。"""
 
     id: str = Field(min_length=1)
     title: str

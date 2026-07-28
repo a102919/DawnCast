@@ -33,20 +33,21 @@ export function VocabEntryCard({ item, onSeek, onRemove, variant = 'page' }: Voc
   const [dictEntry, setDictEntry] = useState<DictEntry | null>(null)
   const [lookupError, setLookupError] = useState<string | null>(null)
 
-  const fetchEntry = useCallback(() => {
+  const loadEntry = useCallback((isCancelled: () => boolean) => {
     setLookupError(null)
     api.lookupDict(item.word)
-      .then(entry => setDictEntry(entry))
-      .catch(() => setLookupError('查詢失敗，請重試'))
+      .then(entry => { if (!isCancelled()) setDictEntry(entry) })
+      .catch(() => { if (!isCancelled()) setLookupError('查詢失敗，請重試') })
   }, [item.word])
 
   useEffect(() => {
     let cancelled = false
-    api.lookupDict(item.word)
-      .then(entry => { if (!cancelled) setDictEntry(entry) })
-      .catch(() => { if (!cancelled) setLookupError('查詢失敗，請重試') })
+    // 非同步查字典模式：setLookupError(null) 是同步重置，之後的 setState 都在
+    // promise 之後才發生，不會造成 render 迴圈；規則誤報，抑制之。
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    loadEntry(() => cancelled)
     return () => { cancelled = true }
-  }, [item.word])
+  }, [loadEntry])
 
   // 卡片點擊開啟的詞卡（WordCardPanel）沿用播放頁的同一元件，需要一個 Cue 形狀的來源句
   const cueForPanel: Cue = {
@@ -159,7 +160,7 @@ export function VocabEntryCard({ item, onSeek, onRemove, variant = 'page' }: Voc
         word={item.word}
         entry={dictEntry}
         lookupError={lookupError}
-        onRetry={fetchEntry}
+        onRetry={() => loadEntry(() => false)}
         activeCue={cueForPanel}
         episodeId={item.sourceEpisodeId}
         activeCueIdx={item.sourceLineNo}
