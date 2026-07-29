@@ -78,7 +78,7 @@ class Settings(BaseSettings):
     # - Cloud Supabase：JWKS 從 Supabase project URL 直接拿。
     # - Zeabur Self-host：透過 Kong 的 /auth/v1/.well-known/jwks.json 對外，
     #   完整 URL 為 https://<API_EXTERNAL_URL>/auth/v1/.well-known/jwks.json。
-    # 預設空字串（比照 admin_token）：不可硬寫成任何一個特定 Supabase 專案的網址——
+    # 預設空字串（比照 admin_email）：不可硬寫成任何一個特定 Supabase 專案的網址——
     # 那樣 assert_secure() 的「非空即通過」判斷形同虛設，部署忘記設定也會被誤判成安全。
     # 空字串 = 未設定，prod 會被 assert_secure() 擋下；dev / 測試請於 .env 顯式設定。
     supabase_jwks_url: str = Field(
@@ -98,14 +98,12 @@ class Settings(BaseSettings):
     # 切到 HS256 path 後從 assert_secure() 拿掉 prod 必設 JWKS URL 的條款 — 見 deps.py。
     supabase_jwt_alg: Literal["ES256", "HS256"] = "ES256"
 
-    # Ops/admin endpoint（T7）驗證用固定 token，走 X-Admin-Token header 比對。
-    # 不可硬寫在程式碼；空字串 = 未設定，prod 會被 assert_secure() 擋下。
-    admin_token: str = ""
-
-    # admin 驗證的第二條路徑：既有 Supabase JWT（Google 登入）email claim 白名單。
-    # 與 admin_token 擇一即可通過 require_admin——不用每次手動複製貼上 token，
-    # 直接用已登入的 Google 帳號就能開後台。單一 email（YAGNI：目前只有單一管理員，
-    # 見 admin.py 註解）；不可硬寫在程式碼，空字串 = 不啟用這條路徑。
+    # admin 驗證唯一路徑：既有 Supabase JWT（Google 登入）email claim 白名單。
+    # 用已登入的 Google 帳號就能開後台，不用每次手動複製貼上 token。單一 email
+    # （YAGNI：目前只有單一管理員，見 admin.py 註解）；不可硬寫在程式碼，空字串
+    # = 未設定，prod 會被 assert_secure() 擋下。X-Admin-Token 後門已在 2026-07-29
+    # 砍掉：常駐 env 字串一旦洩漏就成永久後門，email 白名單才是對得起「單一管理員」
+    # 這個事實的設計。
     admin_email: str = ""
 
     # ── 生成引擎（PRD §8，env 一鍵切）─────────────────────────
@@ -266,8 +264,8 @@ class Settings(BaseSettings):
             raise ConfigError("prod 的 CORS_ALLOWED_ORIGINS 不可包含 '*'")
         if self.cors_allowed_origin_regex.strip():
             raise ConfigError("prod 的 CORS_ALLOWED_ORIGIN_REGEX 不可設定（dev-only；prod 留空）")
-        if not self.admin_token and not self.admin_email:
-            raise ConfigError("prod 未設定 ADMIN_TOKEN 或 ADMIN_EMAIL（至少擇一，不可兩者皆空）")
+        if not self.admin_email:
+            raise ConfigError("prod 未設定 ADMIN_EMAIL（唯一授權路徑；不可為空）")
 
 
 @lru_cache

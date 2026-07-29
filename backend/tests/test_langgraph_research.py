@@ -400,17 +400,13 @@ async def test_failover_writer_always_runs_claim_verification() -> None:
             "source_conflicts": [],
         }
     )
-    primary = FakeChatModel(
-        responses=[decompose, cross, RateLimitError("primary 429")]
-    )
+    primary = FakeChatModel(responses=[decompose, cross, RateLimitError("primary 429")])
 
     outline = json.loads(_outline_json())
     outline["extracted_facts"][0]["source_ids"] = [source_id]
     claim_check = json.dumps(
         {
-            "checks": [
-                {"claim": "f1", "status": "supported", "source_ids": [source_id]}
-            ],
+            "checks": [{"claim": "f1", "status": "supported", "source_ids": [source_id]}],
             "unsupported_ratio": 0.0,
         }
     )
@@ -528,17 +524,13 @@ async def test_unsupported_claim_runs_existing_rewrite_loop_end_to_end() -> None
     outline_json = json.dumps(outline)
     unsupported = json.dumps(
         {
-            "checks": [
-                {"claim": "f1", "status": "unsupported", "source_ids": [source_id]}
-            ],
+            "checks": [{"claim": "f1", "status": "unsupported", "source_ids": [source_id]}],
             "unsupported_ratio": 1.0,
         }
     )
     supported = json.dumps(
         {
-            "checks": [
-                {"claim": "f1", "status": "supported", "source_ids": [source_id]}
-            ],
+            "checks": [{"claim": "f1", "status": "supported", "source_ids": [source_id]}],
             "unsupported_ratio": 0.0,
         }
     )
@@ -686,7 +678,6 @@ async def test_research_llm_and_provider_failures_degrade_to_writer() -> None:
     assert closed.count("good") == 1
     assert repo.get_episode(eid) is not None
     assert chat._call_count == 8  # 研究失敗 + writer + claim verify + judge
-
 
 
 async def test_cross_verify_parse_failure_marks_candidates_unusable() -> None:

@@ -108,9 +108,7 @@ def presigned_get_url(key: str, ttl: int | None = None) -> str:
         raise StorageError("簽章 URL 產生失敗") from exc
 
 
-def presigned_get_urls(
-    keys: list[str], ttl: int | None = None
-) -> dict[str, str]:
+def presigned_get_urls(keys: list[str], ttl: int | None = None) -> dict[str, str]:
     """批次簽章多個 R2 key，回傳 {key: signed_url} dict。
 
     給 Episode GET 把整集 N 個 segments 一次簽完，避免前端 N+1 fetch。

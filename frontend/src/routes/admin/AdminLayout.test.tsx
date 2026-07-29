@@ -1,29 +1,17 @@
 // @vitest-environment happy-dom
-// AdminLayout：側邊導覽 + 唯一的權杖判斷點。
+// AdminLayout：側邊導覽 + 子頁面掛載點。
 //
 // 覆蓋：/admin 導向 /admin/episodes；側邊欄渲染出兩個導覽項目且目前頁面標記為
-// active；沒有權杖時內容區顯示權杖提示、不掛載子頁面（子頁面不掛載＝不會打 API，
-// 這是本檔真正要證明的事，而不是另外數一次 fetch 呼叫次數）。
+// active。X-Admin-Token 後門已於 2026-07-29 砍掉，layout 不再負責權杖判斷——
+// 子頁面一律掛載,沒通過後端認證會由 request() 拿 401。
 
 ;(globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
 
 import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { MemoryRouter, Navigate, Route, Routes } from 'react-router-dom'
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, describe, expect, it } from 'vitest'
 import { AdminLayout } from './AdminLayout'
-
-const { getAdminToken, MockAppError } = vi.hoisted(() => ({
-  getAdminToken: vi.fn((): string | null => null),
-  MockAppError: class MockAppError extends Error {},
-}))
-
-vi.mock('../../api', () => ({
-  getAdminToken,
-  setAdminToken: vi.fn(),
-  clearAdminToken: vi.fn(),
-  AppError: MockAppError,
-}))
 
 function EpisodesProbe() {
   return <div>單集數據子頁面內容</div>
@@ -62,20 +50,17 @@ const pendingRoots: Root[] = []
 afterEach(() => {
   for (const r of pendingRoots.splice(0)) r.unmount()
   document.body.innerHTML = ''
-  vi.clearAllMocks()
 })
 
 describe('AdminLayout', () => {
   it('/admin 導向 /admin/episodes', async () => {
-    getAdminToken.mockReturnValue('test-token')
     const { root, container } = await renderLayout('/admin')
     pendingRoots.push(root)
 
     expect(container.textContent).toContain('單集數據子頁面內容')
   })
 
-  it('側邊欄渲染兩個導覽項目，目前頁面標記為 active', async () => {
-    getAdminToken.mockReturnValue('test-token')
+  it('側邊欄渲染兩個導覽項目,目前頁面標記為 active', async () => {
     const { root, container } = await renderLayout('/admin/episodes')
     pendingRoots.push(root)
 
@@ -89,17 +74,7 @@ describe('AdminLayout', () => {
     expect(channelsLink?.className).not.toContain('text-accent')
   })
 
-  it('沒有權杖時內容區顯示提示，不掛載子頁面', async () => {
-    getAdminToken.mockReturnValue(null)
-    const { root, container } = await renderLayout('/admin/episodes')
-    pendingRoots.push(root)
-
-    expect(container.textContent).toContain('管理員權杖')
-    expect(container.textContent).not.toContain('單集數據子頁面內容')
-  })
-
-  it('有權杖時渲染對應子頁面', async () => {
-    getAdminToken.mockReturnValue('test-token')
+  it('/admin/channels 渲染對應子頁面', async () => {
     const { root, container } = await renderLayout('/admin/channels')
     pendingRoots.push(root)
 

@@ -49,67 +49,12 @@ const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL ?? '').replace(/\/$/, ''
 // getLastOrderDate / setLastOrderDate 屬純 UI 狀態，留在 localStorage（後端聖約外）。
 const LAST_ORDER_DATE_KEY = 'dawncast:lastOrderDate'
 
-// Admin token：X-Admin-Token 是後端 admin 驗證的其中一條路徑（另一條是既有
-// Supabase JWT 的 email 白名單，見 backend/app/routers/admin.py require_admin）。
-// 兩者擇一即可，故這裡沒 token 時不擋請求——Authorization header（request() 已
-// 自動帶入）走 email 白名單那條路就夠。
-// 不放 env（會隨 build 散佈到 client bundle，公開站暴露 admin 風險），
-// 不放程式碼（單一 admin 也不需要 build-time injection），改在 AdminTokenCard UI 貼上、
-// 存 localStorage。見 routes/admin/AdminTokenCard.tsx。
-const ADMIN_TOKEN_KEY = 'dawncast:adminToken'
-// 明文久存 localStorage 暴露面大，至少加到期時間讓權杖不會無限期留在瀏覽器裡。
-const ADMIN_TOKEN_TTL_MS = 24 * 60 * 60 * 1000
-
-interface StoredAdminToken {
-  readonly token: string
-  readonly expiresAt: number
-}
-
-const StoredAdminTokenSchema = z.object({
-  token: z.string().min(1),
-  expiresAt: z.number(),
-}) satisfies z.ZodType<StoredAdminToken>
-
-/** localStorage 內容是外部輸入（使用者可自行改寫），一律 Zod parse；
- *  壞掉的 JSON 或不合格式一律當成「沒有權杖」。 */
-function parseStoredAdminToken(raw: string): StoredAdminToken | null {
-  try {
-    const parsed = StoredAdminTokenSchema.safeParse(JSON.parse(raw))
-    return parsed.success ? parsed.data : null
-  } catch {
-    return null
-  }
-}
-
-export function getAdminToken(): string | null {
-  const raw = localStorage.getItem(ADMIN_TOKEN_KEY)
-  if (!raw) return null
-
-  // 格式壞掉與已過期走同一條路：清掉再回 null，不把爛資料留在瀏覽器裡。
-  const stored = parseStoredAdminToken(raw)
-  if (!stored || Date.now() > stored.expiresAt) {
-    localStorage.removeItem(ADMIN_TOKEN_KEY)
-    return null
-  }
-  return stored.token
-}
-
-export function setAdminToken(token: string): void {
-  const stored: StoredAdminToken = { token, expiresAt: Date.now() + ADMIN_TOKEN_TTL_MS }
-  localStorage.setItem(ADMIN_TOKEN_KEY, JSON.stringify(stored))
-}
-
-export function clearAdminToken(): void {
-  localStorage.removeItem(ADMIN_TOKEN_KEY)
-}
-
-/** admin 端點共用 header。沒 token 時不擋——已登入的 Supabase session（Google
- *  帳號）走 email 白名單那條路即可，後端沒認出來才會回 401（由 request() 統一處理）。
- *  後端 ADMIN_TOKEN 是 secrets.compare_digest，header 大小寫不敏感但統一用官方慣例
- *  X-Admin-Token 對齊 curl / 文件範例。 */
+// admin 端點共用 header。X-Admin-Token 後門已於 2026-07-29 砍掉，現僅留 email
+// 白名單這條路（後端從既有的 Authorization Bearer JWT 推 email）。
+// 保留 extraHeaders 介面純粹是為了 admin 系列函式的 signature 一致——其值對
+// 後端已無作用，但拿掉會逼著整批 admin 函式改 signature，純 churn。
 function adminHeaders(): Record<string, string> {
-  const token = getAdminToken()
-  return token ? { 'X-Admin-Token': token } : {}
+  return {}
 }
 
 // ─── Envelope 解包 ─────────────────────────────────────────────────────────
@@ -701,7 +646,7 @@ export const httpApi: Api = {
     )
   },
 
-  // 使用者端公開頻道：JWT 認證，跟上面 Admin 那組 X-Admin-Token 分開。
+  // 使用者端公開頻道：JWT 認證，跟上面 Admin 那組 email 白名單分開。
   async listChannels() {
     return request<readonly ChannelPublic[]>('/channels', { schema: ChannelPublicListSchema })
   },

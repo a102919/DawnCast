@@ -1,16 +1,20 @@
 """Admin / ops endpoint 測試（T7）。
 
-授權機制與一般 API 不同：X-Admin-Token 固定字串比對、或 Supabase JWT 的
-email claim 對上 ADMIN_EMAIL，兩條路徑擇一即可（見 app/routers/admin.py
-require_admin）。故自成一份測試檔、自帶 FakeConnection，不共用 test_api.py
-的 patch_db fixture。
+授權機制：唯一路徑＝Supabase JWT（Google 登入）email claim 對上 ADMIN_EMAIL
+（見 app/routers/admin.py require_admin）。X-Admin-Token 後門已於 2026-07-29
+砍掉，改用雙保險：email_verified=True + app_metadata.provider=google + email
+命中白名單。
+
+故自成一份測試檔、自帶 FakeConnection，不共用 test_api.py 的 patch_db fixture。
 
 驗證重點：
-  (a) 帶正確 X-Admin-Token → 200，資料形狀正確（camelCase）
+  (a) 帶正確 Google JWT → 200，資料形狀正確（camelCase）
   (b) 不帶 / 帶錯 token → 401
   (c) 帶合法 Supabase JWT 但 ADMIN_EMAIL 未設定 / email 不符 → 仍 401
-  (d) ADMIN_EMAIL 設定且 JWT email 相符（大小寫不敏感）→ 200，不需 admin token
-  (e) ADMIN_TOKEN 未設定（空字串）時 fail-closed，一律拒絕
+  (d) ADMIN_EMAIL 已設定且 JWT email 相符（大小寫不敏感）→ 200
+  (e) ADMIN_EMAIL 未設定時 fail-closed，一律拒絕
+  (f) email_verified != True / provider != google 一律拒絕
+  (g) 偽造簽章 / 亂 kid / alg=none / 缺 exp claim 攻擊面一律拒絕
 """
 
 from __future__ import annotations
@@ -29,12 +33,12 @@ from jose import jwt as jose_jwt
 from app import deps as deps_mod
 from app.routers import admin as admin_router
 from shared.config import Settings
-from tests._auth import _KID, _ensure_init, _priv_pem  # type: ignore[attr-defined]
+from tests._auth import _KID, _ensure_init  # type: ignore[attr-defined]
 from tests._db_fakes import FakeConnection as _BaseFakeConnection
 from tests._db_fakes import FakeCursor as _BaseFakeCursor
 from tests._db_fakes import fake_connection
 
-ADMIN_TOKEN = "test-admin-token"
+ADMIN_EMAIL = "admin@example.com"
 
 # PNG/JPEG/WebP magic bytes（後面補任意 padding，驗證只看開頭，不解碼真圖）。
 PNG_BYTES = b"\x89PNG\r\n\x1a\n" + b"\x00" * 16
@@ -328,7 +332,7 @@ def patch_admin_db(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
         admin_router,
         "get_settings",
-        lambda: Settings(environment="dev", admin_token=ADMIN_TOKEN),
+        lambda: Settings(environment="dev", admin_email=ADMIN_EMAIL),
     )
 
 
@@ -339,14 +343,19 @@ def client() -> TestClient:
     return TestClient(create_app(), raise_server_exceptions=False)
 
 
-def _admin_headers(token: str) -> dict[str, str]:
-    return {"X-Admin-Token": token}
+def _jwt_admin_headers() -> dict[str, str]:
+    """admin 授權唯一路徑：Google OAuth 拿到的 JWT email 命中白名單。"""
+    from tests._auth import auth_header
+
+    return auth_header("some-user-id", email=ADMIN_EMAIL)
 
 
 def _jwt_headers() -> dict[str, str]:
+    """沒命中 email 白名單的合法 JWT（admin_email='admin@example.com'、JWT
+    email='someone-else@example.com'），用於驗「帶錯 email 仍 401」。"""
     from tests._auth import auth_header
 
-    return auth_header("some-user-id")
+    return auth_header("some-user-id", email="someone-else@example.com")
 
 
 # ── /admin/episodes ────────────────────────────────────────────────
@@ -360,15 +369,9 @@ def test_episodes_no_token_returns_401(client: TestClient) -> None:
     assert body["error"]["code"] == "unauthorized"
 
 
-def test_episodes_wrong_token_returns_401(client: TestClient) -> None:
-    res = client.get("/admin/episodes", headers=_admin_headers("wrong-token"))
-    assert res.status_code == 401
-    assert res.json()["ok"] is False
-
-
 def test_episodes_correct_token_returns_200(client: TestClient) -> None:
     """單集數據總覽：彙總數字 + 明細（播放／聽完／收藏／token／耗時全部到位）。"""
-    res = client.get("/admin/episodes", headers=_admin_headers(ADMIN_TOKEN))
+    res = client.get("/admin/episodes", headers=_jwt_admin_headers())
     assert res.status_code == 200
     body = res.json()
     assert body["ok"] is True
@@ -411,7 +414,7 @@ def test_jobs_no_token_returns_401(client: TestClient) -> None:
 
 
 def test_jobs_correct_token_returns_200(client: TestClient) -> None:
-    res = client.get("/admin/jobs", headers=_admin_headers(ADMIN_TOKEN))
+    res = client.get("/admin/jobs", headers=_jwt_admin_headers())
     assert res.status_code == 200
     body = res.json()
     assert body["ok"] is True
@@ -424,32 +427,32 @@ def test_jobs_correct_token_returns_200(client: TestClient) -> None:
     assert by_name["generate"]["oldestMsgAgeSec"] == 120
 
 
-# ── 兩套授權機制互不相通 / fail-closed ──────────────────────────────
+# ── 授權收斂：JWT 沒命中 admin_email 必 401 ──────────────────────────────
 
 
-def test_using_supabase_jwt_instead_of_admin_token_still_401(client: TestClient) -> None:
+def test_jwt_email_not_in_allowlist_still_401(client: TestClient) -> None:
+    """JWT 合法 + email 沒命中 ADMIN_EMAIL 白名單 → 401（fail-closed）。"""
     res = client.get("/admin/episodes", headers=_jwt_headers())
     assert res.status_code == 401
     assert res.json()["error"]["code"] == "unauthorized"
 
 
-def test_admin_token_unset_denies_even_empty_header(
+def test_admin_email_unset_denies_jwt_even_with_email_claim(
     client: TestClient, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    """admin_email 為空字串：帶 email claim 的合法 JWT 仍不能開後台。"""
+    from tests._auth import auth_header
+
     monkeypatch.setattr(
-        admin_router, "get_settings", lambda: Settings(environment="dev", admin_token="")
+        admin_router, "get_settings", lambda: Settings(environment="dev", admin_email="")
     )
-    res_no_header = client.get("/admin/episodes")
-    assert res_no_header.status_code == 401
-
-    res_empty_header = client.get("/admin/episodes", headers=_admin_headers(""))
-    assert res_empty_header.status_code == 401
-
-
-# ── admin_email：用 Supabase JWT（Google 登入）當第二條 admin 授權路徑 ──────
+    res = client.get(
+        "/admin/episodes", headers=auth_header("some-user-id", email="admin@example.com")
+    )
+    assert res.status_code == 401
 
 
-def test_admin_email_matching_jwt_allows_access_without_token(
+def test_admin_email_matching_jwt_allows_access(
     client: TestClient, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     from tests._auth import auth_header
@@ -457,9 +460,7 @@ def test_admin_email_matching_jwt_allows_access_without_token(
     monkeypatch.setattr(
         admin_router,
         "get_settings",
-        lambda: Settings(
-            environment="dev", admin_token=ADMIN_TOKEN, admin_email="Admin@Example.com"
-        ),
+        lambda: Settings(environment="dev", admin_email="Admin@Example.com"),
     )
     res = client.get(
         "/admin/episodes", headers=auth_header("some-user-id", email="admin@example.com")
@@ -475,25 +476,13 @@ def test_admin_email_mismatched_jwt_still_401(
     monkeypatch.setattr(
         admin_router,
         "get_settings",
-        lambda: Settings(
-            environment="dev", admin_token=ADMIN_TOKEN, admin_email="admin@example.com"
-        ),
+        lambda: Settings(environment="dev", admin_email="admin@example.com"),
     )
     res = client.get(
         "/admin/episodes", headers=auth_header("some-user-id", email="someone-else@example.com")
     )
     assert res.status_code == 401
     assert res.json()["error"]["code"] == "unauthorized"
-
-
-def test_admin_email_unset_denies_jwt_even_with_email_claim(client: TestClient) -> None:
-    """預設 fixture 未設 admin_email：帶 email claim 的合法 JWT 仍不能開後台。"""
-    from tests._auth import auth_header
-
-    res = client.get(
-        "/admin/episodes", headers=auth_header("some-user-id", email="admin@example.com")
-    )
-    assert res.status_code == 401
 
 
 # ── 第二輪稽核補的攻擊情境測試（見 audit-agent 報告）────────────────────
@@ -509,9 +498,7 @@ def test_admin_email_unverified_jwt_still_401(
     monkeypatch.setattr(
         admin_router,
         "get_settings",
-        lambda: Settings(
-            environment="dev", admin_token=ADMIN_TOKEN, admin_email="admin@example.com"
-        ),
+        lambda: Settings(environment="dev", admin_email="admin@example.com"),
     )
     res = client.get(
         "/admin/episodes",
@@ -534,9 +521,7 @@ def test_admin_email_non_google_provider_still_401(
     monkeypatch.setattr(
         admin_router,
         "get_settings",
-        lambda: Settings(
-            environment="dev", admin_token=ADMIN_TOKEN, admin_email="admin@example.com"
-        ),
+        lambda: Settings(environment="dev", admin_email="admin@example.com"),
     )
     res = client.get(
         "/admin/episodes",
@@ -545,27 +530,6 @@ def test_admin_email_non_google_provider_still_401(
             email="admin@example.com",
             app_metadata={"provider": "email"},
         ),
-    )
-    assert res.status_code == 401
-
-
-def test_admin_non_ascii_x_admin_token_does_not_500(
-    client: TestClient, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """非 ASCII byte 的 X-Admin-Token（Starlette latin-1 decode 後 ≥0x80）走進
-    secrets.compare_digest 會 TypeError → 必 401，不可 500 也不可 log traceback
-    （也避免 500/401 成為 ADMIN_TOKEN 有沒有設的 oracle）。"""
-    monkeypatch.setattr(
-        admin_router,
-        "get_settings",
-        lambda: Settings(environment="dev", admin_token=ADMIN_TOKEN, admin_email=""),
-    )
-    # 傳 bytes ≥ 0x80：httpx 不收非 ASCII str header，但吃 bytes 並以 latin-1
-    # 解碼還原成 Python str（Starlette 內部走同一條路徑），模擬 prod 收到的
-    # 「admin token 內含 latin-1 byte」邊界。
-    res = client.get(
-        "/admin/episodes",
-        headers={"X-Admin-Token": "pässwörd-with-é".encode("latin-1")},
     )
     assert res.status_code == 401
 
@@ -586,9 +550,7 @@ def test_admin_jwt_missing_exp_claim_still_401(
     monkeypatch.setattr(
         admin_router,
         "get_settings",
-        lambda: Settings(
-            environment="dev", admin_token="", admin_email="admin@example.com"
-        ),
+        lambda: Settings(environment="dev", admin_email="admin@example.com"),
     )
     # 不放 exp claim，照樣 ES256 簽（sign_test_token 預設會帶 exp=9999999999，
     # 這裡刻意覆寫 pop 把整個 claim 拿掉——jose 不讓 exp 為 None encode）
@@ -599,9 +561,7 @@ def test_admin_jwt_missing_exp_claim_still_401(
         "email_verified": True,
         "app_metadata": {"provider": "google"},
     }
-    token = str(
-        jose_jwt.encode(payload, priv_pem, algorithm="ES256", headers={"kid": _KID})
-    )
+    token = str(jose_jwt.encode(payload, priv_pem, algorithm="ES256", headers={"kid": _KID}))
     res = client.get("/admin/episodes", headers={"Authorization": f"Bearer {token}"})
     assert res.status_code == 401
 
@@ -621,9 +581,7 @@ def test_admin_jwt_wrong_signature_with_valid_kid_still_401(
     monkeypatch.setattr(
         admin_router,
         "get_settings",
-        lambda: Settings(
-            environment="dev", admin_token="", admin_email="admin@example.com"
-        ),
+        lambda: Settings(environment="dev", admin_email="admin@example.com"),
     )
     payload = {
         "sub": "rogue",
@@ -647,29 +605,21 @@ def test_admin_jwt_no_email_claim_still_401(
     monkeypatch.setattr(
         admin_router,
         "get_settings",
-        lambda: Settings(
-            environment="dev", admin_token="", admin_email="admin@example.com"
-        ),
+        lambda: Settings(environment="dev", admin_email="admin@example.com"),
     )
     res = client.get("/admin/episodes", headers=auth_header("some-user-id"))
     assert res.status_code == 401
 
 
-def test_admin_jwt_alg_none_still_401(
-    client: TestClient, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_admin_jwt_alg_none_still_401(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
     """alg=none 的偽造 token → 401：jwt.decode 的 algorithms 白名單會拒絕。"""
     monkeypatch.setattr(
         admin_router,
         "get_settings",
-        lambda: Settings(
-            environment="dev", admin_token="", admin_email="admin@example.com"
-        ),
+        lambda: Settings(environment="dev", admin_email="admin@example.com"),
     )
     # 手刻 alg=none 的 JWT（jose 不讓你這樣 encode）
-    header = base64.urlsafe_b64encode(json.dumps({"alg": "none", "kid": "x"}).encode()).rstrip(
-        b"="
-    )
+    header = base64.urlsafe_b64encode(json.dumps({"alg": "none", "kid": "x"}).encode()).rstrip(b"=")
     body = base64.urlsafe_b64encode(
         json.dumps(
             {
@@ -713,9 +663,7 @@ def test_admin_jwt_random_kid_does_not_hammer_jwks(
     monkeypatch.setattr(
         admin_router,
         "get_settings",
-        lambda: Settings(
-            environment="dev", admin_token="", admin_email="admin@example.com"
-        ),
+        lambda: Settings(environment="dev", admin_email="admin@example.com"),
     )
 
     # 用 jose 直接造一支 ES256 token，kid 故意填 JWKS 沒有的值
@@ -735,17 +683,13 @@ def test_admin_jwt_random_kid_does_not_hammer_jwks(
             "app_metadata": {"provider": "google"},
             "exp": 9999999999,
         }
-        token = str(
-            jose_jwt.encode(payload, rogue_pem, algorithm="ES256", headers={"kid": kid})
-        )
+        token = str(jose_jwt.encode(payload, rogue_pem, algorithm="ES256", headers={"kid": kid}))
         res = client.get("/admin/episodes", headers={"Authorization": f"Bearer {token}"})
         assert res.status_code == 401
 
     # 冷卻前第一個請求 → invalidate + 重抓一次（fetch=1）
     # 後續兩個 → 冷卻命中，不重抓（fetch 仍 =1）
-    assert fetch_count["n"] == 1, (
-        f"亂 kid 應該只觸發一次 JWKS 重抓，實際 {fetch_count['n']} 次"
-    )
+    assert fetch_count["n"] == 1, f"亂 kid 應該只觸發一次 JWKS 重抓，實際 {fetch_count['n']} 次"
 
 
 # ── /admin/eps/generate ────────────────────────────────────────────
@@ -755,7 +699,7 @@ def test_eps_generate_minimal_body_enqueues_generate_queue(client: TestClient) -
     res = client.post(
         "/admin/eps/generate",
         json={"topic": "AI"},
-        headers=_admin_headers(ADMIN_TOKEN),
+        headers=_jwt_admin_headers(),
     )
     assert res.status_code == 202
     today = _today_in_app_tz()
@@ -798,7 +742,7 @@ def test_eps_generate_with_all_options_enqueues_full_payload(client: TestClient)
             "userIds": ["user-a", "user-b"],
             "deliverDate": "2026-08-01",
         },
-        headers=_admin_headers(ADMIN_TOKEN),
+        headers=_jwt_admin_headers(),
     )
     assert res.status_code == 202
     assert res.json()["data"]["idempotencyKey"] == "2026-08-01:太空探索:對比:long:news"
@@ -832,7 +776,7 @@ def test_eps_generate_invalid_angle_returns_400(client: TestClient) -> None:
     res = client.post(
         "/admin/eps/generate",
         json={"topic": "AI", "angle": "不存在的角度"},
-        headers=_admin_headers(ADMIN_TOKEN),
+        headers=_jwt_admin_headers(),
     )
     # 全站 validation handler 回 400，見 app/main.py
     assert res.status_code == 400
@@ -845,7 +789,7 @@ def test_eps_generate_invalid_topic_type_returns_400(client: TestClient) -> None
     res = client.post(
         "/admin/eps/generate",
         json={"topic": "AI", "topicType": "invalid"},
-        headers=_admin_headers(ADMIN_TOKEN),
+        headers=_jwt_admin_headers(),
     )
     assert res.status_code == 400
     assert res.json()["error"]["code"] == "validation_error"
@@ -919,7 +863,7 @@ def test_list_channels_returns_seeded_rows(client: TestClient) -> None:
     _seed_channel(id="chan-1", slug="tech-daily", name="科技日報", status="active")
     _seed_channel(id="chan-2", slug="biz-weekly", name="商業週報", status="paused")
 
-    res = client.get("/admin/channels", headers=_admin_headers(ADMIN_TOKEN))
+    res = client.get("/admin/channels", headers=_jwt_admin_headers())
     assert res.status_code == 200
     body = res.json()
     assert body["ok"] is True
@@ -934,9 +878,7 @@ def test_list_channels_filters_by_status(client: TestClient) -> None:
     _seed_channel(id="chan-1", status="active")
     _seed_channel(id="chan-2", status="paused")
 
-    res = client.get(
-        "/admin/channels", params={"status": "active"}, headers=_admin_headers(ADMIN_TOKEN)
-    )
+    res = client.get("/admin/channels", params={"status": "active"}, headers=_jwt_admin_headers())
     assert res.status_code == 200
     data = res.json()["data"]
     assert [c["id"] for c in data] == ["chan-1"]
@@ -945,7 +887,7 @@ def test_list_channels_filters_by_status(client: TestClient) -> None:
 def test_list_channels_signs_cover_url_when_set(client: TestClient) -> None:
     _seed_channel(id="chan-1", cover_r2_key="channels/chan-1/cover.png")
 
-    res = client.get("/admin/channels", headers=_admin_headers(ADMIN_TOKEN))
+    res = client.get("/admin/channels", headers=_jwt_admin_headers())
     assert res.status_code == 200
     item = res.json()["data"][0]
     assert item["coverImageUrl"] == "https://signed.example/channels/chan-1/cover.png"
@@ -960,7 +902,7 @@ def test_create_channel_valid_body_returns_200(client: TestClient) -> None:
             "themePrompt": "每天一個科技主題，適合通勤收聽",
             "topic": "tech",
         },
-        headers=_admin_headers(ADMIN_TOKEN),
+        headers=_jwt_admin_headers(),
     )
     assert res.status_code == 200
     body = res.json()
@@ -981,7 +923,7 @@ def test_create_channel_invalid_slug_returns_400(client: TestClient) -> None:
     res = client.post(
         "/admin/channels",
         json={"slug": "Not Valid Slug!", "name": "A", "themePrompt": "p", "topic": "tech"},
-        headers=_admin_headers(ADMIN_TOKEN),
+        headers=_jwt_admin_headers(),
     )
     assert res.status_code == 400
     assert res.json()["error"]["code"] == "validation_error"
@@ -992,7 +934,7 @@ def test_create_channel_invalid_topic_returns_400(client: TestClient) -> None:
     res = client.post(
         "/admin/channels",
         json={"slug": "a", "name": "A", "themePrompt": "p", "topic": "not-a-real-topic"},
-        headers=_admin_headers(ADMIN_TOKEN),
+        headers=_jwt_admin_headers(),
     )
     assert res.status_code == 400
     assert res.json()["error"]["code"] == "validation_error"
@@ -1011,7 +953,7 @@ def test_create_channel_target_interval_days_out_of_range_returns_400(
             "topic": "tech",
             "targetIntervalDays": 31,
         },
-        headers=_admin_headers(ADMIN_TOKEN),
+        headers=_jwt_admin_headers(),
     )
     assert res.status_code == 400
     assert res.json()["error"]["code"] == "validation_error"
@@ -1026,7 +968,7 @@ def test_update_channel_partial_update_only_touches_given_fields(
     res = client.patch(
         "/admin/channels/chan-1",
         json={"name": "新名稱"},
-        headers=_admin_headers(ADMIN_TOKEN),
+        headers=_jwt_admin_headers(),
     )
     assert res.status_code == 200
     data = res.json()["data"]
@@ -1039,7 +981,7 @@ def test_update_channel_not_found_returns_404(client: TestClient) -> None:
     res = client.patch(
         "/admin/channels/does-not-exist",
         json={"name": "新名稱"},
-        headers=_admin_headers(ADMIN_TOKEN),
+        headers=_jwt_admin_headers(),
     )
     assert res.status_code == 404
     assert res.json()["error"]["code"] == "not_found"
@@ -1050,7 +992,7 @@ def test_update_channel_invalid_status_returns_400(client: TestClient) -> None:
     res = client.patch(
         "/admin/channels/chan-1",
         json={"status": "not-a-real-status"},
-        headers=_admin_headers(ADMIN_TOKEN),
+        headers=_jwt_admin_headers(),
     )
     assert res.status_code == 400
     assert res.json()["error"]["code"] == "validation_error"
@@ -1064,7 +1006,7 @@ def test_list_channel_topics_returns_seeded_rows(client: TestClient) -> None:
     _seed_topic("chan-1", id="topic-1", canonical_topic="A 主題", status="candidate", score=0.9)
     _seed_topic("chan-1", id="topic-2", canonical_topic="B 主題", status="rejected", score=0.5)
 
-    res = client.get("/admin/channels/chan-1/topics", headers=_admin_headers(ADMIN_TOKEN))
+    res = client.get("/admin/channels/chan-1/topics", headers=_jwt_admin_headers())
     assert res.status_code == 200
     data = res.json()["data"]
     assert [t["id"] for t in data] == ["topic-1", "topic-2"]  # score desc
@@ -1078,7 +1020,7 @@ def test_list_channel_topics_filters_by_status(client: TestClient) -> None:
     res = client.get(
         "/admin/channels/chan-1/topics",
         params={"status": "rejected"},
-        headers=_admin_headers(ADMIN_TOKEN),
+        headers=_jwt_admin_headers(),
     )
     assert res.status_code == 200
     data = res.json()["data"]
@@ -1086,7 +1028,7 @@ def test_list_channel_topics_filters_by_status(client: TestClient) -> None:
 
 
 def test_list_channel_topics_channel_not_found_returns_404(client: TestClient) -> None:
-    res = client.get("/admin/channels/does-not-exist/topics", headers=_admin_headers(ADMIN_TOKEN))
+    res = client.get("/admin/channels/does-not-exist/topics", headers=_jwt_admin_headers())
     assert res.status_code == 404
     assert res.json()["error"]["code"] == "not_found"
 
@@ -1098,7 +1040,7 @@ def test_update_channel_topic_status_to_rejected(client: TestClient) -> None:
     res = client.patch(
         "/admin/channels/chan-1/topics/topic-1",
         json={"status": "rejected"},
-        headers=_admin_headers(ADMIN_TOKEN),
+        headers=_jwt_admin_headers(),
     )
     assert res.status_code == 200
     assert res.json()["data"]["status"] == "rejected"
@@ -1112,7 +1054,7 @@ def test_update_channel_topic_rename_canonical_topic(client: TestClient) -> None
     res = client.patch(
         "/admin/channels/chan-1/topics/topic-1",
         json={"canonicalTopic": "修正後的主題文字"},
-        headers=_admin_headers(ADMIN_TOKEN),
+        headers=_jwt_admin_headers(),
     )
     assert res.status_code == 200
     assert res.json()["data"]["canonicalTopic"] == "修正後的主題文字"
@@ -1125,7 +1067,7 @@ def test_update_channel_topic_invalid_status_returns_400(client: TestClient) -> 
     res = client.patch(
         "/admin/channels/chan-1/topics/topic-1",
         json={"status": "published"},  # 只允許 candidate/rejected，其餘轉移由 pipeline 管
-        headers=_admin_headers(ADMIN_TOKEN),
+        headers=_jwt_admin_headers(),
     )
     assert res.status_code == 400
     assert res.json()["error"]["code"] == "validation_error"
@@ -1137,7 +1079,7 @@ def test_update_channel_topic_not_found_returns_404(client: TestClient) -> None:
     res = client.patch(
         "/admin/channels/chan-1/topics/does-not-exist",
         json={"status": "rejected"},
-        headers=_admin_headers(ADMIN_TOKEN),
+        headers=_jwt_admin_headers(),
     )
     assert res.status_code == 404
     assert res.json()["error"]["code"] == "not_found"
@@ -1154,7 +1096,7 @@ def test_update_channel_topic_wrong_channel_returns_404_and_does_not_mutate(
     res = client.patch(
         "/admin/channels/chan-b/topics/topic-1",
         json={"status": "rejected"},
-        headers=_admin_headers(ADMIN_TOKEN),
+        headers=_jwt_admin_headers(),
     )
     assert res.status_code == 404
     assert res.json()["error"]["code"] == "not_found"
@@ -1167,7 +1109,7 @@ def test_update_channel_topic_wrong_channel_returns_404_and_does_not_mutate(
 def test_plan_channel_returns_202_and_enqueues_control_queue(client: TestClient) -> None:
     _seed_channel(id="chan-1")
 
-    res = client.post("/admin/channels/chan-1/plan", headers=_admin_headers(ADMIN_TOKEN))
+    res = client.post("/admin/channels/chan-1/plan", headers=_jwt_admin_headers())
     assert res.status_code == 202
     body = res.json()
     assert body["ok"] is True
@@ -1177,7 +1119,7 @@ def test_plan_channel_returns_202_and_enqueues_control_queue(client: TestClient)
 
 
 def test_plan_channel_not_found_returns_404(client: TestClient) -> None:
-    res = client.post("/admin/channels/does-not-exist/plan", headers=_admin_headers(ADMIN_TOKEN))
+    res = client.post("/admin/channels/does-not-exist/plan", headers=_jwt_admin_headers())
     assert res.status_code == 404
     assert res.json()["error"]["code"] == "not_found"
     assert SENT_MESSAGES == []
@@ -1192,7 +1134,7 @@ def test_upload_cover_valid_png_returns_200_and_calls_put_object(client: TestCli
     res = client.post(
         "/admin/channels/chan-1/cover",
         content=PNG_BYTES,
-        headers={**_admin_headers(ADMIN_TOKEN), "Content-Type": "image/png"},
+        headers={**_jwt_admin_headers(), "Content-Type": "image/png"},
     )
     assert res.status_code == 200
     body = res.json()
@@ -1208,7 +1150,7 @@ def test_upload_cover_valid_jpeg_returns_200(client: TestClient) -> None:
     res = client.post(
         "/admin/channels/chan-1/cover",
         content=JPEG_BYTES,
-        headers={**_admin_headers(ADMIN_TOKEN), "Content-Type": "image/jpeg"},
+        headers={**_jwt_admin_headers(), "Content-Type": "image/jpeg"},
     )
     assert res.status_code == 200
     assert COVER_PUT_CALLS == [("channels/chan-1/cover.jpg", JPEG_BYTES, "image/jpeg")]
@@ -1220,7 +1162,7 @@ def test_upload_cover_valid_webp_returns_200(client: TestClient) -> None:
     res = client.post(
         "/admin/channels/chan-1/cover",
         content=WEBP_BYTES,
-        headers={**_admin_headers(ADMIN_TOKEN), "Content-Type": "image/webp"},
+        headers={**_jwt_admin_headers(), "Content-Type": "image/webp"},
     )
     assert res.status_code == 200
     assert COVER_PUT_CALLS == [("channels/chan-1/cover.webp", WEBP_BYTES, "image/webp")]
@@ -1232,7 +1174,7 @@ def test_upload_cover_declared_png_but_text_body_returns_400(client: TestClient)
     res = client.post(
         "/admin/channels/chan-1/cover",
         content=b"this is just plain text, not a png",
-        headers={**_admin_headers(ADMIN_TOKEN), "Content-Type": "image/png"},
+        headers={**_jwt_admin_headers(), "Content-Type": "image/png"},
     )
     assert res.status_code == 400
     assert res.json()["error"]["code"] == "validation_error"
@@ -1245,7 +1187,7 @@ def test_upload_cover_svg_returns_400(client: TestClient) -> None:
     res = client.post(
         "/admin/channels/chan-1/cover",
         content=b"<svg><script>alert(1)</script></svg>",
-        headers={**_admin_headers(ADMIN_TOKEN), "Content-Type": "image/svg+xml"},
+        headers={**_jwt_admin_headers(), "Content-Type": "image/svg+xml"},
     )
     assert res.status_code == 400
     assert res.json()["error"]["code"] == "validation_error"
@@ -1258,7 +1200,7 @@ def test_upload_cover_empty_body_returns_400(client: TestClient) -> None:
     res = client.post(
         "/admin/channels/chan-1/cover",
         content=b"",
-        headers={**_admin_headers(ADMIN_TOKEN), "Content-Type": "image/png"},
+        headers={**_jwt_admin_headers(), "Content-Type": "image/png"},
     )
     assert res.status_code == 400
     assert res.json()["error"]["code"] == "validation_error"
@@ -1272,13 +1214,13 @@ def test_upload_cover_over_size_limit_returns_413(
     monkeypatch.setattr(
         admin_router,
         "get_settings",
-        lambda: Settings(environment="dev", admin_token=ADMIN_TOKEN, channel_cover_max_bytes=10),
+        lambda: Settings(environment="dev", admin_email=ADMIN_EMAIL, channel_cover_max_bytes=10),
     )
 
     res = client.post(
         "/admin/channels/chan-1/cover",
         content=PNG_BYTES,  # 24 bytes > 10 bytes 上限
-        headers={**_admin_headers(ADMIN_TOKEN), "Content-Type": "image/png"},
+        headers={**_jwt_admin_headers(), "Content-Type": "image/png"},
     )
     assert res.status_code == 413
     assert res.json()["error"]["code"] == "payload_too_large"
@@ -1289,7 +1231,7 @@ def test_upload_cover_channel_not_found_returns_404(client: TestClient) -> None:
     res = client.post(
         "/admin/channels/does-not-exist/cover",
         content=PNG_BYTES,
-        headers={**_admin_headers(ADMIN_TOKEN), "Content-Type": "image/png"},
+        headers={**_jwt_admin_headers(), "Content-Type": "image/png"},
     )
     assert res.status_code == 404
     assert res.json()["error"]["code"] == "not_found"

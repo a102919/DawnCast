@@ -2058,8 +2058,7 @@ async def upsert_episode_node(state: PodState, config: RunnableConfig) -> dict[s
                 )
             except Exception:
                 logger.warning(
-                    "頻道選題狀態回填失敗（不影響本集產出）"
-                    "channel_topic_id=%s episode_id=%s",
+                    "頻道選題狀態回填失敗（不影響本集產出）channel_topic_id=%s episode_id=%s",
                     channel_topic_id,
                     episode_id,
                     exc_info=True,
@@ -2071,8 +2070,7 @@ async def upsert_episode_node(state: PodState, config: RunnableConfig) -> dict[s
                 await channels.mark_channel_published(channel_id, deliver_date)
             except Exception:
                 logger.warning(
-                    "頻道出版狀態回填失敗（不影響本集產出）"
-                    "channel_id=%s deliver_date=%s",
+                    "頻道出版狀態回填失敗（不影響本集產出）channel_id=%s deliver_date=%s",
                     channel_id,
                     deliver_date,
                     exc_info=True,

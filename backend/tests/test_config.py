@@ -36,51 +36,39 @@ def test_prod_accepts_secure_config() -> None:
         supabase_jwks_url="https://example.supabase.co/auth/v1/.well-known/jwks.json",
         cors_allowed_origins=["https://dawncast.app"],
         cors_allowed_origin_regex="",
-        admin_token="a-real-admin-token",
-    ).assert_secure()  # 不該 raise
-
-
-def test_prod_rejects_empty_admin_token() -> None:
-    with pytest.raises(ConfigError):
-        Settings(
-            environment="prod",
-            supabase_jwks_url="https://example.supabase.co/auth/v1/.well-known/jwks.json",
-            cors_allowed_origins=["https://dawncast.app"],
-            cors_allowed_origin_regex="",
-            admin_token="",
-        ).assert_secure()
-
-
-def test_prod_accepts_admin_token_set() -> None:
-    Settings(
-        environment="prod",
-        supabase_jwks_url="https://example.supabase.co/auth/v1/.well-known/jwks.json",
-        cors_allowed_origins=["https://dawncast.app"],
-        cors_allowed_origin_regex="",
-        admin_token="a-real-admin-token",
-    ).assert_secure()  # 不該 raise
-
-
-def test_prod_accepts_admin_email_set_without_token() -> None:
-    """admin_token / admin_email 擇一即可，不必兩個都設。"""
-    Settings(
-        environment="prod",
-        supabase_jwks_url="https://example.supabase.co/auth/v1/.well-known/jwks.json",
-        cors_allowed_origins=["https://dawncast.app"],
-        cors_allowed_origin_regex="",
-        admin_token="",
         admin_email="admin@example.com",
     ).assert_secure()  # 不該 raise
 
 
-def test_prod_rejects_admin_token_and_email_both_empty() -> None:
+def test_prod_rejects_empty_admin_email() -> None:
     with pytest.raises(ConfigError):
         Settings(
             environment="prod",
             supabase_jwks_url="https://example.supabase.co/auth/v1/.well-known/jwks.json",
             cors_allowed_origins=["https://dawncast.app"],
             cors_allowed_origin_regex="",
-            admin_token="",
+            admin_email="",
+        ).assert_secure()
+
+
+def test_prod_accepts_admin_email_set() -> None:
+    Settings(
+        environment="prod",
+        supabase_jwks_url="https://example.supabase.co/auth/v1/.well-known/jwks.json",
+        cors_allowed_origins=["https://dawncast.app"],
+        cors_allowed_origin_regex="",
+        admin_email="admin@example.com",
+    ).assert_secure()  # 不該 raise
+
+
+def test_prod_rejects_admin_email_empty() -> None:
+    """admin 唯一授權路徑：admin_email 必填。"""
+    with pytest.raises(ConfigError):
+        Settings(
+            environment="prod",
+            supabase_jwks_url="https://example.supabase.co/auth/v1/.well-known/jwks.json",
+            cors_allowed_origins=["https://dawncast.app"],
+            cors_allowed_origin_regex="",
             admin_email="",
         ).assert_secure()
 
@@ -95,7 +83,7 @@ def test_prod_rejects_hs256_short_secret() -> None:
             supabase_jwt_secret="abc-too-short",
             cors_allowed_origins=["https://dawncast.app"],
             cors_allowed_origin_regex="",
-            admin_token="x",
+            admin_email="admin@example.com",
         ).assert_secure()
 
 
@@ -108,7 +96,7 @@ def test_prod_accepts_hs256_long_secret() -> None:
         supabase_jwt_secret="a" * 32,  # 剛好 32，通過下限
         cors_allowed_origins=["https://dawncast.app"],
         cors_allowed_origin_regex="",
-        admin_token="x",
+        admin_email="admin@example.com",
     ).assert_secure()  # 不該 raise
 
 
@@ -120,7 +108,7 @@ def test_prod_rejects_nonempty_cors_origin_regex() -> None:
             supabase_jwks_url="https://example.supabase.co/auth/v1/.well-known/jwks.json",
             cors_allowed_origins=["https://dawncast.app"],
             cors_allowed_origin_regex="https://[a-z0-9-]+\\.devtunnels\\.ms",
-            admin_token="x",
+            admin_email="admin@example.com",
         ).assert_secure()
 
 
@@ -131,7 +119,7 @@ def test_prod_treats_whitespace_only_cors_origin_regex_as_unset() -> None:
         supabase_jwks_url="https://example.supabase.co/auth/v1/.well-known/jwks.json",
         cors_allowed_origins=["https://dawncast.app"],
         cors_allowed_origin_regex="   ",
-        admin_token="x",
+        admin_email="admin@example.com",
     ).assert_secure()  # 不該 raise
 
 
@@ -141,7 +129,7 @@ def test_prod_accepts_empty_cors_origin_regex() -> None:
         supabase_jwks_url="https://example.supabase.co/auth/v1/.well-known/jwks.json",
         cors_allowed_origins=["https://dawncast.app"],
         cors_allowed_origin_regex="",
-        admin_token="x",
+        admin_email="admin@example.com",
     ).assert_secure()  # 不該 raise
 
 

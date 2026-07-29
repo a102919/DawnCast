@@ -71,9 +71,7 @@ async def list_push_subscriptions(user_id: str) -> list[dict[str, str]]:
             (user_id,),
         )
         rows = await cur.fetchall()
-    return [
-        {"endpoint": r["endpoint"], "p256dh": r["p256dh"], "auth": r["auth"]} for r in rows
-    ]
+    return [{"endpoint": r["endpoint"], "p256dh": r["p256dh"], "auth": r["auth"]} for r in rows]
 
 
 async def delete_push_endpoints(endpoints: list[str]) -> None:

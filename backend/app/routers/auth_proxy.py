@@ -35,10 +35,19 @@ _GOTRUE_INTERNAL_HOST = os.environ.get(
 _GOTRUE_PROXY_TARGET = f"http://{_GOTRUE_INTERNAL_HOST}:9999"
 
 # hop-by-hop headers 不轉發（RFC 7230 §6.1 + 常見實務清單）。
-_HOP_BY_HOP = frozenset({
-    "host", "content-length", "connection", "keep-alive",
-    "transfer-encoding", "upgrade", "expect", "te", "trailer",
-})
+_HOP_BY_HOP = frozenset(
+    {
+        "host",
+        "content-length",
+        "connection",
+        "keep-alive",
+        "transfer-encoding",
+        "upgrade",
+        "expect",
+        "te",
+        "trailer",
+    }
+)
 
 
 @router.api_route(
@@ -47,10 +56,7 @@ _HOP_BY_HOP = frozenset({
 )
 async def proxy_to_gotrue(path: str, request: Request) -> Response:
     target = f"{_GOTRUE_PROXY_TARGET}/{path}"
-    fwd_headers = {
-        k: v for k, v in request.headers.items()
-        if k.lower() not in _HOP_BY_HOP
-    }
+    fwd_headers = {k: v for k, v in request.headers.items() if k.lower() not in _HOP_BY_HOP}
     body = await request.body()
 
     async with httpx.AsyncClient(
@@ -65,10 +71,7 @@ async def proxy_to_gotrue(path: str, request: Request) -> Response:
             follow_redirects=False,
         )
 
-    resp_headers = {
-        k: v for k, v in upstream.headers.items()
-        if k.lower() not in _HOP_BY_HOP
-    }
+    resp_headers = {k: v for k, v in upstream.headers.items() if k.lower() not in _HOP_BY_HOP}
     # upstream 可能送 Content-Length 跟實際 body 不符（特別是 302），
     # FastAPI Response 會自己重算，拔掉避免 mismatch。
     resp_headers.pop("content-length", None)

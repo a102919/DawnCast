@@ -154,9 +154,7 @@ async def test_reuse_hit_survives_push_failure(monkeypatch: pytest.MonkeyPatch) 
 
     monkeypatch.setattr(reuse, "notify_user", _fail_notify)
 
-    result = await reuse.resolve_for_user(
-        user_id="u1", big_topic="ai", deliver_date="2026-06-23"
-    )
+    result = await reuse.resolve_for_user(user_id="u1", big_topic="ai", deliver_date="2026-06-23")
 
     assert result == "ep-123"
     assert repo.deliveries == [("u1", "ep-123", "2026-06-23")]
@@ -410,9 +408,7 @@ def _sample_script(format: str = "dialogue") -> ScriptJSON:
         return script.model_copy(
             update={
                 "format": "monologue",
-                "script": [
-                    line.model_copy(update={"speaker": "Nova"}) for line in script.script
-                ],
+                "script": [line.model_copy(update={"speaker": "Nova"}) for line in script.script],
             }
         )
     return script
@@ -487,15 +483,10 @@ def _patch_generate_job(
             "category": script.category,
             "extracted_facts": [f.model_dump() for f in script.extracted_facts],
             "target_vocab": [v.model_dump() for v in script.target_vocab],
-            "segments": [
-                {"focus": f"Part {i + 1}", "vocab_words": []}
-                for i in range(3)
-            ],
+            "segments": [{"focus": f"Part {i + 1}", "vocab_words": []} for i in range(3)],
         }
     )
-    segment_json = json.dumps(
-        {"script": [line.model_dump() for line in script.script]}
-    )
+    segment_json = json.dumps({"script": [line.model_dump() for line in script.script]})
     writer_pool = [outline_json] + [segment_json] * 3
     # judge 預設給「過」的 verdict（threshold 0.6，五軸全給 0.8 過）
     passing_judge = json.dumps(
@@ -690,15 +681,11 @@ async def test_generate_job_idempotency_key_includes_topic_type(
     news_mocks, _ = _patch_generate_job(
         monkeypatch, script=_sample_script(format="monologue"), repo_spy=repo_spy
     )
-    news = await generate_job.run_generate_job(
-        {**base, "topic_type": "news"}, **news_mocks
-    )
+    news = await generate_job.run_generate_job({**base, "topic_type": "news"}, **news_mocks)
     topic_mocks, _ = _patch_generate_job(
         monkeypatch, script=_sample_script(format="dialogue"), repo_spy=repo_spy
     )
-    topic = await generate_job.run_generate_job(
-        {**base, "topic_type": "topic"}, **topic_mocks
-    )
+    topic = await generate_job.run_generate_job({**base, "topic_type": "topic"}, **topic_mocks)
 
     assert news == "ep-new-id"
     assert topic == "ep-new-id"

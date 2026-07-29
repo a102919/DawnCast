@@ -253,7 +253,7 @@ class ChannelPublic(CamelModel):
     episode_count: int = 0
 
 
-# ── Ops / admin 契約（T7，X-Admin-Token 驗證，internal debug 用）───────
+# ── Ops / admin 契約（T7，Supabase JWT email 白名單，internal debug 用）───────
 
 
 class AdminJobQueue(CamelModel):

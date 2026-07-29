@@ -155,9 +155,7 @@ async def test_create_channel_raises_when_no_row_returned(
 ) -> None:
     _install(monkeypatch, rows=[])
     with pytest.raises(RuntimeError):
-        await channels.create_channel(
-            slug="x", name="X", theme_prompt="p", topic="tech"
-        )
+        await channels.create_channel(slug="x", name="X", theme_prompt="p", topic="tech")
 
 
 async def test_update_channel_rejects_unknown_field_without_querying(

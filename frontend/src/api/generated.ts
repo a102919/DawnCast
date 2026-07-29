@@ -617,7 +617,10 @@ export interface paths {
          *     bytes 當 body 送出：
          *
          *         fetch(url, { method: 'POST', body: file,
-         *                       headers: { 'Content-Type': file.type, 'X-Admin-Token': token } })
+         *                       headers: { 'Content-Type': file.type } })
+         *
+         *     （admin 端點不再驗 X-Admin-Token——Authorization Bearer JWT email 白名單已
+         *     由 require_admin 統一處理，呼叫端不必再手動帶 header。）
          *
          *     Trust boundary 驗證（全部要過，一項都不能省）：
          *       1. 頻道必須存在（404）
@@ -2930,7 +2933,6 @@ export interface operations {
             query?: never;
             header?: {
                 authorization?: string | null;
-                "X-Admin-Token"?: string | null;
             };
             path?: never;
             cookie?: never;
@@ -2962,7 +2964,6 @@ export interface operations {
             query?: never;
             header?: {
                 authorization?: string | null;
-                "X-Admin-Token"?: string | null;
             };
             path?: never;
             cookie?: never;
@@ -2994,7 +2995,6 @@ export interface operations {
             query?: never;
             header?: {
                 authorization?: string | null;
-                "X-Admin-Token"?: string | null;
             };
             path?: never;
             cookie?: never;
@@ -3032,7 +3032,6 @@ export interface operations {
             };
             header?: {
                 authorization?: string | null;
-                "X-Admin-Token"?: string | null;
             };
             path?: never;
             cookie?: never;
@@ -3064,7 +3063,6 @@ export interface operations {
             query?: never;
             header?: {
                 authorization?: string | null;
-                "X-Admin-Token"?: string | null;
             };
             path?: never;
             cookie?: never;
@@ -3100,7 +3098,6 @@ export interface operations {
             query?: never;
             header?: {
                 authorization?: string | null;
-                "X-Admin-Token"?: string | null;
             };
             path: {
                 channel_id: string;
@@ -3140,7 +3137,6 @@ export interface operations {
             };
             header?: {
                 authorization?: string | null;
-                "X-Admin-Token"?: string | null;
             };
             path: {
                 channel_id: string;
@@ -3174,7 +3170,6 @@ export interface operations {
             query?: never;
             header?: {
                 authorization?: string | null;
-                "X-Admin-Token"?: string | null;
             };
             path: {
                 channel_id: string;
@@ -3213,7 +3208,6 @@ export interface operations {
             query?: never;
             header?: {
                 authorization?: string | null;
-                "X-Admin-Token"?: string | null;
             };
             path: {
                 channel_id: string;
@@ -3247,7 +3241,6 @@ export interface operations {
             query?: never;
             header?: {
                 authorization?: string | null;
-                "X-Admin-Token"?: string | null;
             };
             path: {
                 channel_id: string;

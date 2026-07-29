@@ -209,9 +209,7 @@ async def run_pod(
         "evidence_cards": [],
         "verified_claims": [],
         "source_conflicts": [],
-        "claim_verification": ClaimVerification(
-            checks=[], unsupported_ratio=0.0
-        ),
+        "claim_verification": ClaimVerification(checks=[], unsupported_ratio=0.0),
         "rewrite_iterations": 0,
         "judge_feedback": [],
         "token_usage": [],

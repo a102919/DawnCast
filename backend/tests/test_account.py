@@ -55,12 +55,8 @@ _SEED_USERS_BY_ID: dict[str, dict[str, Any]] = {
 }
 
 _SEED_DELIVERIES_BY_USER: dict[str, list[dict[str, Any]]] = {
-    USER_A: [
-        {"id": "d1", "user_id": USER_A, "episode_id": "ep1", "deliver_date": "2026-07-15"}
-    ],
-    USER_B: [
-        {"id": "d2", "user_id": USER_B, "episode_id": "ep2", "deliver_date": "2026-07-15"}
-    ],
+    USER_A: [{"id": "d1", "user_id": USER_A, "episode_id": "ep1", "deliver_date": "2026-07-15"}],
+    USER_B: [{"id": "d2", "user_id": USER_B, "episode_id": "ep2", "deliver_date": "2026-07-15"}],
 }
 
 _SEED_DAILY_ORDERS_BY_USER: dict[str, list[dict[str, Any]]] = {
@@ -341,9 +337,7 @@ def test_delete_me_clears_all_eight_cascade_tables(client: TestClient) -> None:
 
     # 逐表斷言：A 的列已清空
     for table, store in CHILD_TABLES:
-        assert USER_A not in store, (
-            f"{table} 該 user_id={USER_A} 的列未被清空"
-        )
+        assert USER_A not in store, f"{table} 該 user_id={USER_A} 的列未被清空"
 
 
 def test_delete_me_other_users_data_intact(client: TestClient) -> None:

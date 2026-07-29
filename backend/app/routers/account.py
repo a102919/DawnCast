@@ -77,9 +77,7 @@ async def get_me_ep(
     return ok(_row_to_account(row, user_id, email))
 
 
-def _row_to_account(
-    row: dict[str, Any] | None, user_id: str, email: str
-) -> AccountInfo:
+def _row_to_account(row: dict[str, Any] | None, user_id: str, email: str) -> AccountInfo:
     if row is None:
         # handle_new_user trigger 尚未補列（極少見，初次註冊到第一次 SELECT 之間的極短窗口）
         # → 回 trigger 預設值 + JWT 提供的 id/email

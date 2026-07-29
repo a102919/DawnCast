@@ -311,9 +311,7 @@ class MockR2:
     def presigned_get_url(self, key: str, ttl: int | None = None) -> str:
         return f"https://mock-r2.local/{key}?ttl={ttl or 7200}"
 
-    def presigned_get_urls(
-        self, keys: list[str], ttl: int | None = None
-    ) -> dict[str, str]:
+    def presigned_get_urls(self, keys: list[str], ttl: int | None = None) -> dict[str, str]:
         """批次簽章 mock URL；個別 key 沒上傳過就略過（鏡像 production 簽章失敗行為）。"""
         out: dict[str, str] = {}
         for key in keys:
@@ -368,9 +366,7 @@ class MockRenderer:
         for i, line in enumerate(script_payload.get("script", [])):
             seg_path = self.workdir / f"line_{i:03d}_{line['speaker']}.mp3"
             seg_path.write_bytes(b"\x00" * 64)  # mock 64 bytes per segment
-            segments.append(
-                SegmentArtifact(index=i, audio_path=seg_path, duration=line_dur)
-            )
+            segments.append(SegmentArtifact(index=i, audio_path=seg_path, duration=line_dur))
             cues.append(
                 {
                     "index": i,

@@ -111,11 +111,7 @@ async def build_episode(slug: str, row: dict[str, Any]) -> Episode:
     asyncio.to_thread 丟到 thread pool 執行，呼叫端要 await。
     """
     script_j = row.get("script_json")
-    cover_icon_val = (
-        script_j.get("cover_icon")
-        if isinstance(script_j, dict)
-        else None
-    )
+    cover_icon_val = script_j.get("cover_icon") if isinstance(script_j, dict) else None
 
     # 簽章 segments：audio_r2_keys 為 jsonb list（per-line mp3 keys）。
     # 對齊 script_json.cues 順序，前端用 index 跟 Cue 對齊。

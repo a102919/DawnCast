@@ -91,9 +91,7 @@ def _stub_channel_repo(
     ) -> list[dict[str, Any]]:
         return existing_candidates or []
 
-    async def fake_insert_channel_topics(
-        channel_id: str, candidates: list[dict[str, Any]]
-    ) -> int:
+    async def fake_insert_channel_topics(channel_id: str, candidates: list[dict[str, Any]]) -> int:
         calls["insert"].append((channel_id, candidates))
         return len(candidates)
 
@@ -364,9 +362,7 @@ async def test_plan_channels_one_channel_failure_does_not_block_others(
     ok_channel = _channel(id="chan-ok", slug="ok")
     bad_channel = _channel(id="chan-bad", slug="bad")
 
-    calls = _stub_channel_repo(
-        monkeypatch, channels_list=[bad_channel, ok_channel], backlog=0
-    )
+    calls = _stub_channel_repo(monkeypatch, channels_list=[bad_channel, ok_channel], backlog=0)
 
     async def fake_count_candidates(channel_id: str) -> int:
         if channel_id == "chan-bad":

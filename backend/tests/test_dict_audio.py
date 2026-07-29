@@ -23,8 +23,10 @@ from engine.media import dict_audio
 
 def _async_fn(sync_fn: Any) -> Any:
     """包裝同步函式成 async coroutine factory（給 monkeypatch setattr 用）。"""
+
     async def wrapper(*args: Any, **kwargs: Any) -> Any:
         return sync_fn(*args, **kwargs)
+
     return wrapper
 
 

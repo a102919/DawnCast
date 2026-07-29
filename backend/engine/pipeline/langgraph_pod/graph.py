@@ -57,6 +57,7 @@ _WRITER_RETRY = RetryPolicy(
     retry_on=GenerationError,
 )
 
+
 def _timed(name: str, fn: Any) -> Any:
     """把每個 node 包一層計時：讀 config['configurable']['metrics_collector']。
 
@@ -116,16 +117,12 @@ def build_pod(*, checkpointer: MemorySaver | None = None) -> Any:
         "verify_script_claims", _timed("verify_script_claims", verify_script_claims_node)
     )
     builder.add_node("quality_judge", _timed("quality_judge", quality_judge_node))
-    builder.add_node(
-        "rewrite_iter_bump", _timed("rewrite_iter_bump", rewrite_iteration_bump_node)
-    )
+    builder.add_node("rewrite_iter_bump", _timed("rewrite_iter_bump", rewrite_iteration_bump_node))
     builder.add_node("upsert_episode", _timed("upsert_episode", upsert_episode_node))
     builder.add_node("render_episode", _timed("render_episode", render_episode_node))
     builder.add_node("upload_artifacts", _timed("upload_artifacts", upload_artifacts_node))
     builder.add_node("dead_letter", _timed("dead_letter", dead_letter_node))
-    builder.add_node(
-        "update_episode_keys", _timed("update_episode_keys", update_episode_keys_node)
-    )
+    builder.add_node("update_episode_keys", _timed("update_episode_keys", update_episode_keys_node))
     builder.add_node("insert_deliveries", _timed("insert_deliveries", insert_deliveries_node))
     builder.add_node("backfill_dict", _timed("backfill_dict", backfill_dict_node))
 

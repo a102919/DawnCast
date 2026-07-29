@@ -38,15 +38,11 @@ def make_client(monkeypatch: pytest.MonkeyPatch):
     def _make(environment: str, **overrides: Any) -> TestClient:
         get_settings.cache_clear()
         base = get_settings()
-        new_settings = base.model_copy(
-            update={"environment": environment, **overrides}
-        )
+        new_settings = base.model_copy(update={"environment": environment, **overrides})
         _patched_get_settings(monkeypatch, new_settings)
         from app.main import create_app
 
-        return TestClient(
-            create_app(), raise_server_exceptions=False
-        )
+        return TestClient(create_app(), raise_server_exceptions=False)
 
     return _make
 
@@ -123,9 +119,7 @@ def test_prod_preflight_omits_pna_header(make_client: Any) -> None:
         },
     )
     assert r.status_code == 400
-    assert "access-control-allow-private-network" not in {
-        k.lower() for k in r.headers
-    }
+    assert "access-control-allow-private-network" not in {k.lower() for k in r.headers}
 
 
 def test_prod_allows_exact_origin_in_whitelist(make_client: Any) -> None:

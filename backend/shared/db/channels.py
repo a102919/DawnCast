@@ -263,9 +263,7 @@ async def insert_channel_topics(channel_id: str, candidates: list[dict[str, Any]
     return len(rows)
 
 
-async def update_topic_status(
-    topic_id: str, status: str, *, episode_id: str | None = None
-) -> bool:
+async def update_topic_status(topic_id: str, status: str, *, episode_id: str | None = None) -> bool:
     """轉移選題狀態（scheduled/published/rejected/stale），回傳是否真的改到列。
 
     decided_at 蓋成 now()（記下這次狀態轉移的時間）。episode_id 用 coalesce

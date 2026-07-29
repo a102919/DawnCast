@@ -303,9 +303,7 @@ async def update_episode_keys(
     gen_metrics_json: str | None = (
         json.dumps(gen_metrics, ensure_ascii=False) if gen_metrics is not None else None
     )
-    audio_keys_json = (
-        json.dumps(audio_keys, ensure_ascii=False) if audio_keys is not None else None
-    )
+    audio_keys_json = json.dumps(audio_keys, ensure_ascii=False) if audio_keys is not None else None
     # audio_r2_key 舊欄位：寫 audio_keys[0] 給向後相容（admin / 部分 router 仍讀）。
     # audio_keys 為空 list 或 None 時 audio_r2_key 也保持 None。
     legacy_audio_key: str | None
@@ -575,9 +573,7 @@ async def insert_delivery(user_id: str, episode_id: str, deliver_date: str) -> b
     return row is not None
 
 
-async def claim_daily_notifications(
-    deliver_date: str, now_hhmm: str
-) -> list[dict[str, str]]:
+async def claim_daily_notifications(deliver_date: str, now_hhmm: str) -> list[dict[str, str]]:
     """認領「出餐時間已到、還沒通知過」的交付，回傳每筆的 user_id + episode slug/title。
 
     UPDATE ... WHERE notified_at is null 同時完成篩選與 atomic claim——cron 掃
@@ -621,10 +617,7 @@ async def claim_daily_notifications(
         )
         rows = await cur.fetchall()
         await conn.commit()
-    return [
-        {"user_id": r["user_id"], "slug": r["slug"], "title": r["title"]}
-        for r in rows
-    ]
+    return [{"user_id": r["user_id"], "slug": r["slug"], "title": r["title"]} for r in rows]
 
 
 async def get_episode_meta(episode_id: str) -> dict[str, str] | None:
@@ -635,8 +628,7 @@ async def get_episode_meta(episode_id: str) -> dict[str, str] | None:
     """
     async with connection() as conn, conn.cursor(row_factory=dict_row) as cur:
         await cur.execute(
-            "select slug, coalesce(title_zh, title) as title "
-            "from public.episodes where id = %s",
+            "select slug, coalesce(title_zh, title) as title from public.episodes where id = %s",
             (episode_id,),
         )
         row = await cur.fetchone()

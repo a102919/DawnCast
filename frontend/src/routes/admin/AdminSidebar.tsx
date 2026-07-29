@@ -5,7 +5,7 @@
 import { useState } from 'react'
 import { Link, useLocation } from 'react-router-dom'
 import { motion } from 'framer-motion'
-import { ArrowLeft, KeyRound, Menu, X } from 'lucide-react'
+import { ArrowLeft, Menu, X } from 'lucide-react'
 import { ADMIN_NAV } from './nav'
 import { useSprings } from '../../lib/motion'
 import { Sheet } from '../../components/primitives'
@@ -47,31 +47,7 @@ function AdminNavLinks({ onNavigate }: AdminNavLinksProps) {
   )
 }
 
-interface TokenStatusButtonProps {
-  readonly hasToken: boolean
-  readonly onToggleTokenCard: () => void
-}
-
-function TokenStatusButton({ hasToken, onToggleTokenCard }: TokenStatusButtonProps) {
-  return (
-    <button
-      type="button"
-      onClick={onToggleTokenCard}
-      disabled={!hasToken}
-      className="w-full flex items-center gap-1.5 px-3 h-8 rounded-md text-[11px] text-text-secondary transition-colors duration-fast ease-apple hover:bg-bg-secondary disabled:cursor-default disabled:hover:bg-transparent"
-    >
-      <KeyRound size={12} className={hasToken ? 'text-success' : 'text-warning'} />
-      {hasToken ? '權杖已設定' : '尚未設定權杖'}
-    </button>
-  )
-}
-
-interface AdminSidebarProps {
-  readonly hasToken: boolean
-  readonly onToggleTokenCard: () => void
-}
-
-export function AdminSidebar({ hasToken, onToggleTokenCard }: AdminSidebarProps) {
+export function AdminSidebar() {
   const [mobileOpen, setMobileOpen] = useState(false)
 
   return (
@@ -90,8 +66,7 @@ export function AdminSidebar({ hasToken, onToggleTokenCard }: AdminSidebarProps)
         <div className="flex-1">
           <AdminNavLinks />
         </div>
-        <div className="p-3 border-t border-border space-y-1">
-          <TokenStatusButton hasToken={hasToken} onToggleTokenCard={onToggleTokenCard} />
+        <div className="p-3 border-t border-border">
           <Link
             to="/"
             className="flex items-center gap-1.5 px-3 h-8 rounded-md text-xs text-text-secondary transition-colors duration-fast ease-apple hover:text-text-primary hover:bg-bg-secondary"
@@ -139,8 +114,7 @@ export function AdminSidebar({ hasToken, onToggleTokenCard }: AdminSidebarProps)
           </button>
         </div>
         <AdminNavLinks onNavigate={() => setMobileOpen(false)} />
-        <div className="mt-auto p-3 border-t border-border space-y-1 shrink-0">
-          <TokenStatusButton hasToken={hasToken} onToggleTokenCard={onToggleTokenCard} />
+        <div className="mt-auto p-3 border-t border-border shrink-0">
           <Link
             to="/"
             onClick={() => setMobileOpen(false)}

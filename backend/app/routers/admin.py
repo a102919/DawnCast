@@ -1,9 +1,10 @@
 """Ops / admin router：internal debug 用，查 episode / job / token 用量。
 
-授權機制：兩條路徑擇一即可，見 require_admin。
-  1. X-Admin-Token header，走環境變數 ADMIN_TOKEN 比對（常數時間比對防 timing attack）。
-  2. 既有 Supabase JWT（Google 登入）的 email claim 對上環境變數 ADMIN_EMAIL——
-     用已登入的帳號就能開後台，不用每次手動複製貼上 token。
+授權機制：見 require_admin。唯一路徑＝Supabase JWT（Google 登入）email claim
+對上環境變數 ADMIN_EMAIL；email_verified=True + app_metadata.provider=google +
+email 命中白名單才放行。X-Admin-Token 後門已在 2026-07-29 砍掉：常駐 env 字串
+一旦洩漏（Slack 截圖 / repo commit / Zeabur 別的環境觀察到）就成永久後門，
+email 白名單才是對得起「單一管理員」這個事實的設計。
 YAGNI：目前只有單一管理員需求，不建 admin_users 表；之後若真的要多管理員，
 屆時再加表也不遲。
 """
@@ -12,7 +13,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import secrets
 from datetime import datetime
 from typing import Any, Literal
 from zoneinfo import ZoneInfo
@@ -49,41 +49,25 @@ logger = logging.getLogger(__name__)
 
 def require_admin(
     authorization: str | None = Header(default=None),
-    x_admin_token: str | None = Header(default=None, alias="X-Admin-Token"),
 ) -> None:
-    """驗 admin 身分：X-Admin-Token 或 Supabase JWT email 白名單，擇一即可。
-    fail-closed：兩條路徑都沒設定 / 都不符 → 一律拒絕。對外只回 generic 401，
-    不洩漏比對細節（不透露是 token 錯還是 email 不符）。
+    """驗 admin 身分：Supabase JWT（Google 登入）email 白名單。
+    fail-closed：admin_email 沒設 / JWT 沒帶 / 驗證失敗 / email 不符 →
+    一律拒絕。對外只回 generic 401，不洩漏比對細節。
 
-    細節陷阱：
-      - secrets.compare_digest 對含 ≥0x80 byte 的 str 會 TypeError（Starlette 用
-        latin-1 解 header，會把這種 byte 原樣帶進來），會冒成未認證 500 兼 log
-        traceback，也成為「ADMIN_TOKEN 有沒有設」的 oracle。先 encode 成 bytes
-        並 catch TypeError → 統一回 401。
-      - JWT email claim 只代表 Supabase 專案簽過此帳號，不代表 Google OAuth
-        驗證過。若 Supabase Email provider 開著且 Confirm email 關掉，攻擊者
-        可用 admin email 自助註冊拿到合法 JWT。雙保險：要求 email_verified 且
-        app_metadata.provider == "google"。
+    細節陷阱：JWT email claim 只代表 Supabase 專案簽過此帳號，不代表 Google
+    OAuth 驗證過。若 Supabase Email provider 開著且 Confirm email 關掉，攻擊者
+    可用 admin email 自助註冊拿到合法 JWT。雙保險：要求 email_verified 且
+    app_metadata.provider == "google"。
     """
     settings = get_settings()
-    if settings.admin_token and x_admin_token:
-        try:
-            # surrogateescape 把 latin-1 解不出的 byte 留成 code point，避免
-            # compare_digest 直接 TypeError；對 admin_token 來自 Settings（純
-            # ASCII env var）永遠 encode 成功，這裡只防 x_admin_token 端。
-            token_bytes = x_admin_token.encode("utf-8", "surrogateescape")
-            expected_bytes = settings.admin_token.encode("utf-8", "surrogateescape")
-        except (UnicodeError, TypeError):
-            token_bytes = expected_bytes = b""
-        if secrets.compare_digest(token_bytes, expected_bytes):
-            return
-    if settings.admin_email:
-        token = extract_bearer_token(authorization)
-        if token:
-            payload = _decode_for_admin(token)
-            if _is_authorized_admin(payload, settings.admin_email):
-                return
-    raise AuthError("認證失敗")
+    if not settings.admin_email:
+        raise AuthError("認證失敗")
+    token = extract_bearer_token(authorization)
+    if not token:
+        raise AuthError("認證失敗")
+    payload = _decode_for_admin(token)
+    if not _is_authorized_admin(payload, settings.admin_email):
+        raise AuthError("認證失敗")
 
 
 def _decode_for_admin(token: str) -> dict[str, Any] | None:
@@ -521,7 +505,10 @@ async def upload_channel_cover(channel_id: str, request: Request) -> ApiResponse
     bytes 當 body 送出：
 
         fetch(url, { method: 'POST', body: file,
-                      headers: { 'Content-Type': file.type, 'X-Admin-Token': token } })
+                      headers: { 'Content-Type': file.type } })
+
+    （admin 端點不再驗 X-Admin-Token——Authorization Bearer JWT email 白名單已
+    由 require_admin 統一處理，呼叫端不必再手動帶 header。）
 
     Trust boundary 驗證（全部要過，一項都不能省）：
       1. 頻道必須存在（404）

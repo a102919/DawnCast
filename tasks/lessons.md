@@ -243,3 +243,74 @@ curl 直接打 8000 帶 `/api/episodes` 是 200（用 prefix 加完的版本）�
 - **「prod 有跑過」是不可妥協的驗證**：local mock 跑通不代表 prod 通 — LLM 換模型會換 schema 偏好、Tavily 配額會撞限、R2 credential 會被截、deployment env 不一樣。每一個新圖節點都需要 prod episode UUID 作為 confirmation token，不能只靠「model 200 OK」。
 - **debug prod 失敗的入口順序**：(1) 看 Zeabur `runtime logs` 找 exception、(2) 看 DB `episodes WHERE created_at > now() - interval '2 hour'` 確認有 row、(3) `pgmq.read` 看 msg 還在不在 queue、(4) `jsonb_array_elements(episodes.sources)->>'url'` 看抓到什麼真實 URL。比直接 `curl API` 早一步。
 - **別用 `kill -9 1` 重啟 Zeabur container**：OCI exec 跟 PID 1 不同 namespace，Zeabur 也沒 expose 通用 restart command；要重啟就 `zeabur service restart` CLI，user 也希望「自幹別問我點 dashboard」。
+
+## 2026-07-29 — 改 gotrue v2.189.0 env 後，`/proc/1/environ` 看到新值不代表 gotrue 已重啟吃到新值
+
+**情境**：要 disable email signup（擋攻擊面），用 Zeabur MCP `create_environment-variable` 設了 `GOTRUE_DISABLE_EMAIL_SIGNUP=true`、`GOTRUE_MAILER_AUTOCONFIRM=false`、`GOTRUE_EXTERNAL_EMAIL_ENABLED=false` 等共 7 條。**幾分鐘後** Zeabur 後台顯示 env 已寫入。但：
+
+1. 直接打 `POST https://gotrue-mon.zeabur.app/signup` 仍然 `HTTP 200` 給 `access_token` — 顯然沒擋。
+2. `GET https://gotrue-mon.zeabur.app/settings` 仍顯示 `disable_signup:false`、`mailer_autoconfirm:true` — gotrue 進程內的 config 沒更新。
+3. 進 gotrue container `cat /proc/1/environ` 看到 `GOTRUE_DISABLE_EMAIL_SIGNUP=true` 等新值都有。**矛盾**：environ 有了但 config 沒套用。
+4. 試 `kill -TERM 1` 重啟 gotrue 二進位，但 Alpine 沒裝 `bash`、env 路徑還是舊值——Zeabur 自動重新 pull 進程時 mirror 的是 **Zeabur 後端第一次寫 env 之前的快照**，不是 dashboard 顯示的當下值。
+5. curl 內網 Zeabur gateway GraphQL 嘗試 `restartService` 失敗（`gateway.zeabur.com` 連線被 sandbox 擋）。
+6. 試 `POST /restart`、`POST /admin/restart`、`POST /reboot` 全 401/404。
+
+**最終唯一可行辦法**：使用者**手動進 Zeabur dashboard** 對 gotrue-mon 服務按 **Restart**。Zeabur prebuilt container 對 env 變更的 propagation 模型是「EnvChange Event → 排程重啟」，這個排程**有時不會自動執行**或**執行後仍用 snapshot**，dashboard 按鈕是唯一的權威手段。
+
+**規則**：
+- **Zeabur prebuilt container 的 env propagation 是不可靠的**：UI 顯示「env 已更新」≠ 進程已重啟≠ config 已套用。唯一可信驗證是打 HTTP `/settings`（或同等 echo endpoint）對帳。
+- **驗 gotrue env 真生效的標準測試序列**：① `GET /settings` 看 `disable_signup` / `external.email` / `mailer_autoconfirm`；② `POST /signup` 攻擊測試看是否回 4xx；③ 比對 `auth.users` 確保沒新攻擊 row。**三條都過才算真擋住**。
+- **任何「env 改完就算修好」的 commit 必須被 reviewer 退回**：作者必須附「重啟後 `/settings` 對帳截圖」+ 「攻擊測試 4xx log」。沒附就要退件。
+- **手動重啟觸發條件**：`mcp__zeabur__get-deployments` 回空（沒有 deployment record）但 service `status=RUNNING` 時，**一定**要 user 去 dashboard 按。CLI 重啟在 Zeabur prebuilt marketplace model 不可行。
+- **比 `/proc/1/environ` 還可信的是 `/settings` 端點的真實 config**：進程 env 是 OS 層的字串；gotrue 真實生效的是 `viper.Get("disable_signup")` 之類讀出來的 Go 值。兩者可能因為 `viper.WatchConfig` / hot reload 與否而不一致。**HTTP echo 的 config 才是事實的單一真相**。
+- **Zeabur MCP `execute-command` 對 gotrue 也有 shell 讀權限**（雖然部署版本是 Alpine busybox）。`cat /proc/1/cmdline`、`cat /proc/1/environ` 都行。不能用 `kill` 重啟（沒權限或被擋），但能完整觀察進程狀態——這在找不到 dashboard access 時是唯一診斷窗口。
+
+**已修補的 Zeabur env 清單**（prebuilt gotrue-mon）：
+- `GOTRUE_DISABLE_EMAIL_SIGNUP=true` ← 擋 `POST /signup`
+- `GOTRUE_DISABLE_EMAIL_MAGICLINK=true` ← 擋 OTP-free magic link
+- `GOTRUE_DISABLE_EMAIL_OTP=true` ← 擋 OTP
+- `GOTRUE_DISABLE_EMAIL_LINK_SIGNUP=true` ← 擋 email link signup
+- `GOTRUE_MAILER_AUTOCONFIRM=false` ← 新 user 不會自動 `email_verified=true`
+- `GOTRUE_EXTERNAL_EMAIL_ENABLED=false` ← 關閉 email OAuth provider
+- `GOTRUE_EXTERNAL_GOOGLE_ENABLED=true` ← **保留** Google OAuth（唯一允許的登入路徑）
+
+**為什麼 Gmail 地址寫在 `admin_email` 而不寫死在前端**：DawnCast backend `admin.py` 的 `_is_authorized_admin` 只認 `app_metadata.provider == "google" + email_verified == True + email == settings.admin_email`。前端不存白名單（已刪 email/password 死碼），任何人都能登入但只有 `q06637557832@gmail.com` 通過 Google OAuth 才能拿 admin——server-side whitelist 是真正防線，前端只是 gating UX。
+
+**Dashboard Email provider 那邊使用者說他自己會關**：在 Supabase/Auth 提供者面板手動 disable email 是「Zeabur env 生效前的保險」，雙重關閉才能真正擋攻擊。Env 沒生效、dashboard 又沒關，攻擊者仍能 email signup — 千萬別只做單邊。
+
+## 2026-07-29 — admin 端點的「第二條路徑」永遠是後門 — fail-closed 並收斂到唯一授權來源
+
+**情境**：`require_admin` 一度是 dual-path：`X-Admin-Token: <ADMIN_TOKEN>` 比對 + `Authorization: Bearer <Supabase JWT> + email in whitelist`。**即使第一條路徑關了，第二條路徑也只認一個 email**，「表面上」已經安全。
+
+事實上：
+
+1. `secrets.compare_digest` 是常數時間比對但**還是需要被瀏覽器或呼叫端執行** — call site 在 router dependency，任何能打到 admin endpoint 的來源（CI、雲端 shelldump、CI secret leak）只要曾經看過一次 env，就擁有跟合法 admin 一樣的權限。**token 從來不是 root secret，是 mobile credential**。
+2. token 透過 `localStorage` 在前端傳遞 → `AuthProvider` 把 token 寫進所有 admin request header → 任何前端的 XSS / supply chain injection（如 markdown 渲染、6 個月後遺留的 dep CVE）都偷得到這個 token。Supabase JWT 是 HttpOnly cookie / refresh token rotation，不在前端 JS 可觸及範圍。
+3. `assert_secure` 同時檢查 `admin_token` 跟 `admin_email` —— 兩個都設的時候哪條生效？兩者都空時哪條生效？「二擇一」邏輯天生是「哪條先壞，另一條替補」，**沒有 fail-closed 預設**。
+4. `AdminTokenCard` 在 admin sidebar 開「填 token / 取消 token」的 UI 開關 → token 跟使用者手動輸入的明文綁定 → 螢幕側錄、肩膀衝浪、共用工作站自動溢漏。
+5. 前端 `httpApi.ts` 把 `adminHeaders()` 散在 30 多處請求，每次「加新 admin endpoint」都得記得掛這個 helper，**沒有編譯期強制**。
+
+**最終修法（單一來源，非雙軌）**：
+
+- `backend/app/routers/admin.py` 的 `require_admin` **完全移除** `X-Admin-Token` Header 參數與 `secrets` import；只留 `Authorization: Bearer <Supabase Google JWT>` 解碼後檢查 `settings.admin_email`。
+- `backend/shared/config.py` 移除 `admin_token` 欄位、`assert_secure` 只 require `admin_email` 不可空。
+- `frontend/src/api/httpApi.ts` 移除 `getAdminToken / setAdminToken / clearAdminToken / ADMIN_TOKEN_KEY` 全部 helper；`adminHeaders()` 保留返回空物件 `{}`（靜默已無作用），加 4 行註解說明歷史 — 「現在 admin 由 Google OAuth email 白名單唯一授權，原 localStorage token helpers 已死碼、刻意保留 stub 避免 import 殘跡報錯」。
+- `frontend/src/routes/admin/AdminTokenCard.tsx` 整檔刪。
+- `AdminSidebar.tsx` 移除 `KeyRound` icon 與 `TokenStatusButton`，清掉 `hasToken` / `onToggleTokenCard` props。
+- `AdminLayout.tsx` 移除 token state 相關 useState、Provider；只剩 Sidebar + Outlet。
+- `AuthProvider.tsx` 移除 `prevUserIdRef` 與 `clearAdminToken` 副作用呼叫。
+- `tests/test_admin.py` 移除 `test_admin_token_unset_denies_even_empty_header` / `test_episodes_wrong_token_returns_401` / `test_admin_non_ascii_x_admin_token_does_not_500`；改 `test_jwt_email_not_in_allowlist_still_401` 守住 whitelist；改 `test_admin_email_unset_denies_jwt_even_with_email_claim` 用 `monkeypatch.setattr(admin_router, "get_settings", lambda: Settings(environment="dev", admin_email=""))` 強制 admin_email 為空，斷言 401。
+- `tests/test_config.py` 把 `admin_token` 斷言全換 `admin_email`，對齊新契約。
+- `backend/shared/models/api.py` 的 admin 區塊註解 `# T7：Supabase JWT X-Admin-Token + email 白名單` 改成 `# T7：Supabase JWT email 白名單`。
+- `test_openapi_contract.py` 的 schema hash snapshot 自動擋下「改 models 沒重生 openapi」 —— 跑 `uv run poe export-openapi` 後新 hash 才綠。
+
+**規則**：
+
+- **任何 admin 端點的「第二條路徑」在能 review 時就砍**：review 看到 `if bearer_token: ... elif x_admin_token: ...` 立刻 fail PR。 「方便測試」、「fallback」、「CI debug」全是合理化藉口 — 這些都該走 OAuth 的 service account / 開發者本機 JWKS local verifier，**不該走 shared static token**。
+- **fail-closed 預設不要二擇一，只留唯一授權軸線**：admin 身分判斷的輸入只該有一個來源（Supabase Google JWT → email claim），任何「另一個驗證路徑」都是 root shell 的影子。`admin_email == ""` 時對所有 admin 端點回 401（哪怕帶合法 JWT），這條必須有測試守住，否則哪天有人把 assert_secure 改掉直接 breakout。
+- **瀏覽器前端能看的 secret 都不是 secret**：`localStorage`、`sessionStorage`、`document.cookie` 都是同一個信任層（拿到 DevTools = 拿到 secret）。`secrets.compare_digest` 不能讓它變成真 secret。Supabase JWT 的 access token 在前端是 acceptable（短時效 + refresh rotation + audience 綁定），**但長效 static token 從來都不是**。
+- **「給開發者方便」是技術債的隱性載具**：`AdminTokenCard` 設計的初心是「忘記帶 JWT 時打 token 也能測」—— 但它讓攻擊面變成「攻到 token = admin」+ 「忘記清 token = 留後門給共用工作站」。**真正方便開發者是寫真 OAuth dev flow，不是發一把萬能鑰匙**。
+- **移除 token 流程要「同檔案多點」一起掃**：backend `routers/admin.py` / `shared/config.py` / `tests/test_admin.py` / `tests/test_config.py` 前端 `httpApi.ts` / `AuthProvider.tsx` / `api/index.ts` / `api/types.ts` / `AdminTokenCard.tsx`(刪) / `AdminSidebar.tsx` / `AdminLayout.tsx` / `AdminLayout.test.tsx` / `models/api.py` — 11 個檔案每個都要 grep `admin_token` / `ADMIN_TOKEN` / `getAdminToken` 任一字串是否還在。漏一處就漏一個攻擊面。
+- **OpenAPI hash snapshot 是「改契約不重生」的編譯期護欄**：`test_openapi_contract.py` 移除 `admin_token` 後 schema hash 變 → CI 紅 → 強制跑 `uv run poe export-openapi` → `frontend/src/api/generated.ts` 自動跟上。沒有這個測試，搬欄位時前端 `satisfies` 還盯著過期型別，會讓「前端送的 field 後端已不收」的 breaking change 靜默 deploy。
+- **「email 白名單」這個設計本身**：`q06637557832@gmail.com` 在 `admin_email` env 是唯一允許登入 admin 的人選；前端 AdminTokenCard 移除後**任何使用者都能登入 app**（因為不再擋輸入）、但**只有這支 Google account 能過 admin router**。Server-side whitelist 是真正防線，前端 gating 只是 UX polish — 順序不要顛倒。
+

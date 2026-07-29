@@ -1012,9 +1012,7 @@ def test_build_segment_messages_series_context_empty_vs_present() -> None:
         "previous_tail_lines": [],
     }
     without_ctx = _build_segment_messages(**common, series_context=())
-    with_ctx = _build_segment_messages(
-        **common, series_context=("第一集：AI 入門",)
-    )
+    with_ctx = _build_segment_messages(**common, series_context=("第一集：AI 入門",))
 
     assert "SERIES CONTEXT" not in without_ctx[0]["content"]
     assert "SERIES CONTEXT" in with_ctx[0]["content"]

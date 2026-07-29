@@ -97,5 +97,6 @@ def test_proxy_forwards_body_and_headers(
     assert "content-length" not in call["headers"]
     # body 轉發
     import json as _json
+
     body = _json.loads(call["content"])
     assert body["grant_type"] == "refresh_token"

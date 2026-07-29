@@ -295,7 +295,7 @@ export interface Api {
   getDeliveredEpisode(date: string): Promise<Episode | null>
   // 播放次數 +1，不去重。播放頁背景呼叫，失敗不影響播放體驗。
   recordEpisodePlay(episodeId: string): Promise<void>
-  // 使用者端公開頻道：探索／詳情／訂閱（JWT 認證，跟 Admin 那組 X-Admin-Token 分開）
+  // 使用者端公開頻道：探索／詳情／訂閱（JWT 認證，跟 Admin 端分開）
   listChannels(): Promise<readonly ChannelPublic[]>
   getChannel(slug: string): Promise<ChannelPublic>
   subscribeChannel(slug: string): Promise<void>
@@ -312,9 +312,9 @@ export interface Api {
   // 帳號自我管理（T4）：查詢 / 刪除本人帳號
   getMe(): Promise<AccountInfo>
   deleteAccount(): Promise<void>
-  // Admin 單集數據總覽：播放／聽完／收藏／token／耗時（X-Admin-Token 認證，非 Supabase JWT）。
+  // Admin 單集數據總覽：播放／聽完／收藏／token／耗時（Google OAuth JWT email 白名單）。
   getAdminEpisodeStats(): Promise<AdminEpisodeStatsResponse>
-  // Admin 頻道管理（同一組 X-Admin-Token）。使用者端的頻道瀏覽／訂閱是另一組
+  // Admin 頻道管理（同一組 email 白名單）。使用者端的頻道瀏覽／訂閱是另一組
   // 走 JWT 的公開端點（見下方 listChannels 等），這裡一律加 Admin 前綴避免撞名。
   listAdminChannels(): Promise<readonly Channel[]>
   createAdminChannel(input: CreateChannelInput): Promise<Channel>
