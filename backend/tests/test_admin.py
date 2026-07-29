@@ -492,7 +492,10 @@ def test_admin_email_unverified_jwt_still_401(
     client: TestClient, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """email_verified != True 一律拒：避免 Supabase Email provider 開放自助註冊時
-    攻擊者用 admin email 自己註冊拿到合法 JWT（見 _is_authorized_admin）。"""
+    攻擊者用 admin email 自己註冊拿到合法 JWT（見 _is_authorized_admin）。
+
+    真實 Supabase JWT 把 email_verified 放在 user_metadata.email_verified 巢狀，
+    fixture 必須對齊此結構，否則測試綠但 prod 401（見 _is_authorized_admin）。"""
     from tests._auth import auth_header
 
     monkeypatch.setattr(
@@ -505,10 +508,85 @@ def test_admin_email_unverified_jwt_still_401(
         headers=auth_header(
             "some-user-id",
             email="admin@example.com",
-            email_verified=False,
+            user_metadata={"email_verified": False},
         ),
     )
     assert res.status_code == 401
+
+
+def test_admin_email_missing_user_metadata_still_401(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """沒帶 user_metadata 的 JWT：對齊真實 Supabase 結構必帶 user_metadata 但裡面
+    不一定有 email_verified；要求顯式 True 才能通過，不能 fallback 通過。
+
+    對應攻擊面：若 attacker 找到缺 user_metadata 也能 fall-through 通過的 bug，
+    就能拿下 admin。"""
+    from tests._auth import auth_header
+
+    monkeypatch.setattr(
+        admin_router,
+        "get_settings",
+        lambda: Settings(environment="dev", admin_email="admin@example.com"),
+    )
+    res = client.get(
+        "/admin/episodes",
+        headers=auth_header(
+            "some-user-id",
+            email="admin@example.com",
+            user_metadata={},
+        ),
+    )
+    assert res.status_code == 401
+
+
+def test_admin_email_top_level_verified_ignored(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """只有 top-level email_verified=True、user_metadata.email_verified 沒設 →
+    仍 401。守住「後端只信 nested 結構」這條 invariant。若未來有人改成 fallback
+    接受 top-level，這條測試會紅。"""
+    from tests._auth import auth_header
+
+    monkeypatch.setattr(
+        admin_router,
+        "get_settings",
+        lambda: Settings(environment="dev", admin_email="admin@example.com"),
+    )
+    res = client.get(
+        "/admin/episodes",
+        headers=auth_header(
+            "some-user-id",
+            email="admin@example.com",
+            email_verified=True,
+            user_metadata={},
+        ),
+    )
+    assert res.status_code == 401
+
+
+def test_admin_jwt_matches_real_supabase_structure_allows_access(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """happy path：對齊真實 Supabase JWT 結構（email_verified 巢狀在 user_metadata）
+    + email 命中 + google provider → 200。"""
+    from tests._auth import auth_header
+
+    monkeypatch.setattr(
+        admin_router,
+        "get_settings",
+        lambda: Settings(environment="dev", admin_email="admin@example.com"),
+    )
+    res = client.get(
+        "/admin/episodes",
+        headers=auth_header(
+            "some-user-id",
+            email="admin@example.com",
+            user_metadata={"email_verified": True, "full_name": "Alan Tsai"},
+            app_metadata={"provider": "google", "providers": ["google"]},
+        ),
+    )
+    assert res.status_code == 200
 
 
 def test_admin_email_non_google_provider_still_401(

@@ -87,11 +87,17 @@ def _is_authorized_admin(payload: dict[str, Any] | None, admin_email: str) -> bo
     """payload 是否可開後台：email 命中白名單 + email_verified=True +
     app_metadata.provider == "google"。
 
+    email_verified 的位置：真實 Supabase JWT 把它放在 user_metadata.email_verified
+    巢狀（不是 top-level）。直接 python-jose decode 後，payload 頂層沒有這個
+    欄位；top-level 找永遠回 None → 之前的 top-level 檢查會誤判 false → 所有合法
+    Google OAuth 登入都 401。對應測試 fixture 也對齊 nested 結構（見 tests/_auth.py）。
+
     拆出來方便測試單獨驗證（見 tests/test_admin.py）。
     """
     if not payload:
         return False
-    if payload.get("email_verified") is not True:
+    user_meta = payload.get("user_metadata") or {}
+    if not isinstance(user_meta, dict) or user_meta.get("email_verified") is not True:
         return False
     if str((payload.get("app_metadata") or {}).get("provider") or "") != "google":
         return False

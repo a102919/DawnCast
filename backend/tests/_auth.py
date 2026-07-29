@@ -73,10 +73,17 @@ def _ensure_init() -> None:
 def sign_test_token(user_id: str, **extra: Any) -> str:
     """簽一支 mock Supabase token：sub=user_id, aud=authenticated, header.kid=test key。
 
-    預設帶 email_verified=True + app_metadata.provider=google + exp=9999999999，
-    模擬真實 Google OAuth 登入 token（admin require_admin 用前兩條當白名單前置
-    條件、require_exp=True 要求帶 exp，見 backend/app/routers/admin.py）。測試
-    想驗「未驗證 email」/「非 Google provider」/「缺 exp」拒絕情境時用 extra 覆寫。
+    預設帶 user_metadata.email_verified=True + app_metadata.provider=google +
+    exp=9999999999，模擬真實 Google OAuth 登入 token（admin require_admin 用前兩條
+    當白名單前置條件、require_exp=True 要求帶 exp，見 backend/app/routers/admin.py）。
+    測試想驗「未驗證 email」/「非 Google provider」/「缺 exp」拒絕情境時用 extra 覆寫。
+
+    重要：email_verified 放在 user_metadata 巢狀（真實 Supabase 結構），不是 top-level。
+    之前 fixture 寫在 top-level → 後端改讀 nested 後測試場景跟真實場景不一致，
+    測試綠但 prod 401。對齊後 fixture 結構才能反映真實攻擊面。
+
+    email 不放預設值：test_account 的 get_me 測試 group 明確驗「沒 email claim
+    」行為，預設值會破壞該假設。測試需要 email 自行用 extra 傳入。
     """
     _ensure_init()
     assert _priv_pem is not None
@@ -84,7 +91,7 @@ def sign_test_token(user_id: str, **extra: Any) -> str:
     payload: dict[str, Any] = {
         "sub": user_id,
         "aud": settings.supabase_jwt_audience,
-        "email_verified": True,
+        "user_metadata": {"email_verified": True},
         "app_metadata": {"provider": "google"},
         "exp": 9999999999,
         **extra,

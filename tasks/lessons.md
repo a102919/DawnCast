@@ -314,3 +314,24 @@ curl 直接打 8000 帶 `/api/episodes` 是 200（用 prefix 加完的版本）�
 - **OpenAPI hash snapshot 是「改契約不重生」的編譯期護欄**：`test_openapi_contract.py` 移除 `admin_token` 後 schema hash 變 → CI 紅 → 強制跑 `uv run poe export-openapi` → `frontend/src/api/generated.ts` 自動跟上。沒有這個測試，搬欄位時前端 `satisfies` 還盯著過期型別，會讓「前端送的 field 後端已不收」的 breaking change 靜默 deploy。
 - **「email 白名單」這個設計本身**：`q06637557832@gmail.com` 在 `admin_email` env 是唯一允許登入 admin 的人選；前端 AdminTokenCard 移除後**任何使用者都能登入 app**（因為不再擋輸入）、但**只有這支 Google account 能過 admin router**。Server-side whitelist 是真正防線，前端 gating 只是 UX polish — 順序不要顛倒。
 
+
+## 2026-07-29 — 測試 fixture 必須對齊真實 API 結構，否則測試綠但 prod 401
+
+**情境**：commit `639e256` 砍後門時，`_is_authorized_admin` 第 94 行寫 `payload.get("email_verified")`（top-level），但**真實 Supabase JWT 把 `email_verified` 放在 `user_metadata.email_verified` 巢狀**。測試 fixture `tests/_auth.py` 偽造 token 時把 `email_verified=True` 寫在 top-level → 測試綠 → 沒人發現真實 token 永遠 401。
+
+**怎麼炸的**：
+1. 把 `email_verified` 寫進 `user_metadata` 巢狀 → 改了 `_is_authorized_admin` 讀 nested `user_metadata.email_verified` 是必要的（不然真實 Google OAuth 永遠被擋）
+2. 但同時改了 fixture 結構對齊真實 Supabase → 早期 fixture 用 top-level `email_verified=False` 的測試 `test_admin_email_unverified_jwt_still_401` 從「能 reject 未驗證 token」變成「沒差，反正後端讀 nested 根本看不到 top-level」→ 失去測試意義
+3. 用 `uv run python -c "直接餵真實 JWT decode"` 才是發現 bug 的唯一方式 — 純測試無法發現結構不一致
+
+**教訓**：
+- **fixture 結構是「測試真實性」的隱性 invariant**：當測試全綠但 prod 401，**先懷疑 fixture 跟真實 API 結構對齊沒**，不要懷疑程式碼邏輯（logic 正確只是拿了錯的欄位）
+- **commit 改 auth code 必須 e2e 驗真實 token**：unit test 驗 mock；mock 沒對齊真實結構時通過純屬僥倖。`flake8` `mypy` `pytest` 都無法發現結構錯位
+- **新增攻擊面防禦時的 fixture 設計**：要嘛「預設接近真實結構 + 顯式 extra 覆寫」，要嘛「預設最小結構 + 顯式傳入每個欄位」。後者更安全：測試覆寫時必須刻意寫 nested 結構，不會偷吃 fixture 預設
+- **「測試名稱看起來驗證了某件事」≠「該件事真的被驗證」**：`test_admin_email_unverified_jwt_still_401` 名字看似嚴格，但讀 `email_verified=False` 在 top-level 安全 — 因為後端從來不讀 top-level，**就算「未驗證」也能通過**。測試通過不代表防禦有用
+
+**檢查清單（任何 「nested 結構」修法都套用）**：
+1. 寫一個 **真實 token 結構的 unit test**（`app_metadata.provider == google` + `user_metadata.email_verified == true` + email 命中），確認能 200
+2. 寫一個 **「只有 top-level 欄位」的反向測試**（`email_verified=True` 在 top-level + `user_metadata.email_verified` 沒設），確認 401
+3. 寫一個 **「nested 欄位為 False」** 的負向測試，確認 401
+4. **真實 curl 帶 Supabase JWT 打 prod/staging**，不用 mock — 任何 mock 結構對齊測試綠但 prod 401 都會在這一步暴露
