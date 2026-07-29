@@ -10,7 +10,7 @@ from typing import Literal
 
 from pydantic import BaseModel, Field
 
-from shared.models import CamelModel, EntryMode, LengthTier, TopicType
+from shared.models import CamelModel, EntryMode, EpisodeCategory, LengthTier, TopicType
 
 
 class AddVocabBody(CamelModel):
@@ -152,3 +152,50 @@ class AdminEpsGenerateBody(CamelModel):
     cefr: Literal["A2", "B1", "B2"] = "B1"
     user_ids: list[str] = Field(default_factory=list)
     deliver_date: str | None = None
+
+
+# ── 頻道（Channel）機制：admin CRUD ──────────────────────────────
+
+
+class CreateChannelBody(CamelModel):
+    """建立頻道；欄位邊界對齊 migration 0021 與 shared.db.channels.create_channel 簽名。"""
+
+    slug: str = Field(pattern=r"^[a-z0-9-]{1,64}$")
+    name: str = Field(min_length=1)
+    theme_prompt: str = Field(min_length=1)
+    topic: EpisodeCategory
+    description: str | None = None
+    topic_type: TopicType = "evergreen"
+    length_tier: LengthTier = "medium"
+    cefr_level: Literal["A2", "B1", "B2"] = "B1"
+    target_interval_days: int = Field(default=3, ge=1, le=30)
+    status: Literal["active", "paused", "archived"] = "active"
+
+
+class UpdateChannelBody(CamelModel):
+    """更新頻道（PATCH 局部更新）：全 optional，只有明確帶到的欄位才會被送進
+    update_channel(**fields)（router 端用 model_dump(exclude_unset=True) 篩選，
+    未帶到的欄位維持原值不動）。
+    """
+
+    slug: str | None = Field(default=None, pattern=r"^[a-z0-9-]{1,64}$")
+    name: str | None = Field(default=None, min_length=1)
+    description: str | None = None
+    theme_prompt: str | None = Field(default=None, min_length=1)
+    topic: EpisodeCategory | None = None
+    topic_type: TopicType | None = None
+    length_tier: LengthTier | None = None
+    cefr_level: Literal["A2", "B1", "B2"] | None = None
+    target_interval_days: int | None = Field(default=None, ge=1, le=30)
+    status: Literal["active", "paused", "archived"] | None = None
+
+
+class UpdateChannelTopicBody(CamelModel):
+    """管理員事後否決（rejected）或復活（candidate）候選選題，或修正選題文字。
+
+    status 刻意只收窄成這兩態——scheduled/published/stale 是生成 pipeline
+    自動轉移的狀態，不開放 admin 直接改。兩欄皆可選、可只給一個。
+    """
+
+    status: Literal["candidate", "rejected"] | None = None
+    canonical_topic: str | None = Field(default=None, min_length=1)

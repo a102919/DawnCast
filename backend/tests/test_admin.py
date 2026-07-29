@@ -12,6 +12,7 @@
 
 from __future__ import annotations
 
+import itertools
 from typing import Any
 
 import pytest
@@ -25,36 +26,10 @@ from tests._db_fakes import fake_connection
 
 ADMIN_TOKEN = "test-admin-token"
 
-_EPISODE_ROWS: list[dict[str, Any]] = [
-    {
-        "id": "ep-2",
-        "title": "Episode 2",
-        "topic": "tech",
-        "cefr_level": "B1",
-        "is_free": False,
-        "is_featured": True,
-        "episode_no": 2,
-        "published_at": "2026-07-16",
-        "created_at": "2026-07-16T00:00:00Z",
-        "freshness_class": "timely",
-        "expires_at": None,
-        "has_audio": True,
-    },
-    {
-        "id": "ep-1",
-        "title": "Episode 1",
-        "topic": "news",
-        "cefr_level": "A2",
-        "is_free": True,
-        "is_featured": False,
-        "episode_no": 1,
-        "published_at": "2026-07-15",
-        "created_at": "2026-07-15T00:00:00Z",
-        "freshness_class": "evergreen",
-        "expires_at": None,
-        "has_audio": False,
-    },
-]
+# PNG/JPEG/WebP magic bytes（後面補任意 padding，驗證只看開頭，不解碼真圖）。
+PNG_BYTES = b"\x89PNG\r\n\x1a\n" + b"\x00" * 16
+JPEG_BYTES = b"\xff\xd8\xff" + b"\x00" * 16
+WEBP_BYTES = b"RIFF" + b"\x00\x00\x00\x00" + b"WEBP" + b"\x00" * 16
 
 _JOB_ROWS: list[dict[str, Any]] = [
     {
@@ -73,31 +48,50 @@ _JOB_ROWS: list[dict[str, Any]] = [
     },
 ]
 
-_TOKEN_ITEM_ROWS: list[dict[str, Any]] = [
+# listener_count／favorite_count 刻意給非零、彼此不同的數字：如果 router
+# 把欄位接錯或漏傳，預設值 0 會讓斷言誤判通過；兩個數字不同才能抓出
+# 「listener_count 誤接成 favorite_count」這類接錯欄位的情況。
+_EPISODE_STATS_ROWS: list[dict[str, Any]] = [
     {
-        "slug": "ep-2",
+        "id": "ep-2",
         "title": "Episode 2",
+        "topic": "tech",
+        "cefr_level": "B1",
+        "is_free": False,
+        "episode_no": 2,
+        "published_at": "2026-07-16",
+        "created_at": "2026-07-16T00:00:00Z",
+        "channel_name": "AI 頻道",
+        "has_audio": True,
+        "play_count": 42,
         "input_tokens": 500,
         "output_tokens": 300,
-        "created_at": "2026-07-16T00:00:00Z",
-        "generation_started_at": "2026-07-16T00:00:00Z",
-        "generation_finished_at": "2026-07-16T00:08:00Z",
-        "gen_metrics": {
-            "stages": [
-                {"node": "write_script", "duration_ms": 12000, "status": "ok", "attempt": 1},
-                {"node": "render_episode", "duration_ms": 350000, "status": "ok", "attempt": 1},
-            ]
-        },
+        "wall_ms": 362000,
+        "stages": [
+            {"node": "write_script", "duration_ms": 12000, "status": "ok", "attempt": 1},
+            {"node": "render_episode", "duration_ms": 350000, "status": "ok", "attempt": 1},
+        ],
+        "listener_count": 7,
+        "favorite_count": 3,
     },
     {
-        "slug": "ep-1",
+        "id": "ep-1",
         "title": "Episode 1",
+        "topic": "news",
+        "cefr_level": "A2",
+        "is_free": True,
+        "episode_no": 1,
+        "published_at": "2026-07-15",
+        "created_at": "2026-07-15T00:00:00Z",
+        "channel_name": None,
+        "has_audio": False,
+        "play_count": 0,
         "input_tokens": 200,
         "output_tokens": 100,
-        "created_at": "2026-07-15T00:00:00Z",
-        "generation_started_at": None,
-        "generation_finished_at": None,
-        "gen_metrics": {},
+        "wall_ms": None,
+        "stages": [],
+        "listener_count": 0,
+        "favorite_count": 0,
     },
 ]
 
@@ -106,28 +100,26 @@ class FakeCursor(_BaseFakeCursor):
     async def execute(self, sql: str, params: tuple[Any, ...] = ()) -> None:
         s = " ".join(sql.split())  # 正規化空白
 
-        if "has_audio" in s and "from public.episodes" in s:
-            self._rows = list(_EPISODE_ROWS)
-            return
-
-        if "pgmq.metrics_all" in s:
-            self._rows = list(_JOB_ROWS)
-            return
-
         if "coalesce(sum(input_tokens)" in s:
-            total_input = sum(r["input_tokens"] for r in _TOKEN_ITEM_ROWS)
-            total_output = sum(r["output_tokens"] for r in _TOKEN_ITEM_ROWS)
+            total_input = sum(r["input_tokens"] for r in _EPISODE_STATS_ROWS)
+            total_output = sum(r["output_tokens"] for r in _EPISODE_STATS_ROWS)
+            total_play = sum(r["play_count"] for r in _EPISODE_STATS_ROWS)
             self._rows = [
                 {
                     "total_input_tokens": total_input,
                     "total_output_tokens": total_output,
-                    "episode_count": len(_TOKEN_ITEM_ROWS),
+                    "total_play_count": total_play,
+                    "episode_count": len(_EPISODE_STATS_ROWS),
                 }
             ]
             return
 
-        if "input_tokens, output_tokens" in s and "from public.episodes" in s:
-            self._rows = list(_TOKEN_ITEM_ROWS)
+        if "has_audio" in s and "from public.episodes e" in s:
+            self._rows = list(_EPISODE_STATS_ROWS)
+            return
+
+        if "pgmq.metrics_all" in s:
+            self._rows = list(_JOB_ROWS)
             return
 
         self._rows = []
@@ -155,11 +147,173 @@ def _today_in_app_tz() -> str:
     return _dt.now(_ZI("Asia/Taipei")).date().isoformat()
 
 
+# ── 頻道機制：channels_db 函式級別 fake（該模組本身有自己的 test_channels_repo.py
+# 顧 SQL 正確性，這裡只驗 router 邏輯——auth／驗證／404／正確呼叫順序／回應形狀，
+# 不重新模擬一份 SQL cursor 分派）────────────────────────────────────────
+
+_CHANNELS: dict[str, dict[str, Any]] = {}
+_CHANNEL_TOPICS: dict[str, dict[str, Any]] = {}
+_NEXT_ID = itertools.count(1)
+COVER_PUT_CALLS: list[tuple[str, bytes, str]] = []
+
+
+def _seed_channel(**overrides: Any) -> dict[str, Any]:
+    channel_id = overrides.pop("id", None) or f"chan-{next(_NEXT_ID)}"
+    row: dict[str, Any] = {
+        "id": channel_id,
+        "slug": "test-channel",
+        "name": "測試頻道",
+        "description": None,
+        "theme_prompt": "系統提示",
+        "topic": "tech",
+        "topic_type": "evergreen",
+        "length_tier": "medium",
+        "cefr_level": "B1",
+        "target_interval_days": 3,
+        "status": "active",
+        "cover_r2_key": None,
+        "last_published_at": None,
+        "created_at": "2026-07-16T00:00:00Z",
+        "updated_at": "2026-07-16T00:00:00Z",
+        "episode_count": 0,
+        "candidate_count": 0,
+    }
+    row.update(overrides)
+    _CHANNELS[channel_id] = row
+    return row
+
+
+def _seed_topic(channel_id: str, **overrides: Any) -> dict[str, Any]:
+    topic_id = overrides.pop("id", None) or f"topic-{next(_NEXT_ID)}"
+    row: dict[str, Any] = {
+        "id": topic_id,
+        "channel_id": channel_id,
+        "canonical_topic": "測試選題",
+        "angle": "定義",
+        "rationale": None,
+        "score": 0.8,
+        "status": "candidate",
+        "parent_episode_id": None,
+        "episode_id": None,
+        "created_at": "2026-07-16T00:00:00Z",
+        "decided_at": None,
+    }
+    row.update(overrides)
+    _CHANNEL_TOPICS[topic_id] = row
+    return row
+
+
+async def fake_list_channels(*, status: str | None = None) -> list[dict[str, Any]]:
+    rows = list(_CHANNELS.values())
+    if status is not None:
+        rows = [r for r in rows if r["status"] == status]
+    return sorted(rows, key=lambda r: r["created_at"], reverse=True)
+
+
+async def fake_get_channel(channel_id: str) -> dict[str, Any] | None:
+    return _CHANNELS.get(channel_id)
+
+
+async def fake_create_channel(
+    *,
+    slug: str,
+    name: str,
+    theme_prompt: str,
+    topic: str,
+    description: str | None = None,
+    topic_type: str = "evergreen",
+    length_tier: str = "medium",
+    cefr_level: str = "B1",
+    target_interval_days: int = 3,
+    status: str = "active",
+) -> str:
+    row = _seed_channel(
+        slug=slug,
+        name=name,
+        theme_prompt=theme_prompt,
+        topic=topic,
+        description=description,
+        topic_type=topic_type,
+        length_tier=length_tier,
+        cefr_level=cefr_level,
+        target_interval_days=target_interval_days,
+        status=status,
+    )
+    return str(row["id"])
+
+
+async def fake_update_channel(channel_id: str, **fields: Any) -> bool:
+    row = _CHANNELS.get(channel_id)
+    if row is None:
+        return False
+    row.update(fields)
+    return True
+
+
+async def fake_set_channel_cover(channel_id: str, r2_key: str) -> None:
+    row = _CHANNELS.get(channel_id)
+    if row is not None:
+        row["cover_r2_key"] = r2_key
+
+
+async def fake_list_channel_topics(
+    channel_id: str, *, status: str | None = None
+) -> list[dict[str, Any]]:
+    rows = [r for r in _CHANNEL_TOPICS.values() if r["channel_id"] == channel_id]
+    if status is not None:
+        rows = [r for r in rows if r["status"] == status]
+    return sorted(rows, key=lambda r: r["score"], reverse=True)
+
+
+async def fake_update_topic_status(
+    topic_id: str, status: str, *, episode_id: str | None = None
+) -> bool:
+    row = _CHANNEL_TOPICS.get(topic_id)
+    if row is None:
+        return False
+    row["status"] = status
+    if episode_id is not None:
+        row["episode_id"] = episode_id
+    return True
+
+
+async def fake_rename_channel_topic(topic_id: str, canonical_topic: str) -> None:
+    row = _CHANNEL_TOPICS.get(topic_id)
+    if row is not None:
+        row["canonical_topic"] = canonical_topic
+
+
+def _fake_presigned_get_url(key: str, ttl: int | None = None) -> str:
+    return f"https://signed.example/{key}"
+
+
+def _fake_presigned_get_urls(keys: list[str], ttl: int | None = None) -> dict[str, str]:
+    return {k: _fake_presigned_get_url(k) for k in keys}
+
+
+def _spy_put_object(key: str, data: bytes, content_type: str) -> None:
+    COVER_PUT_CALLS.append((key, data, content_type))
+
+
 @pytest.fixture(autouse=True)
 def patch_admin_db(monkeypatch: pytest.MonkeyPatch) -> None:
     SENT_MESSAGES.clear()
+    _CHANNELS.clear()
+    _CHANNEL_TOPICS.clear()
+    COVER_PUT_CALLS.clear()
     monkeypatch.setattr(admin_router, "connection", fake_connection(FakeConnection))
     monkeypatch.setattr(admin_router.queue, "send", spy_queue_send)
+    monkeypatch.setattr(admin_router.channels_db, "list_channels", fake_list_channels)
+    monkeypatch.setattr(admin_router.channels_db, "get_channel", fake_get_channel)
+    monkeypatch.setattr(admin_router.channels_db, "create_channel", fake_create_channel)
+    monkeypatch.setattr(admin_router.channels_db, "update_channel", fake_update_channel)
+    monkeypatch.setattr(admin_router.channels_db, "set_channel_cover", fake_set_channel_cover)
+    monkeypatch.setattr(admin_router.channels_db, "list_channel_topics", fake_list_channel_topics)
+    monkeypatch.setattr(admin_router.channels_db, "update_topic_status", fake_update_topic_status)
+    monkeypatch.setattr(admin_router, "_rename_channel_topic", fake_rename_channel_topic)
+    monkeypatch.setattr(admin_router.r2, "presigned_get_url", _fake_presigned_get_url)
+    monkeypatch.setattr(admin_router.r2, "presigned_get_urls", _fake_presigned_get_urls)
+    monkeypatch.setattr(admin_router.r2, "put_object", _spy_put_object)
     # 獨立於全域 get_settings() 的 lru_cache 單例，避免污染其他測試檔。
     monkeypatch.setattr(
         admin_router,
@@ -203,18 +357,38 @@ def test_episodes_wrong_token_returns_401(client: TestClient) -> None:
 
 
 def test_episodes_correct_token_returns_200(client: TestClient) -> None:
+    """單集數據總覽：彙總數字 + 明細（播放／聽完／收藏／token／耗時全部到位）。"""
     res = client.get("/admin/episodes", headers=_admin_headers(ADMIN_TOKEN))
     assert res.status_code == 200
     body = res.json()
     assert body["ok"] is True
-    assert isinstance(body["data"], list)
-    assert len(body["data"]) == 2
-    item = body["data"][0]
-    assert item["id"] == "ep-2"
-    assert item["hasAudio"] is True
-    assert "cefrLevel" in item
-    assert "episodeNo" in item
-    assert "freshnessClass" in item
+    data = body["data"]
+    assert data["episodeCount"] == 2
+    assert data["totalInputTokens"] == 700
+    assert data["totalOutputTokens"] == 400
+    assert data["totalPlayCount"] == 42
+
+    items = data["items"]
+    assert [i["id"] for i in items] == ["ep-2", "ep-1"]  # createdAt desc
+    ep2 = items[0]
+    assert ep2["hasAudio"] is True
+    assert ep2["channelName"] == "AI 頻道"
+    assert ep2["playCount"] == 42
+    # listener/favorite 給的是非零、彼此不同的數字（見 fixture 註解），
+    # 兩者都要對得上才代表 router 沒把欄位接錯。
+    assert ep2["listenerCount"] == 7
+    assert ep2["favoriteCount"] == 3
+    # ep-2 有 gen_metrics.stages → 攤平進 AdminEpisodeStats.stages
+    assert [s["node"] for s in ep2["stages"]] == ["write_script", "render_episode"]
+    assert ep2["wallMs"] == 362000
+
+    ep1 = items[1]
+    # ep-1 沒有 gen_metrics（舊集數 / migration 前）→ 空 list + None，不是缺欄位
+    assert ep1["stages"] == []
+    assert ep1["wallMs"] is None
+    assert ep1["listenerCount"] == 0
+    assert ep1["favoriteCount"] == 0
+    assert ep1["channelName"] is None
 
 
 # ── /admin/jobs ───────────────────────────────────────────────────
@@ -238,34 +412,6 @@ def test_jobs_correct_token_returns_200(client: TestClient) -> None:
     assert by_name["control"]["newestMsgAgeSec"] is None  # 空佇列 NULL age 不炸掉
     assert by_name["generate"]["queueLength"] == 3
     assert by_name["generate"]["oldestMsgAgeSec"] == 120
-
-
-# ── /admin/token-usage ────────────────────────────────────────────
-
-
-def test_token_usage_no_token_returns_401(client: TestClient) -> None:
-    res = client.get("/admin/token-usage")
-    assert res.status_code == 401
-    assert res.json()["error"]["code"] == "unauthorized"
-
-
-def test_token_usage_correct_token_returns_200(client: TestClient) -> None:
-    res = client.get("/admin/token-usage", headers=_admin_headers(ADMIN_TOKEN))
-    assert res.status_code == 200
-    body = res.json()
-    assert body["ok"] is True
-    data = body["data"]
-    assert data["totalInputTokens"] == 700
-    assert data["totalOutputTokens"] == 400
-    assert data["episodeCount"] == 2
-    items = data["items"]
-    assert [i["slug"] for i in items] == ["ep-2", "ep-1"]  # createdAt desc
-    # ep-2 有 gen_metrics.stages → 攤平進 AdminTokenUsageItem.stages
-    assert [s["node"] for s in items[0]["stages"]] == ["write_script", "render_episode"]
-    assert items[0]["generationStartedAt"] == "2026-07-16T00:00:00Z"
-    # ep-1 沒有 gen_metrics（舊集數 / migration 前）→ 空 list，不是 null
-    assert items[1]["stages"] == []
-    assert items[1]["generationStartedAt"] is None
 
 
 # ── 兩套授權機制互不相通 / fail-closed ──────────────────────────────
@@ -392,3 +538,451 @@ def test_eps_generate_invalid_topic_type_returns_400(client: TestClient) -> None
     assert res.status_code == 400
     assert res.json()["error"]["code"] == "validation_error"
     assert SENT_MESSAGES == []
+
+
+# ── 授權收斂：每個新頻道 endpoint 都要各自驗一次 401 ─────────────────────
+
+
+def test_list_channels_no_token_returns_401(client: TestClient) -> None:
+    res = client.get("/admin/channels")
+    assert res.status_code == 401
+    assert res.json()["error"]["code"] == "unauthorized"
+
+
+def test_create_channel_no_token_returns_401(client: TestClient) -> None:
+    res = client.post(
+        "/admin/channels",
+        json={"slug": "a", "name": "A", "themePrompt": "p", "topic": "tech"},
+    )
+    assert res.status_code == 401
+    assert res.json()["error"]["code"] == "unauthorized"
+
+
+def test_update_channel_no_token_returns_401(client: TestClient) -> None:
+    _seed_channel(id="chan-1")
+    res = client.patch("/admin/channels/chan-1", json={"name": "New"})
+    assert res.status_code == 401
+    assert res.json()["error"]["code"] == "unauthorized"
+
+
+def test_list_channel_topics_no_token_returns_401(client: TestClient) -> None:
+    _seed_channel(id="chan-1")
+    res = client.get("/admin/channels/chan-1/topics")
+    assert res.status_code == 401
+    assert res.json()["error"]["code"] == "unauthorized"
+
+
+def test_update_channel_topic_no_token_returns_401(client: TestClient) -> None:
+    _seed_channel(id="chan-1")
+    _seed_topic("chan-1", id="topic-1")
+    res = client.patch("/admin/channels/chan-1/topics/topic-1", json={"status": "rejected"})
+    assert res.status_code == 401
+    assert res.json()["error"]["code"] == "unauthorized"
+
+
+def test_plan_channel_no_token_returns_401(client: TestClient) -> None:
+    _seed_channel(id="chan-1")
+    res = client.post("/admin/channels/chan-1/plan")
+    assert res.status_code == 401
+    assert res.json()["error"]["code"] == "unauthorized"
+    assert SENT_MESSAGES == []
+
+
+def test_upload_cover_no_token_returns_401(client: TestClient) -> None:
+    _seed_channel(id="chan-1")
+    res = client.post(
+        "/admin/channels/chan-1/cover",
+        content=PNG_BYTES,
+        headers={"Content-Type": "image/png"},
+    )
+    assert res.status_code == 401
+    assert res.json()["error"]["code"] == "unauthorized"
+    assert COVER_PUT_CALLS == []
+
+
+# ── GET / POST / PATCH /admin/channels ──────────────────────────────
+
+
+def test_list_channels_returns_seeded_rows(client: TestClient) -> None:
+    _seed_channel(id="chan-1", slug="tech-daily", name="科技日報", status="active")
+    _seed_channel(id="chan-2", slug="biz-weekly", name="商業週報", status="paused")
+
+    res = client.get("/admin/channels", headers=_admin_headers(ADMIN_TOKEN))
+    assert res.status_code == 200
+    body = res.json()
+    assert body["ok"] is True
+    assert {c["id"] for c in body["data"]} == {"chan-1", "chan-2"}
+    item = next(c for c in body["data"] if c["id"] == "chan-1")
+    assert item["slug"] == "tech-daily"
+    assert item["themePrompt"] == "系統提示"
+    assert item["coverImageUrl"] is None  # 沒設封面
+
+
+def test_list_channels_filters_by_status(client: TestClient) -> None:
+    _seed_channel(id="chan-1", status="active")
+    _seed_channel(id="chan-2", status="paused")
+
+    res = client.get(
+        "/admin/channels", params={"status": "active"}, headers=_admin_headers(ADMIN_TOKEN)
+    )
+    assert res.status_code == 200
+    data = res.json()["data"]
+    assert [c["id"] for c in data] == ["chan-1"]
+
+
+def test_list_channels_signs_cover_url_when_set(client: TestClient) -> None:
+    _seed_channel(id="chan-1", cover_r2_key="channels/chan-1/cover.png")
+
+    res = client.get("/admin/channels", headers=_admin_headers(ADMIN_TOKEN))
+    assert res.status_code == 200
+    item = res.json()["data"][0]
+    assert item["coverImageUrl"] == "https://signed.example/channels/chan-1/cover.png"
+
+
+def test_create_channel_valid_body_returns_200(client: TestClient) -> None:
+    res = client.post(
+        "/admin/channels",
+        json={
+            "slug": "tech-daily",
+            "name": "科技日報",
+            "themePrompt": "每天一個科技主題，適合通勤收聽",
+            "topic": "tech",
+        },
+        headers=_admin_headers(ADMIN_TOKEN),
+    )
+    assert res.status_code == 200
+    body = res.json()
+    assert body["ok"] is True
+    data = body["data"]
+    assert data["slug"] == "tech-daily"
+    assert data["topicType"] == "evergreen"  # 預設值
+    assert data["lengthTier"] == "medium"
+    assert data["cefrLevel"] == "B1"
+    assert data["targetIntervalDays"] == 3
+    assert data["status"] == "active"
+    assert data["episodeCount"] == 0
+    assert data["candidateCount"] == 0
+    assert data["id"] in _CHANNELS
+
+
+def test_create_channel_invalid_slug_returns_400(client: TestClient) -> None:
+    res = client.post(
+        "/admin/channels",
+        json={"slug": "Not Valid Slug!", "name": "A", "themePrompt": "p", "topic": "tech"},
+        headers=_admin_headers(ADMIN_TOKEN),
+    )
+    assert res.status_code == 400
+    assert res.json()["error"]["code"] == "validation_error"
+    assert _CHANNELS == {}
+
+
+def test_create_channel_invalid_topic_returns_400(client: TestClient) -> None:
+    res = client.post(
+        "/admin/channels",
+        json={"slug": "a", "name": "A", "themePrompt": "p", "topic": "not-a-real-topic"},
+        headers=_admin_headers(ADMIN_TOKEN),
+    )
+    assert res.status_code == 400
+    assert res.json()["error"]["code"] == "validation_error"
+    assert _CHANNELS == {}
+
+
+def test_create_channel_target_interval_days_out_of_range_returns_400(
+    client: TestClient,
+) -> None:
+    res = client.post(
+        "/admin/channels",
+        json={
+            "slug": "a",
+            "name": "A",
+            "themePrompt": "p",
+            "topic": "tech",
+            "targetIntervalDays": 31,
+        },
+        headers=_admin_headers(ADMIN_TOKEN),
+    )
+    assert res.status_code == 400
+    assert res.json()["error"]["code"] == "validation_error"
+    assert _CHANNELS == {}
+
+
+def test_update_channel_partial_update_only_touches_given_fields(
+    client: TestClient,
+) -> None:
+    _seed_channel(id="chan-1", name="舊名稱", status="active", slug="old-slug")
+
+    res = client.patch(
+        "/admin/channels/chan-1",
+        json={"name": "新名稱"},
+        headers=_admin_headers(ADMIN_TOKEN),
+    )
+    assert res.status_code == 200
+    data = res.json()["data"]
+    assert data["name"] == "新名稱"
+    assert data["slug"] == "old-slug"  # 沒送的欄位不變
+    assert data["status"] == "active"
+
+
+def test_update_channel_not_found_returns_404(client: TestClient) -> None:
+    res = client.patch(
+        "/admin/channels/does-not-exist",
+        json={"name": "新名稱"},
+        headers=_admin_headers(ADMIN_TOKEN),
+    )
+    assert res.status_code == 404
+    assert res.json()["error"]["code"] == "not_found"
+
+
+def test_update_channel_invalid_status_returns_400(client: TestClient) -> None:
+    _seed_channel(id="chan-1")
+    res = client.patch(
+        "/admin/channels/chan-1",
+        json={"status": "not-a-real-status"},
+        headers=_admin_headers(ADMIN_TOKEN),
+    )
+    assert res.status_code == 400
+    assert res.json()["error"]["code"] == "validation_error"
+
+
+# ── 選題庫 ────────────────────────────────────────────────────────
+
+
+def test_list_channel_topics_returns_seeded_rows(client: TestClient) -> None:
+    _seed_channel(id="chan-1")
+    _seed_topic("chan-1", id="topic-1", canonical_topic="A 主題", status="candidate", score=0.9)
+    _seed_topic("chan-1", id="topic-2", canonical_topic="B 主題", status="rejected", score=0.5)
+
+    res = client.get("/admin/channels/chan-1/topics", headers=_admin_headers(ADMIN_TOKEN))
+    assert res.status_code == 200
+    data = res.json()["data"]
+    assert [t["id"] for t in data] == ["topic-1", "topic-2"]  # score desc
+
+
+def test_list_channel_topics_filters_by_status(client: TestClient) -> None:
+    _seed_channel(id="chan-1")
+    _seed_topic("chan-1", id="topic-1", status="candidate")
+    _seed_topic("chan-1", id="topic-2", status="rejected")
+
+    res = client.get(
+        "/admin/channels/chan-1/topics",
+        params={"status": "rejected"},
+        headers=_admin_headers(ADMIN_TOKEN),
+    )
+    assert res.status_code == 200
+    data = res.json()["data"]
+    assert [t["id"] for t in data] == ["topic-2"]
+
+
+def test_list_channel_topics_channel_not_found_returns_404(client: TestClient) -> None:
+    res = client.get(
+        "/admin/channels/does-not-exist/topics", headers=_admin_headers(ADMIN_TOKEN)
+    )
+    assert res.status_code == 404
+    assert res.json()["error"]["code"] == "not_found"
+
+
+def test_update_channel_topic_status_to_rejected(client: TestClient) -> None:
+    _seed_channel(id="chan-1")
+    _seed_topic("chan-1", id="topic-1", status="candidate")
+
+    res = client.patch(
+        "/admin/channels/chan-1/topics/topic-1",
+        json={"status": "rejected"},
+        headers=_admin_headers(ADMIN_TOKEN),
+    )
+    assert res.status_code == 200
+    assert res.json()["data"]["status"] == "rejected"
+    assert _CHANNEL_TOPICS["topic-1"]["status"] == "rejected"
+
+
+def test_update_channel_topic_rename_canonical_topic(client: TestClient) -> None:
+    _seed_channel(id="chan-1")
+    _seed_topic("chan-1", id="topic-1", canonical_topic="舊主題文字")
+
+    res = client.patch(
+        "/admin/channels/chan-1/topics/topic-1",
+        json={"canonicalTopic": "修正後的主題文字"},
+        headers=_admin_headers(ADMIN_TOKEN),
+    )
+    assert res.status_code == 200
+    assert res.json()["data"]["canonicalTopic"] == "修正後的主題文字"
+
+
+def test_update_channel_topic_invalid_status_returns_400(client: TestClient) -> None:
+    _seed_channel(id="chan-1")
+    _seed_topic("chan-1", id="topic-1", status="candidate")
+
+    res = client.patch(
+        "/admin/channels/chan-1/topics/topic-1",
+        json={"status": "published"},  # 只允許 candidate/rejected，其餘轉移由 pipeline 管
+        headers=_admin_headers(ADMIN_TOKEN),
+    )
+    assert res.status_code == 400
+    assert res.json()["error"]["code"] == "validation_error"
+    assert _CHANNEL_TOPICS["topic-1"]["status"] == "candidate"
+
+
+def test_update_channel_topic_not_found_returns_404(client: TestClient) -> None:
+    _seed_channel(id="chan-1")
+    res = client.patch(
+        "/admin/channels/chan-1/topics/does-not-exist",
+        json={"status": "rejected"},
+        headers=_admin_headers(ADMIN_TOKEN),
+    )
+    assert res.status_code == 404
+    assert res.json()["error"]["code"] == "not_found"
+
+
+def test_update_channel_topic_wrong_channel_returns_404_and_does_not_mutate(
+    client: TestClient,
+) -> None:
+    """topic 屬於 chan-A，URL 卻帶 chan-B——必須 404，且不能把別頻道的選題改掉。"""
+    _seed_channel(id="chan-a")
+    _seed_channel(id="chan-b")
+    _seed_topic("chan-a", id="topic-1", status="candidate")
+
+    res = client.patch(
+        "/admin/channels/chan-b/topics/topic-1",
+        json={"status": "rejected"},
+        headers=_admin_headers(ADMIN_TOKEN),
+    )
+    assert res.status_code == 404
+    assert res.json()["error"]["code"] == "not_found"
+    assert _CHANNEL_TOPICS["topic-1"]["status"] == "candidate"  # 沒被誤改
+
+
+# ── POST /admin/channels/{channel_id}/plan ──────────────────────────
+
+
+def test_plan_channel_returns_202_and_enqueues_control_queue(client: TestClient) -> None:
+    _seed_channel(id="chan-1")
+
+    res = client.post("/admin/channels/chan-1/plan", headers=_admin_headers(ADMIN_TOKEN))
+    assert res.status_code == 202
+    body = res.json()
+    assert body["ok"] is True
+    assert body["data"]["channelId"] == "chan-1"
+    assert body["data"]["status"] == "queued"
+    assert SENT_MESSAGES == [("control", {"task": "channel_plan", "channel_id": "chan-1"})]
+
+
+def test_plan_channel_not_found_returns_404(client: TestClient) -> None:
+    res = client.post(
+        "/admin/channels/does-not-exist/plan", headers=_admin_headers(ADMIN_TOKEN)
+    )
+    assert res.status_code == 404
+    assert res.json()["error"]["code"] == "not_found"
+    assert SENT_MESSAGES == []
+
+
+# ── POST /admin/channels/{channel_id}/cover ──────────────────────────
+
+
+def test_upload_cover_valid_png_returns_200_and_calls_put_object(client: TestClient) -> None:
+    _seed_channel(id="chan-1")
+
+    res = client.post(
+        "/admin/channels/chan-1/cover",
+        content=PNG_BYTES,
+        headers={**_admin_headers(ADMIN_TOKEN), "Content-Type": "image/png"},
+    )
+    assert res.status_code == 200
+    body = res.json()
+    assert body["ok"] is True
+    assert body["data"]["coverImageUrl"] == "https://signed.example/channels/chan-1/cover.png"
+    assert COVER_PUT_CALLS == [("channels/chan-1/cover.png", PNG_BYTES, "image/png")]
+    assert _CHANNELS["chan-1"]["cover_r2_key"] == "channels/chan-1/cover.png"
+
+
+def test_upload_cover_valid_jpeg_returns_200(client: TestClient) -> None:
+    _seed_channel(id="chan-1")
+
+    res = client.post(
+        "/admin/channels/chan-1/cover",
+        content=JPEG_BYTES,
+        headers={**_admin_headers(ADMIN_TOKEN), "Content-Type": "image/jpeg"},
+    )
+    assert res.status_code == 200
+    assert COVER_PUT_CALLS == [("channels/chan-1/cover.jpg", JPEG_BYTES, "image/jpeg")]
+
+
+def test_upload_cover_valid_webp_returns_200(client: TestClient) -> None:
+    _seed_channel(id="chan-1")
+
+    res = client.post(
+        "/admin/channels/chan-1/cover",
+        content=WEBP_BYTES,
+        headers={**_admin_headers(ADMIN_TOKEN), "Content-Type": "image/webp"},
+    )
+    assert res.status_code == 200
+    assert COVER_PUT_CALLS == [("channels/chan-1/cover.webp", WEBP_BYTES, "image/webp")]
+
+
+def test_upload_cover_declared_png_but_text_body_returns_400(client: TestClient) -> None:
+    _seed_channel(id="chan-1")
+
+    res = client.post(
+        "/admin/channels/chan-1/cover",
+        content=b"this is just plain text, not a png",
+        headers={**_admin_headers(ADMIN_TOKEN), "Content-Type": "image/png"},
+    )
+    assert res.status_code == 400
+    assert res.json()["error"]["code"] == "validation_error"
+    assert COVER_PUT_CALLS == []
+
+
+def test_upload_cover_svg_returns_400(client: TestClient) -> None:
+    _seed_channel(id="chan-1")
+
+    res = client.post(
+        "/admin/channels/chan-1/cover",
+        content=b"<svg><script>alert(1)</script></svg>",
+        headers={**_admin_headers(ADMIN_TOKEN), "Content-Type": "image/svg+xml"},
+    )
+    assert res.status_code == 400
+    assert res.json()["error"]["code"] == "validation_error"
+    assert COVER_PUT_CALLS == []
+
+
+def test_upload_cover_empty_body_returns_400(client: TestClient) -> None:
+    _seed_channel(id="chan-1")
+
+    res = client.post(
+        "/admin/channels/chan-1/cover",
+        content=b"",
+        headers={**_admin_headers(ADMIN_TOKEN), "Content-Type": "image/png"},
+    )
+    assert res.status_code == 400
+    assert res.json()["error"]["code"] == "validation_error"
+    assert COVER_PUT_CALLS == []
+
+
+def test_upload_cover_over_size_limit_returns_413(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _seed_channel(id="chan-1")
+    monkeypatch.setattr(
+        admin_router,
+        "get_settings",
+        lambda: Settings(environment="dev", admin_token=ADMIN_TOKEN, channel_cover_max_bytes=10),
+    )
+
+    res = client.post(
+        "/admin/channels/chan-1/cover",
+        content=PNG_BYTES,  # 24 bytes > 10 bytes 上限
+        headers={**_admin_headers(ADMIN_TOKEN), "Content-Type": "image/png"},
+    )
+    assert res.status_code == 413
+    assert res.json()["error"]["code"] == "payload_too_large"
+    assert COVER_PUT_CALLS == []
+
+
+def test_upload_cover_channel_not_found_returns_404(client: TestClient) -> None:
+    res = client.post(
+        "/admin/channels/does-not-exist/cover",
+        content=PNG_BYTES,
+        headers={**_admin_headers(ADMIN_TOKEN), "Content-Type": "image/png"},
+    )
+    assert res.status_code == 404
+    assert res.json()["error"]["code"] == "not_found"
+    assert COVER_PUT_CALLS == []

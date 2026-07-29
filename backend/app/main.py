@@ -25,6 +25,7 @@ from app.routers import (
     activity,
     admin,
     auth_proxy,
+    channels,
     daily_orders,
     episodes,
     favorites,
@@ -146,6 +147,7 @@ def create_app() -> FastAPI:
     app.include_router(favorites.router)
     app.include_router(daily_orders.router)
     app.include_router(episodes.router)
+    app.include_router(channels.router)
     app.include_router(dict_router.router)
     app.include_router(activity.router)
     app.include_router(account.router)  # T4：帳號自我管理（URL 字面 /me）

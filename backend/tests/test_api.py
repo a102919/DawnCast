@@ -100,7 +100,22 @@ EPISODES: dict[str, dict[str, Any]] = {
         "keys": [],
         "sources": [],
     },
+    "ep-channel-1": {
+        "is_free": True,
+        "deliveries": set(),
+        "key": "media/ep-channel-1.mp3",
+        "keys": ["media/ep-channel-1/segments/000.mp3"],
+        "sources": [],
+    },
 }
+
+# 頻道測試資料（GET /episodes?channel= 與 GET /episodes/recommended 用）：
+# channel_id → slug/name；episode slug → channel_id（不在此 dict＝無頻道，走既有行為）。
+CHANNELS: dict[str, dict[str, str]] = {"chan-tech": {"slug": "tech-daily", "name": "科技日報"}}
+EPISODE_CHANNEL: dict[str, str] = {"ep-channel-1": "chan-tech"}
+
+# user_id → 已訂閱的 channel_id 集合（GET /episodes/recommended 用）
+SUBSCRIPTIONS_BY_USER: dict[str, set[str]] = {}
 
 # (user_id, deliver_date) → 對應交付集數的 slug list。模擬 user 在指定日期的交付事實。
 DELIVERIES_BY_DATE: dict[tuple[str, str], list[str]] = {
@@ -110,6 +125,9 @@ DELIVERIES_BY_DATE: dict[tuple[str, str], list[str]] = {
 # user_id → user_activity 假列（GET 直接查、PATCH read-modify-write 後覆寫）。
 # 每個測試前由 _reset_activity fixture 清空，避免跨測試污染。
 ACTIVITY_BY_USER: dict[str, dict[str, Any]] = {}
+
+# slug → 累積播放次數（POST /episodes/{slug}/play 每次 +1，不去重）。
+PLAY_COUNTS: dict[str, int] = {}
 
 
 class FakeCursor(_BaseFakeCursor):
@@ -179,6 +197,79 @@ class FakeCursor(_BaseFakeCursor):
             self._rows = [row] if row is not None else []
             return
 
+        # GET /episodes?channel=（list_episodes 擴充版：left join channels + 可選過濾）
+        if "left join public.channels c on c.id = e.channel_id" in s:
+            channel = params["channel"]
+            user_id = params["user_id"]
+            out: list[dict[str, Any]] = []
+            for slug, ep in EPISODES.items():
+                ep_channel_id = EPISODE_CHANNEL.get(slug)
+                ep_channel_slug = CHANNELS[ep_channel_id]["slug"] if ep_channel_id else None
+                if channel is not None and ep_channel_slug != channel:
+                    continue
+                if not (ep["is_free"] or user_id in ep["deliveries"]):
+                    continue
+                out.append(
+                    {
+                        "id": slug,
+                        "title": f"T-{slug}",
+                        "title_zh": "",
+                        "topic": "tech",
+                        "cefr_level": "B1",
+                        "is_free": ep["is_free"],
+                        "is_featured": False,
+                        "episode": 0,
+                        "published_at": "",
+                        "cover_icon": None,
+                    }
+                )
+            self._rows = out
+            return
+
+        # GET /episodes/recommended：追蹤頻道 + 未聽完 + 免費/授權
+        if "join public.user_channel_subscriptions s" in s:
+            user_id = params["user_id"]
+            subscribed = SUBSCRIPTIONS_BY_USER.get(user_id, set())
+            listened = set(ACTIVITY_BY_USER.get(user_id, {}).get("listened_episode_ids", []))
+            out = []
+            for slug, channel_id in EPISODE_CHANNEL.items():
+                if channel_id not in subscribed:
+                    continue
+                ep = EPISODES[slug]
+                if f"uuid-{slug}" in listened:
+                    continue
+                if not (ep["is_free"] or user_id in ep["deliveries"]):
+                    continue
+                chan = CHANNELS[channel_id]
+                out.append(
+                    {
+                        "id": slug,
+                        "title": f"T-{slug}",
+                        "title_zh": "",
+                        "topic": "tech",
+                        "cefr_level": "B1",
+                        "is_free": ep["is_free"],
+                        "is_featured": False,
+                        "episode": 0,
+                        "published_at": "",
+                        "cover_icon": None,
+                        "channel_slug": chan["slug"],
+                        "channel_name": chan["name"],
+                    }
+                )
+            self._rows = out
+            return
+
+        # POST /episodes/{slug}/play：RETURNING slug 有列＝集數存在（且已 +1）
+        if "update public.episodes set play_count" in s:
+            slug = params[0]
+            if slug not in EPISODES:
+                self._rows = []
+                return
+            PLAY_COUNTS[slug] = PLAY_COUNTS.get(slug, 0) + 1
+            self._rows = [{"slug": slug}]
+            return
+
         # user_activity upsert（PATCH /activity；on conflict 那組參數與前半重複，取前半即可）
         if "insert into public.user_activity" in s:
             user_id = params[0]
@@ -207,6 +298,8 @@ class FakeConnection(_BaseFakeConnection):
 def _reset_activity() -> None:
     # ACTIVITY_BY_USER 會被 PATCH 測試就地寫入，測試間必須互相隔離。
     ACTIVITY_BY_USER.clear()
+    PLAY_COUNTS.clear()
+    SUBSCRIPTIONS_BY_USER.clear()
     # 同樣隔離 EPISODES["..."]["sources"]（references 測試會就地改寫）。
     for ep in EPISODES.values():
         ep["sources"] = []
@@ -698,3 +791,90 @@ def test_get_episode_returns_signed_segments_aligned_with_cues(client: TestClien
         assert payload["audioUrl"] is None
     finally:
         monkeypatch_setattr.undo()
+
+
+# ── (i) POST /episodes/{slug}/play：播放次數 +1，不去重 ──────────────
+
+
+def test_play_without_auth_returns_401(client: TestClient) -> None:
+    res = client.post("/episodes/ep-free/play")
+    assert res.status_code == 401
+
+
+def test_play_unknown_slug_returns_404(client: TestClient) -> None:
+    res = client.post("/episodes/does-not-exist/play", headers=auth_header(USER_A))
+    assert res.status_code == 404
+
+
+def test_play_increments_count_without_dedup(client: TestClient) -> None:
+    """連打兩次 → 各自 +1，不因同一使用者重播而去重。"""
+    headers = auth_header(USER_A)
+
+    res1 = client.post("/episodes/ep-free/play", headers=headers)
+    assert res1.status_code == 200
+    assert res1.json() == {"ok": True, "data": None, "error": None}
+    assert PLAY_COUNTS["ep-free"] == 1
+
+    res2 = client.post("/episodes/ep-free/play", headers=headers)
+    assert res2.status_code == 200
+    assert PLAY_COUNTS["ep-free"] == 2
+
+
+# ── (j) GET /episodes?channel=：頻道過濾（向後相容：不帶 channel 維持既有行為）──
+
+
+def test_list_episodes_without_channel_returns_all_authorized(client: TestClient) -> None:
+    """不帶 channel 參數：既有行為不變，免費集 + 有頻道的免費集都要出現。"""
+    res = client.get("/episodes", headers=auth_header(USER_B))
+    ids = {ep["id"] for ep in res.json()["data"]}
+    assert ids == {"ep-free", "ep-channel-1"}  # B 無任何 delivery，只看得到免費集
+
+
+def test_list_episodes_filters_by_channel_slug(client: TestClient) -> None:
+    res = client.get("/episodes?channel=tech-daily", headers=auth_header(USER_B))
+    ids = {ep["id"] for ep in res.json()["data"]}
+    assert ids == {"ep-channel-1"}  # 只回該頻道底下的集數，ep-free 沒掛頻道被濾掉
+
+
+def test_list_episodes_unknown_channel_slug_returns_empty(client: TestClient) -> None:
+    res = client.get("/episodes?channel=no-such-channel", headers=auth_header(USER_B))
+    assert res.json()["data"] == []
+
+
+# ── (k) GET /episodes/recommended：追蹤頻道裡還沒聽完的最新集數 ──────────
+
+
+def test_recommended_requires_auth(client: TestClient) -> None:
+    res = client.get("/episodes/recommended")
+    assert res.status_code == 401
+
+
+def test_recommended_empty_when_no_subscriptions(client: TestClient) -> None:
+    res = client.get("/episodes/recommended", headers=auth_header(USER_A))
+    assert res.json()["data"] == []
+
+
+def test_recommended_returns_subscribed_channel_episodes_with_channel_identity(
+    client: TestClient,
+) -> None:
+    SUBSCRIPTIONS_BY_USER[USER_A] = {"chan-tech"}
+    res = client.get("/episodes/recommended", headers=auth_header(USER_A))
+    data = res.json()["data"]
+    assert len(data) == 1
+    assert data[0]["id"] == "ep-channel-1"
+    assert data[0]["channelSlug"] == "tech-daily"
+    assert data[0]["channelName"] == "科技日報"
+
+
+def test_recommended_excludes_already_listened_episodes(client: TestClient) -> None:
+    """跟 Apple Podcasts／Spotify 的「關注節目新集數」同語意：聽完的不該還推薦。"""
+    SUBSCRIPTIONS_BY_USER[USER_A] = {"chan-tech"}
+    ACTIVITY_BY_USER[USER_A] = {"listened_episode_ids": ["uuid-ep-channel-1"]}
+    res = client.get("/episodes/recommended", headers=auth_header(USER_A))
+    assert res.json()["data"] == []
+
+
+def test_recommended_not_subscribed_channel_is_excluded(client: TestClient) -> None:
+    """B 沒訂閱任何頻道，即使 ep-channel-1 是免費集也不該出現在推薦（推薦只看訂閱）。"""
+    res = client.get("/episodes/recommended", headers=auth_header(USER_B))
+    assert res.json()["data"] == []

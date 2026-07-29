@@ -8,28 +8,38 @@ YAGNI：目前只有單一管理員需求，不建 admin_users 表；之後若�
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import secrets
 from datetime import datetime
-from typing import Any
+from typing import Any, Literal
 from zoneinfo import ZoneInfo
 
-from fastapi import APIRouter, Depends, Header, status
+from fastapi import APIRouter, Depends, Header, Request, status
 from psycopg.rows import dict_row
 
 from app.response import ApiResponse, ok
-from app.schemas import AdminEpsGenerateBody
+from app.schemas import (
+    AdminEpsGenerateBody,
+    CreateChannelBody,
+    UpdateChannelBody,
+    UpdateChannelTopicBody,
+)
 from shared.config import get_settings
+from shared.db import channels as channels_db
 from shared.db import queue
 from shared.db.pool import connection
-from shared.errors import AuthError
+from shared.errors import AuthError, NotFoundError, PayloadTooLargeError, ValidationError
 from shared.models import (
-    AdminEpisode,
+    AdminEpisodeStats,
+    AdminEpisodeStatsResponse,
     AdminEpsGenerateResponse,
     AdminJobQueue,
-    AdminTokenUsageItem,
-    AdminTokenUsageResponse,
+    CamelModel,
+    Channel,
+    ChannelTopic,
 )
+from shared.storage import r2
 
 logger = logging.getLogger(__name__)
 
@@ -49,23 +59,48 @@ def require_admin_token(
 router = APIRouter(prefix="/admin", tags=["admin"], dependencies=[Depends(require_admin_token)])
 
 
-_EPISODES_SQL = """
+_EPISODE_STATS_AGGREGATE_SQL = """
   select
-    slug as id,
-    title,
-    topic,
-    cefr_level,
-    is_free,
-    is_featured,
-    coalesce(episode_no, 0) as episode_no,
-    coalesce(to_char(published_at, 'YYYY-MM-DD'), '') as published_at,
-    to_char(created_at, 'YYYY-MM-DD"T"HH24:MI:SS"Z"') as created_at,
-    freshness_class,
-    to_char(expires_at, 'YYYY-MM-DD"T"HH24:MI:SS"Z"') as expires_at,
-    (audio_r2_keys <> '[]'::jsonb or audio_r2_key is not null) as has_audio
+    coalesce(sum(input_tokens), 0) as total_input_tokens,
+    coalesce(sum(output_tokens), 0) as total_output_tokens,
+    coalesce(sum(play_count), 0) as total_play_count,
+    count(*) as episode_count
   from public.episodes
-  order by created_at desc
-  limit 50
+"""
+
+# listener_count／favorite_count 是即時跨表統計（無歷史缺口）；play_count 是
+# episodes 自身的累積欄位（只從 migration 0023 部署後起算）。
+# ponytail: listened_episode_ids 沒有 GIN index，@> 走 seq scan；現在的
+# user 數下無感，慢了再補 index。
+_EPISODE_STATS_ITEMS_SQL = """
+  select
+    e.slug as id,
+    e.title,
+    e.topic,
+    e.cefr_level,
+    e.is_free,
+    coalesce(e.episode_no, 0) as episode_no,
+    coalesce(to_char(e.published_at, 'YYYY-MM-DD'), '') as published_at,
+    to_char(e.created_at, 'YYYY-MM-DD"T"HH24:MI:SS"Z"') as created_at,
+    c.name as channel_name,
+    (e.audio_r2_keys <> '[]'::jsonb or e.audio_r2_key is not null) as has_audio,
+    e.play_count,
+    e.input_tokens,
+    e.output_tokens,
+    (e.gen_metrics->>'wall_ms')::int as wall_ms,
+    coalesce(e.gen_metrics->'stages', '[]'::jsonb) as stages,
+    (
+      select count(*) from public.user_activity ua
+      where ua.listened_episode_ids @> to_jsonb(e.slug)
+    ) as listener_count,
+    (
+      select count(*) from public.user_favorites uf
+      where uf.episode_id = e.id
+    ) as favorite_count
+  from public.episodes e
+  left join public.channels c on c.id = e.channel_id
+  order by e.created_at desc
+  limit 100
 """
 
 _JOBS_SQL = """
@@ -73,34 +108,24 @@ _JOBS_SQL = """
   from pgmq.metrics_all()
 """
 
-_TOKEN_USAGE_AGGREGATE_SQL = """
-  select
-    coalesce(sum(input_tokens), 0) as total_input_tokens,
-    coalesce(sum(output_tokens), 0) as total_output_tokens,
-    count(*) as episode_count
-  from public.episodes
-"""
 
-_TOKEN_USAGE_ITEMS_SQL = """
-  select
-    slug, title, input_tokens, output_tokens,
-    to_char(created_at, 'YYYY-MM-DD"T"HH24:MI:SS"Z"') as created_at,
-    to_char(generation_started_at, 'YYYY-MM-DD"T"HH24:MI:SS"Z"') as generation_started_at,
-    to_char(generation_finished_at, 'YYYY-MM-DD"T"HH24:MI:SS"Z"') as generation_finished_at,
-    gen_metrics
-  from public.episodes
-  order by created_at desc
-  limit 50
-"""
-
-
-@router.get("/episodes", response_model=ApiResponse[list[AdminEpisode]])
-async def list_admin_episodes() -> ApiResponse[list[AdminEpisode]]:
-    """Debug 用集數清單，含 hasAudio（audio_r2_key 是否已寫入）判斷生成是否完成。"""
+@router.get("/episodes", response_model=ApiResponse[AdminEpisodeStatsResponse])
+async def get_admin_episode_stats() -> ApiResponse[AdminEpisodeStatsResponse]:
+    """單集數據總覽：全集數彙總 + 最近 100 筆明細（播放／聽完／收藏／token／耗時）。"""
     async with connection() as conn, conn.cursor(row_factory=dict_row) as cur:
-        await cur.execute(_EPISODES_SQL)
+        await cur.execute(_EPISODE_STATS_AGGREGATE_SQL)
+        agg = await cur.fetchone()
+        await cur.execute(_EPISODE_STATS_ITEMS_SQL)
         rows = await cur.fetchall()
-    return ok([AdminEpisode.model_validate(r) for r in rows])
+    items = [AdminEpisodeStats.model_validate(r) for r in rows]
+    response = AdminEpisodeStatsResponse(
+        episode_count=agg["episode_count"] if agg else 0,
+        total_input_tokens=agg["total_input_tokens"] if agg else 0,
+        total_output_tokens=agg["total_output_tokens"] if agg else 0,
+        total_play_count=agg["total_play_count"] if agg else 0,
+        items=items,
+    )
+    return ok(response)
 
 
 @router.get("/jobs", response_model=ApiResponse[list[AdminJobQueue]])
@@ -110,28 +135,6 @@ async def list_admin_jobs() -> ApiResponse[list[AdminJobQueue]]:
         await cur.execute(_JOBS_SQL)
         rows = await cur.fetchall()
     return ok([AdminJobQueue.model_validate(r) for r in rows])
-
-
-@router.get("/token-usage", response_model=ApiResponse[AdminTokenUsageResponse])
-async def get_admin_token_usage() -> ApiResponse[AdminTokenUsageResponse]:
-    """token 用量總覽：全集數 input/output 加總 + 最近 50 筆明細（含分階段耗時）。"""
-    async with connection() as conn, conn.cursor(row_factory=dict_row) as cur:
-        await cur.execute(_TOKEN_USAGE_AGGREGATE_SQL)
-        agg = await cur.fetchone()
-        await cur.execute(_TOKEN_USAGE_ITEMS_SQL)
-        rows = await cur.fetchall()
-    items: list[AdminTokenUsageItem] = []
-    for r in rows:
-        gen_metrics = r.get("gen_metrics")
-        stages = gen_metrics.get("stages") if isinstance(gen_metrics, dict) else None
-        items.append(AdminTokenUsageItem.model_validate({**r, "stages": stages or []}))
-    response = AdminTokenUsageResponse(
-        total_input_tokens=agg["total_input_tokens"] if agg else 0,
-        total_output_tokens=agg["total_output_tokens"] if agg else 0,
-        episode_count=agg["episode_count"] if agg else 0,
-        items=items,
-    )
-    return ok(response)
 
 
 @router.post(
@@ -189,3 +192,308 @@ async def generate_admin_episode(
             status="queued",
         )
     )
+
+
+# ── 頻道（Channel）機制：admin CRUD + 選題庫 + 封面上傳 ──────────────────
+#
+# DB 存取一律透過 shared/db/channels.py 的既有函式；該檔簽名已釘死不再擴充，
+# 僅「改寫選題文字」這個既有函式沒覆蓋到的窄需求，沿用本檔既有的直接 SQL
+# 風格（比照上面的 _EPISODES_SQL 等），不去動 channels.py 的既定介面。
+
+
+def _opt_str(value: Any) -> str | None:
+    """DB 可能回傳 None／uuid.UUID／date／datetime；非 None 一律轉字串。
+
+    channels repo 的 SELECT 沒有像 _EPISODES_SQL 那樣用 to_char 先格式化成
+    字串，這裡在 router 邊界統一轉換（比照 app/routers/account.py:_row_to_account）。
+    """
+    return str(value) if value is not None else None
+
+
+def _channel_from_row(row: dict[str, Any], cover_image_url: str | None) -> Channel:
+    """row + 已簽好的 coverImageUrl → Channel。簽章交給呼叫端（單筆／批次簽法
+    不同），這裡只管欄位轉換（uuid/date → str）。
+    """
+    return Channel.model_validate(
+        {
+            **row,
+            "id": str(row["id"]),
+            "cover_image_url": cover_image_url,
+            "last_published_at": _opt_str(row.get("last_published_at")),
+        }
+    )
+
+
+async def _channel_response(row: dict[str, Any]) -> Channel:
+    """單筆頻道場景（建立／更新／封面上傳後）：簽單一 cover_r2_key。
+
+    presigned_get_url 底層是同步 boto3，asyncio.to_thread 避免阻塞 event loop
+    （比照 app/services/episode_assembly.py:127 的簽章寫法）。cover_r2_key 為
+    None 時不必呼叫 R2，直接回 None。
+    """
+    cover_r2_key = row.get("cover_r2_key")
+    cover_image_url = (
+        await asyncio.to_thread(r2.presigned_get_url, cover_r2_key) if cover_r2_key else None
+    )
+    return _channel_from_row(row, cover_image_url)
+
+
+async def _channel_list_response(rows: list[dict[str, Any]]) -> list[Channel]:
+    """清單場景：批次簽章所有 cover_r2_key（presigned_get_urls），避免逐筆
+    呼叫 presigned_get_url 各開一次 thread pool round trip。
+    """
+    keys = [r["cover_r2_key"] for r in rows if r.get("cover_r2_key")]
+    signed = await asyncio.to_thread(r2.presigned_get_urls, keys) if keys else {}
+    return [
+        _channel_from_row(r, signed.get(r["cover_r2_key"]) if r.get("cover_r2_key") else None)
+        for r in rows
+    ]
+
+
+def _channel_topic_response(row: dict[str, Any]) -> ChannelTopic:
+    return ChannelTopic.model_validate(
+        {
+            **row,
+            "id": str(row["id"]),
+            "channel_id": str(row["channel_id"]),
+            "parent_episode_id": _opt_str(row.get("parent_episode_id")),
+            "episode_id": _opt_str(row.get("episode_id")),
+            "created_at": str(row["created_at"]),
+            "decided_at": _opt_str(row.get("decided_at")),
+        }
+    )
+
+
+async def _get_channel_or_404(channel_id: str) -> dict[str, Any]:
+    """共用 404 守門：訊息只講業務語意，不洩漏內部路徑或 SQL。"""
+    channel = await channels_db.get_channel(channel_id)
+    if channel is None:
+        raise NotFoundError("頻道不存在")
+    return channel
+
+
+async def _find_channel_topic(channel_id: str, topic_id: str) -> dict[str, Any] | None:
+    """topic_id 是否真的屬於 channel_id。重用既有 list_channel_topics 撈整批後
+    在 Python 端比對，不為了單筆查詢另外幫 shared/db/channels.py 加一支函式。
+    """
+    topics = await channels_db.list_channel_topics(channel_id)
+    return next((t for t in topics if str(t["id"]) == topic_id), None)
+
+
+async def _rename_channel_topic(topic_id: str, canonical_topic: str) -> None:
+    """改寫選題文字。地基層 update_topic_status 只管狀態轉移，不含這個欄位；
+    沿用本檔既有的直接 SQL 風格，不擴充 shared/db/channels.py 的既定簽名。
+    """
+    async with connection() as conn, conn.cursor() as cur:
+        await cur.execute(
+            "update public.channel_topics set canonical_topic = %s where id = %s",
+            (canonical_topic, topic_id),
+        )
+
+
+# 封面 content-type allowlist（明確排除 svg：可內嵌 script，XSS 風險）+ magic bytes。
+_COVER_CONTENT_TYPES: dict[str, str] = {
+    "image/jpeg": "jpg",
+    "image/png": "png",
+    "image/webp": "webp",
+}
+_JPEG_MAGIC = b"\xff\xd8\xff"
+_PNG_MAGIC = b"\x89PNG\r\n\x1a\n"
+
+
+def _declared_content_length(request: Request) -> int | None:
+    """client 自報的 body 大小；header 缺席或不是數字一律回 None（＝不知道），
+    交給實際讀進來的 bytes 長度把關——這個 header 只是提早退掉大檔的捷徑，不是信任來源。
+    """
+    raw = request.headers.get("content-length")
+    if raw is None:
+        return None
+    try:
+        return int(raw)
+    except ValueError:
+        return None
+
+
+def _sniff_cover_ext(content_type: str, data: bytes) -> str:
+    """驗證宣告的 content-type 落在 allowlist，且與實際 bytes 開頭（magic bytes）
+    一致——不信任 client 自報的 header，兩者不符一律視為偽造。
+    """
+    ext = _COVER_CONTENT_TYPES.get(content_type)
+    if ext is None:
+        raise ValidationError("不支援的圖片格式，僅接受 JPEG / PNG / WebP")
+
+    if content_type == "image/jpeg":
+        matches = data[:3] == _JPEG_MAGIC
+    elif content_type == "image/png":
+        matches = data[:8] == _PNG_MAGIC
+    else:  # image/webp
+        matches = data[:4] == b"RIFF" and data[8:12] == b"WEBP"
+
+    if not matches:
+        raise ValidationError("圖片內容與宣告的格式不符")
+    return ext
+
+
+@router.get("/channels", response_model=ApiResponse[list[Channel]])
+async def list_channels_endpoint(status: str | None = None) -> ApiResponse[list[Channel]]:
+    """頻道清單（admin 管理用），可選依 status（active/paused/archived）過濾。"""
+    rows = await channels_db.list_channels(status=status)
+    return ok(await _channel_list_response(rows))
+
+
+@router.post("/channels", response_model=ApiResponse[Channel])
+async def create_channel_endpoint(body: CreateChannelBody) -> ApiResponse[Channel]:
+    """建立新頻道。slug 撞到既有頻道會讓 UniqueViolation 往上炸——YAGNI，
+    目前不特別接成 409，交給全站 unhandled_handler 落地成 generic 500
+    （對外訊息一律「伺服器發生錯誤」，不洩漏 SQL 細節；需要精準 409 語意時
+    再接，見 create_channel docstring）。
+    """
+    channel_id = await channels_db.create_channel(
+        slug=body.slug,
+        name=body.name,
+        theme_prompt=body.theme_prompt,
+        topic=body.topic,
+        description=body.description,
+        topic_type=body.topic_type,
+        length_tier=body.length_tier,
+        cefr_level=body.cefr_level,
+        target_interval_days=body.target_interval_days,
+        status=body.status,
+    )
+    channel = await channels_db.get_channel(channel_id)
+    if channel is None:  # 理論上不會發生：剛 insert 成功、id 是它自己回傳的
+        raise RuntimeError("建立頻道後查無資料")
+    return ok(await _channel_response(channel))
+
+
+@router.patch("/channels/{channel_id}", response_model=ApiResponse[Channel])
+async def update_channel_endpoint(
+    channel_id: str, body: UpdateChannelBody
+) -> ApiResponse[Channel]:
+    """部分更新頻道欄位；只有明確帶到的欄位才會被改動（exclude_unset）。
+
+    不先查存在性——update_channel 對不存在的 id 是無害 no-op（fields 為空時
+    甚至不發查詢），最終用 get_channel 的結果同時判斷「更新完成」與「找不到
+    就 404」，省一趟查詢。update_channel 的 SET 目標欄位就是 channel_id 本身，
+    不像 topic PATCH 有「topic 是否真的屬於這個 channel」的歸屬疑慮。
+    """
+    fields = body.model_dump(exclude_unset=True)
+    if fields:
+        await channels_db.update_channel(channel_id, **fields)
+
+    channel = await channels_db.get_channel(channel_id)
+    if channel is None:
+        raise NotFoundError("頻道不存在")
+    return ok(await _channel_response(channel))
+
+
+@router.get(
+    "/channels/{channel_id}/topics",
+    response_model=ApiResponse[list[ChannelTopic]],
+)
+async def list_channel_topics_endpoint(
+    channel_id: str, status: str | None = None
+) -> ApiResponse[list[ChannelTopic]]:
+    """該頻道的選題庫，可選依 status（candidate/scheduled/published/rejected/stale）過濾。"""
+    await _get_channel_or_404(channel_id)
+    rows = await channels_db.list_channel_topics(channel_id, status=status)
+    return ok([_channel_topic_response(r) for r in rows])
+
+
+@router.patch(
+    "/channels/{channel_id}/topics/{topic_id}",
+    response_model=ApiResponse[ChannelTopic],
+)
+async def update_channel_topic_endpoint(
+    channel_id: str, topic_id: str, body: UpdateChannelTopicBody
+) -> ApiResponse[ChannelTopic]:
+    """管理員事後否決（rejected）或復活（candidate）選題，或修正選題文字。
+
+    先查 topic_id 是否真的屬於 channel_id 再寫入——update_topic_status 只認
+    topic_id（不吃 channel_id 做範圍限制），若不先驗證歸屬，URL 帶錯
+    channel_id 也會直接改到別頻道的選題，等寫完才發現就太遲了。
+    """
+    existing = await _find_channel_topic(channel_id, topic_id)
+    if existing is None:
+        raise NotFoundError("選題不存在")
+
+    if body.status is not None:
+        await channels_db.update_topic_status(topic_id, body.status)
+    if body.canonical_topic is not None:
+        await _rename_channel_topic(topic_id, body.canonical_topic)
+
+    updated = await _find_channel_topic(channel_id, topic_id)
+    if updated is None:  # 理論上不會發生：剛查到列，中途被刪除的極端 race
+        raise NotFoundError("選題不存在")
+    return ok(_channel_topic_response(updated))
+
+
+class ChannelPlanResponse(CamelModel):
+    """手動觸發選題已排入 control 佇列的確認資訊。202 僅表示已入列，實際選題
+    由 worker 執行（同 AdminEpsGenerateResponse 的 202 語意）。
+    """
+
+    channel_id: str
+    msg_id: int
+    status: Literal["queued"] = "queued"
+
+
+@router.post(
+    "/channels/{channel_id}/plan",
+    status_code=status.HTTP_202_ACCEPTED,
+    response_model=ApiResponse[ChannelPlanResponse],
+)
+async def plan_channel_endpoint(channel_id: str) -> ApiResponse[ChannelPlanResponse]:
+    """手動觸發該頻道的選題。API process 不做外部 I/O（不直接呼叫選題 LLM），
+    只入 control 佇列，實際選題由 worker 執行（仿 POST /admin/eps/generate）。
+    """
+    await _get_channel_or_404(channel_id)
+
+    try:
+        msg_id = await queue.send("control", {"task": "channel_plan", "channel_id": channel_id})
+    except Exception:
+        logger.exception("channel_plan enqueue 失敗（channel_id=%s）", channel_id)
+        raise  # 走全站 unhandled_handler → 500 internal_error
+
+    return ok(ChannelPlanResponse(channel_id=channel_id, msg_id=msg_id, status="queued"))
+
+
+@router.post("/channels/{channel_id}/cover", response_model=ApiResponse[Channel])
+async def upload_channel_cover(channel_id: str, request: Request) -> ApiResponse[Channel]:
+    """封面上傳：不用 multipart（省一個 python-multipart 依賴），前端直接以檔案
+    bytes 當 body 送出：
+
+        fetch(url, { method: 'POST', body: file,
+                      headers: { 'Content-Type': file.type, 'X-Admin-Token': token } })
+
+    Trust boundary 驗證（全部要過，一項都不能省）：
+      1. 頻道必須存在（404）
+      2. body 非空（400）
+      3. 大小不超過 settings.channel_cover_max_bytes（413）
+      4. content-type 落在 allowlist，明確排除 svg（400）
+      5. 宣告的 content-type 與實際 magic bytes 一致（400）
+
+    ponytail: 原檔直存不產縮圖，列表小圖也載全尺寸；真的變慢再上 Pillow 產多尺寸。
+    """
+    await _get_channel_or_404(channel_id)
+
+    max_bytes = get_settings().channel_cover_max_bytes
+    declared_size = _declared_content_length(request)
+    if declared_size is not None and declared_size > max_bytes:
+        raise PayloadTooLargeError("封面圖檔超過大小上限")
+
+    data = await request.body()
+    if not data:
+        raise ValidationError("封面圖檔內容為空")
+    if len(data) > max_bytes:
+        raise PayloadTooLargeError("封面圖檔超過大小上限")
+
+    content_type = request.headers.get("content-type", "")
+    ext = _sniff_cover_ext(content_type, data)
+
+    r2_key = f"channels/{channel_id}/cover.{ext}"
+    await asyncio.to_thread(r2.put_object, r2_key, data, content_type)
+    await channels_db.set_channel_cover(channel_id, r2_key)
+
+    channel = await _get_channel_or_404(channel_id)
+    return ok(await _channel_response(channel))

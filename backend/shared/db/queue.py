@@ -122,17 +122,26 @@ async def archive(queue: str, msg_id: int) -> bool:
 
 
 async def send_daily_batch(deliver_date: str, bodies: list[dict[str, Any]]) -> int:
-    """原子送 2 筆 generate 訊息給當天 daily podcast batch。
+    """原子送當日頻道候選批次（0~10 筆）給 generate 佇列。
 
     包成單一 SQL function 呼叫 `public.enqueue_daily_podcast_batch(date, jsonb)`：
-      - 同 deliver_date 第二次呼叫 → function 回 0（marker ON CONFLICT）
+      - 同 deliver_date 第二次呼叫 → function 回 -1（marker ON CONFLICT，未送出
+        任何訊息，語意跟「送出 0 筆」不同，呼叫端要分開判讀）
       - 任一 pgmq.send 失敗 → 整 transaction rollback（marker 也撤回）
 
-    回傳實際送出數：2（首次成功）或 0（已 claim）。
+    bodies 允許空 list（今天沒有合格候選）——仍必須呼叫 SQL function 寫入
+    marker，紀錄「今天評估過」，不可在 Python 端短路提前 return，否則下次
+    duplicate control 訊息無法判斷今天到底跑過沒有。
 
-    ponytail: 故意不迴圈 `send("generate", body)`，因為那樣無法保證 marker 與 2 筆
+    回傳值原封不動往上傳：-1（已 claim）或實際送出筆數（含 0），語意由呼叫端
+    （engine/pipeline/daily_batch.py:enqueue_daily_batch）判讀。
+
+    ponytail: 故意不迴圈 `send("generate", body)`，因為那樣無法保證 marker 與 N 筆
     send 的原子性。整個 exactly-once 語意下沉到 SQL function。
     """
+    if not 0 <= len(bodies) <= 10:
+        raise ValueError(f"daily batch 筆數必須介於 0~10 之間，實際為 {len(bodies)}")
+
     async with connection() as conn, conn.cursor(row_factory=dict_row) as cur:
         await cur.execute(
             "select public.enqueue_daily_podcast_batch(%s::date, %s::jsonb) as sent_count",

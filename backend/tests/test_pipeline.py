@@ -22,6 +22,7 @@ from engine.pipeline import generate_job, reuse
 from engine.pipeline.langgraph_pod import nodes
 from engine.pipeline.langgraph_pod.chat import FakeChatModel
 from engine.pipeline.langgraph_pod.mock import MockRenderer, make_mock_workdir
+from shared.db import channels
 from shared.errors import RateLimitError
 from shared.models import ScriptJSON
 
@@ -539,6 +540,45 @@ def _patch_generate_job(
     return mocks, uploads
 
 
+def _patch_channels(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    next_no: int = 1,
+    update_topic_status_raises: Exception | None = None,
+) -> dict[str, list[Any]]:
+    """把 shared.db.channels 的三個生成端呼叫換成記錄呼叫的假件，不連真 DB。
+
+    回傳呼叫紀錄字典（key: next_episode_no / update_topic_status /
+    mark_channel_published），方便測試斷言呼叫參數；update_topic_status_raises
+    非 None 時模擬回填失敗，驗證 upsert_episode_node 的 try/except 容錯。
+    """
+    calls: dict[str, list[Any]] = {
+        "next_episode_no": [],
+        "update_topic_status": [],
+        "mark_channel_published": [],
+    }
+
+    async def fake_next_episode_no(channel_id: str) -> int:
+        calls["next_episode_no"].append(channel_id)
+        return next_no
+
+    async def fake_update_topic_status(
+        topic_id: str, status: str, *, episode_id: str | None = None
+    ) -> bool:
+        calls["update_topic_status"].append((topic_id, status, episode_id))
+        if update_topic_status_raises is not None:
+            raise update_topic_status_raises
+        return True
+
+    async def fake_mark_channel_published(channel_id: str, deliver_date: str) -> None:
+        calls["mark_channel_published"].append((channel_id, deliver_date))
+
+    monkeypatch.setattr(channels, "next_episode_no", fake_next_episode_no)
+    monkeypatch.setattr(channels, "update_topic_status", fake_update_topic_status)
+    monkeypatch.setattr(channels, "mark_channel_published", fake_mark_channel_published)
+    return calls
+
+
 async def test_generate_job_happy_path(monkeypatch: pytest.MonkeyPatch) -> None:
     script = _sample_script()
     repo_spy = _GenRepoSpy()
@@ -668,6 +708,132 @@ async def test_generate_job_idempotency_key_includes_topic_type(
     assert inserted_news["idempotency_key"] != inserted_topic["idempotency_key"]
     assert inserted_news["idempotency_key"].endswith(":medium:news")
     assert inserted_topic["idempotency_key"].endswith(":medium:topic")
+
+
+# ── 頻道機制：channel_id / channel_topic_id / series_context ──────────
+
+
+async def test_generate_job_channel_fields_flow_end_to_end(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """channel_id / channel_topic_id 從 message body 一路到 upsert_episode 呼叫
+    參數與頻道回填呼叫，任何一段都不能被默默 drop
+    （見 lessons.md 2026-07-15「Pipeline 新增維度後，整條呼叫鏈都要 grep」）。
+    """
+    script = _sample_script()
+    repo_spy = _GenRepoSpy()
+    mocks, _ = _patch_generate_job(monkeypatch, script=script, repo_spy=repo_spy)
+    calls = _patch_channels(monkeypatch, next_no=3)
+
+    body = {
+        "big_topic": "科技",
+        "angle": "定義",
+        "deliver_date": "2026-07-29",
+        "user_ids": ["u1"],
+        "channel_id": "chan-1",
+        "channel_topic_id": "topic-9",
+        "series_context": ["第一集：AI 入門", "第二集：機器學習"],
+    }
+    episode_id = await generate_job.run_generate_job(body, **mocks)
+
+    assert episode_id == "ep-new-id"
+    # episode_no 是頻道內流水號（由 channels.next_episode_no 算好才傳進 upsert_episode）。
+    assert repo_spy.inserted["channel_id"] == "chan-1"
+    assert repo_spy.inserted["episode_no"] == 3
+    assert calls["next_episode_no"] == ["chan-1"]
+    # 生成成功才回填：選題狀態轉 published 並帶回 episode_id，頻道 last_published_at 更新。
+    assert calls["update_topic_status"] == [("topic-9", "published", "ep-new-id")]
+    assert calls["mark_channel_published"] == [("chan-1", "2026-07-29")]
+
+
+async def test_generate_job_without_channel_skips_channel_calls(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """既有個人化生成路徑（body 沒有 channel_id）完全不觸發頻道相關呼叫，
+    保持向後相容零開銷——這是本次頻道機制整合的基本要求。"""
+    script = _sample_script()
+    repo_spy = _GenRepoSpy()
+    mocks, _ = _patch_generate_job(monkeypatch, script=script, repo_spy=repo_spy)
+    calls = _patch_channels(monkeypatch)
+
+    body = {
+        "big_topic": "科技",
+        "angle": "定義",
+        "deliver_date": "2026-07-29",
+        "user_ids": ["u1"],
+    }
+    episode_id = await generate_job.run_generate_job(body, **mocks)
+
+    assert episode_id == "ep-new-id"
+    assert repo_spy.inserted["channel_id"] is None
+    assert repo_spy.inserted["episode_no"] is None
+    assert calls["next_episode_no"] == []
+    assert calls["update_topic_status"] == []
+    assert calls["mark_channel_published"] == []
+
+
+async def test_generate_job_channel_id_does_not_affect_idempotency_key(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """同題目、同 angle/length_tier/topic_type，只有 channel_id 不同 →
+    idempotency_key 必須相同：channel 只是這集的歸屬/編號屬性，不是內容維度。
+    混進 key 會讓同一題目在不同頻道被當成不同集重複完整生成一次，浪費 LLM 與
+    TTS 配額（見 upsert_episode_node 的說明，對齊 lessons.md 2026-07-15
+    「idempotency key 必須包含所有正交維度，但 derived 別進」的同類教訓）。
+    """
+    _GenRepoSpy.calls.clear()
+    repo_spy = _GenRepoSpy()
+    _patch_channels(monkeypatch, next_no=1)
+    base_body = {
+        "big_topic": "科技",
+        "angle": "定義",
+        "deliver_date": "2026-07-29",
+        "user_ids": ["u1"],
+    }
+
+    mocks_a, _ = _patch_generate_job(monkeypatch, script=_sample_script(), repo_spy=repo_spy)
+    await generate_job.run_generate_job({**base_body, "channel_id": "chan-a"}, **mocks_a)
+
+    mocks_b, _ = _patch_generate_job(monkeypatch, script=_sample_script(), repo_spy=repo_spy)
+    await generate_job.run_generate_job({**base_body, "channel_id": "chan-b"}, **mocks_b)
+
+    key_a = _GenRepoSpy.calls[0]["idempotency_key"]
+    key_b = _GenRepoSpy.calls[1]["idempotency_key"]
+    assert key_a == key_b
+    # channel_id 本身確實各自忠實傳到（不是被 idem key 邏輯誤吃掉，只是不進 key）。
+    assert _GenRepoSpy.calls[0]["channel_id"] == "chan-a"
+    assert _GenRepoSpy.calls[1]["channel_id"] == "chan-b"
+
+
+async def test_generate_job_topic_status_backfill_failure_does_not_break_episode(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """update_topic_status 回填失敗只是次要問題（選題庫狀態沒更新，該選題留在
+    原狀態，下次排程還會再被 pick_daily_topics 選到，等於自動重試），不可讓它
+    拖垮整條已經成功產出的 graph（同 2026-07-20 FK violation 死循環教訓：
+    compensation / 回填一律 try/except，只記 warning）。
+    """
+    script = _sample_script()
+    repo_spy = _GenRepoSpy()
+    mocks, _ = _patch_generate_job(monkeypatch, script=script, repo_spy=repo_spy)
+    calls = _patch_channels(
+        monkeypatch, next_no=1, update_topic_status_raises=RuntimeError("db down")
+    )
+
+    body = {
+        "big_topic": "科技",
+        "angle": "定義",
+        "deliver_date": "2026-07-29",
+        "user_ids": ["u1"],
+        "channel_id": "chan-1",
+        "channel_topic_id": "topic-9",
+    }
+    episode_id = await generate_job.run_generate_job(body, **mocks)
+
+    assert episode_id == "ep-new-id"  # graph 仍走完，episode 仍成功產出
+    assert calls["update_topic_status"]  # 有嘗試呼叫過（只是丟了例外）
+    # 兩個回填互相獨立：update_topic_status 失敗不影響 mark_channel_published 照跑。
+    assert calls["mark_channel_published"] == [("chan-1", "2026-07-29")]
 
 
 async def test_generate_job_degrade_gives_up(monkeypatch: pytest.MonkeyPatch) -> None:

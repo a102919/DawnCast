@@ -1,6 +1,6 @@
 import { Link, useLocation } from 'react-router-dom'
 import { motion } from 'framer-motion'
-import { NAV_TABS } from './navTabs'
+import { NAV_TABS, isImmersivePath } from './navTabs'
 import { useSprings } from '../../lib/motion'
 import { useVocab } from '../../state'
 import { filterDueDeck } from '../../lib'
@@ -11,7 +11,7 @@ export function BottomNav() {
   const { items } = useVocab()
   const dueCount = filterDueDeck(items).length
 
-  if (pathname.startsWith('/player') || pathname === '/login') return null
+  if (pathname.startsWith('/player') || isImmersivePath(pathname)) return null
 
   return (
     <nav className="lg:hidden fixed bottom-0 inset-x-0 material-thin border-t border-border z-40">

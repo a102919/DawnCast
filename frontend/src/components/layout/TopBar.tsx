@@ -1,7 +1,7 @@
 import { Link, useLocation } from 'react-router-dom'
 import { motion } from 'framer-motion'
 import { Settings, ChevronLeft } from 'lucide-react'
-import { NAV_TABS } from './navTabs'
+import { NAV_TABS, isImmersivePath } from './navTabs'
 import { useSprings } from '../../lib/motion'
 
 export function TopBar() {
@@ -9,19 +9,20 @@ export function TopBar() {
   const { snappy } = useSprings()
   const isSettingsActive = pathname.startsWith('/settings')
   const isPlayerPage = pathname.startsWith('/player')
+  const isChannelDetailPage = /^\/channels\/[^/]+/.test(pathname)
 
-  if (pathname === '/login') return null
+  if (isImmersivePath(pathname)) return null
 
   return (
     <header className="sticky top-0 z-40 material-thin border-b border-border">
       <div className="h-[env(safe-area-inset-top,0px)]" />
       <div className="h-14 flex items-center justify-between px-5">
-        {isPlayerPage ? (
+        {isPlayerPage || isChannelDetailPage ? (
           <>
             <Link
-              to="/"
+              to={isChannelDetailPage ? '/channels' : '/'}
               className="lg:hidden inline-flex items-center gap-0.5 text-text-secondary hover:text-text-primary transition-colors duration-fast ease-apple focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent rounded-md -ml-1 px-1 h-8"
-              aria-label="返回首頁"
+              aria-label={isChannelDetailPage ? '返回頻道列表' : '返回首頁'}
             >
               <ChevronLeft size={20} />
               <span className="text-sm font-medium">返回</span>

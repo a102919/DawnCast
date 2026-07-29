@@ -219,6 +219,40 @@ describe('useSegmentPlayer', () => {
     h.unmount()
   })
 
+  it('playSegment 不動主播放游標：試聽別段後續播，仍從原本暫停的位置接續', async () => {
+    const h = mountHook()
+    await act(async () => {
+      await h.getPlayer().loadEpisode(makeEpisode(3))
+    })
+    // 在第 0 段播到 0.4 秒後暫停
+    await act(async () => {
+      await h.getPlayer().play()
+    })
+    fakeCtx.currentTime = 0.4
+    act(() => {
+      h.getPlayer().pause()
+    })
+
+    // 字卡發音：試聽第 2 段（全域起點 2.2）的一小段
+    await act(async () => {
+      h.getPlayer().playSegment(2, 0.3, 0.5)
+      await new Promise((r) => setTimeout(r, 10))
+    })
+    fakeCtx.currentTime = 0.6
+    act(() => {
+      sources.at(-1)!.onended!(null) // 試聽自然播完
+    })
+
+    // 續播：要回到第 0 段的 0.4 秒。若游標被試聽帶走（segIdx=2、pausedAt=試聽結束位置），
+    // 這裡會變成從第 2 段的 0.5 秒起播。第三個參數 undefined 代表這是主播放（播到段尾），
+    // 不是又一次限定長度的試聽。
+    await act(async () => {
+      await h.getPlayer().play()
+    })
+    expect(sources.at(-1)!.start).toHaveBeenCalledWith(0, expect.closeTo(0.4), undefined)
+    h.unmount()
+  })
+
   it('duck 音量還沒回滿時使用者開始播放，立刻恢復滿音量，不等原訂的 duck 結束時間', async () => {
     const h = mountHook()
     await act(async () => {

@@ -15,25 +15,28 @@ export interface UseEpisodeProgressParams {
   markListened(episodeId: string): void
   addListenMinutes(month: string, minutes: number): void
   markPlayed(date: string): Promise<DailyOrder | null>
+  recordPlay(episodeId: string): Promise<void>
 }
 
-/** 續播定位 + 80%/90% 完聽節流標記。
+/** 續播定位 + 80%/90% 完聽節流標記 + 播放次數回報。
  *
- * 三件事都以「同一集只做一次」為前提，靠 ref（而非 state）記帳，避免額外 re-render。 */
+ * 四件事都以「同一集只做一次」為前提，靠 ref（而非 state）記帳，避免額外 re-render。 */
 export function useEpisodeProgress({
   episode, currentTime, duration, loadState, currentEpisode,
-  seekTo, loadProgress, markListened, addListenMinutes, markPlayed,
+  seekTo, loadProgress, markListened, addListenMinutes, markPlayed, recordPlay,
 }: UseEpisodeProgressParams): void {
   const episodeIdRef = useRef<string | null>(null)
   const initialSeekAppliedRef = useRef(false)
   const hasMarkedListenedRef = useRef(false)
   const hasMarkedDailyPlayedRef = useRef(false)
+  const hasRecordedPlayRef = useRef(false)
 
   useEffect(() => {
     if (episode && episode.id !== episodeIdRef.current) {
       episodeIdRef.current = episode.id
       initialSeekAppliedRef.current = false
       hasMarkedListenedRef.current = false
+      hasRecordedPlayRef.current = false
     }
   }, [episode])
 
@@ -71,7 +74,16 @@ export function useEpisodeProgress({
     if (!episode || duration <= 0 || hasMarkedDailyPlayedRef.current) return
     if (currentTime / duration >= 0.9) {
       hasMarkedDailyPlayedRef.current = true
-      void markPlayed(new Date().toLocaleDateString('en-CA'))
+      // fire-and-forget：失敗不影響播放，靜默吞掉避免未捕捉 rejection。
+      void markPlayed(new Date().toLocaleDateString('en-CA')).catch(() => undefined)
     }
   }, [currentTime, duration, episode, markPlayed])
+
+  useEffect(() => {
+    // 播滿 5 秒才算一次播放：擋掉誤觸與快速滑過，不然數字會被雜訊灌水。
+    if (!episode || hasRecordedPlayRef.current || currentTime < 5) return
+    hasRecordedPlayRef.current = true
+    // fire-and-forget：失敗不影響播放，靜默吞掉避免未捕捉 rejection。
+    void recordPlay(episode.id).catch(() => undefined)
+  }, [currentTime, episode, recordPlay])
 }

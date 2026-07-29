@@ -174,6 +174,8 @@ async def upsert_episode(
     generation_started_at: datetime | None = None,
     gen_metrics: dict[str, Any] | None = None,
     research_metrics: dict[str, Any] | None = None,
+    channel_id: str | None = None,
+    episode_no: int | None = None,
 ) -> tuple[str, bool]:
     """建一列 episodes（媒體 key / cues 之後用 update_episode_keys 補）。
 
@@ -193,6 +195,12 @@ async def upsert_episode(
     generation_started_at / gen_metrics / research_metrics：上集生成的分階段耗時
     與研究過程摘要（見 langgraph_pod/metrics.py）。此時 render/upload 尚未跑完，
     gen_metrics 只到 write_script/judge 為止；完整版由 update_episode_keys 補寫。
+
+    channel_id / episode_no：頻道機制專用，預設 None 保持向後相容（既有個人化
+    生成路徑不屬於任何頻道，不傳這兩個參數也不會壞）。episode_no 是頻道內流水號
+    （由呼叫端先呼叫 shared.db.channels.next_episode_no 算好再傳進來，這層只負責
+    落庫，不重複計算）。兩者都刻意不進 idempotency_key——見 upsert_episode_node
+    的說明，canonical_topic 已足以區分內容。
     """
     sources_json = json.dumps(sources or [], ensure_ascii=False)
     gen_metrics_json = json.dumps(gen_metrics or {}, ensure_ascii=False)
@@ -205,8 +213,10 @@ async def upsert_episode(
                  big_topic, angle, freshness_class, source_cluster_id,
                  idempotency_key, length_tier, format, grounded,
                  input_tokens, output_tokens, is_free, sources,
-                 generation_started_at, gen_metrics, research_metrics)
-            values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                 generation_started_at, gen_metrics, research_metrics,
+                 channel_id, episode_no)
+            values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
+                    %s, %s)
             on conflict (idempotency_key) do nothing
             returning id
             """,
@@ -231,6 +241,8 @@ async def upsert_episode(
                 generation_started_at,
                 gen_metrics_json,
                 research_metrics_json,
+                channel_id,
+                episode_no,
             ),
         )
         row = await cur.fetchone()

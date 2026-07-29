@@ -668,11 +668,24 @@ def test_duplicate_adjacent_zh_rejected() -> None:
         ScriptJSON.model_validate(payload)
 
 
-def test_simplified_char_in_zh_rejected() -> None:
+def test_simplified_char_in_zh_auto_corrected() -> None:
+    """偵測到簡體字直接修正該行，不該整份 raise 逼重寫。"""
     payload = json.loads(_script_json())
-    payload["script"][0]["zh"] = "两杯咖啡"  # 简体字，应转成「兩杯咖啡」
-    with pytest.raises(ValueError, match="簡體字"):
-        ScriptJSON.model_validate(payload)
+    payload["script"][0]["zh"] = "两杯咖啡"  # 简体字，应自動修正成「兩杯咖啡」
+    result = ScriptJSON.model_validate(payload)
+    assert result.script[0].zh == "兩杯咖啡"
+
+
+def test_adverb_zhi_not_treated_as_simplified() -> None:
+    """「只是／只有」的「只」是正確繁體字，不該被 s2t 誤轉成量詞「隻」。
+
+    實測發現（頻道生成第一次真實跑通）：s2t 把口語最常見的副詞用法當成
+    「隻」的簡體字轉換，語意直接變錯——已補進 _TW_ACCEPTED_VARIANTS。
+    """
+    payload = json.loads(_script_json())
+    payload["script"][0]["zh"] = "那個部分不是只發生一次，是每天發生幾百萬次。"
+    result = ScriptJSON.model_validate(payload)
+    assert result.script[0].zh == "那個部分不是只發生一次，是每天發生幾百萬次。"
 
 
 def test_missing_vocab_word_rejected() -> None:
@@ -921,6 +934,91 @@ def test_sources_block_reinforces_avoid_facts_next_to_extracted_facts_rule() -> 
     assert "old fact" in with_avoid
     # 緊鄰硬性規則，不是隨便塞在別處
     assert "extracted_facts" in with_avoid.split("old fact")[0][-200:]
+
+
+# ── 頻道機制：series_context prompt 組裝 ──────────────────────
+
+
+def test_series_block_empty_when_no_context() -> None:
+    """series_context 為空時整個區塊不出現（不留空標題），呼叫端沿用
+    _sources_block/_verified_research_block 同款的空字串合併寫法。"""
+    from engine.pipeline.langgraph_pod.nodes import _series_block
+
+    assert _series_block(()) == ""
+
+
+def test_series_block_invites_callback_without_forcing_repetition() -> None:
+    """series_context 職責與 avoid_facts 相反：那邊「不要重複」，這裡「可以呼應」，
+    措辭上不能變成硬性規則，也不可以鼓勵重述前幾集的內容。"""
+    from engine.pipeline.langgraph_pod.nodes import _series_block
+
+    block = _series_block(("第一集：AI 入門", "第二集：機器學習"))
+    assert "第一集：AI 入門" in block
+    assert "第二集：機器學習" in block
+    assert "不要重述其內容" in block
+    assert "若自然" in block  # 軟性建議，不是 _BAN_LIST 那種「程式會擋下來」的硬規則
+
+
+def test_build_outline_messages_series_context_empty_vs_present() -> None:
+    """series_context 為空與非空兩種 prompt 組裝各驗一次：空 → 不出現 SERIES
+    CONTEXT 區塊；非空 → 標題真的進 outline system prompt。"""
+    from engine.pipeline.langgraph_pod.nodes import _build_outline_messages
+
+    common: dict[str, Any] = {
+        "canonical_topic": "量子力學",
+        "big_topic": "科技",
+        "topic_type": "evergreen",
+        "angle": "定義",
+        "cefr": "B1",
+        "tone": "playful",
+        "length_tier": "medium",
+        "sources": None,
+        "format": "dialogue",
+        "avoid_facts": (),
+    }
+    without_ctx = _build_outline_messages(**common, series_context=())
+    with_ctx = _build_outline_messages(
+        **common, series_context=("第一集：AI 入門", "第二集：機器學習")
+    )
+
+    assert "SERIES CONTEXT" not in without_ctx[0]["content"]
+    assert "SERIES CONTEXT" in with_ctx[0]["content"]
+    assert "第一集：AI 入門" in with_ctx[0]["content"]
+
+
+def test_build_segment_messages_series_context_empty_vs_present() -> None:
+    """同一件事在 segment builder 也要驗一次——outline 與 segment 兩個呼叫端
+    都要吃得到 series_context（見任務要求「確認兩者都吃得到」）。"""
+    from engine.pipeline.langgraph_pod.nodes import _build_segment_messages
+
+    common: dict[str, Any] = {
+        "canonical_topic": "量子力學",
+        "big_topic": "科技",
+        "topic_type": "evergreen",
+        "angle": "定義",
+        "cefr": "B1",
+        "tone": "playful",
+        "length_tier": "medium",
+        "sources": None,
+        "format": "dialogue",
+        "avoid_facts": (),
+        "segment_index": 0,
+        "segment_count": 3,
+        "segment_focus": "intro",
+        "segment_vocab": [],
+        "segment_word_target": 200,
+        "is_chapter_boundary": False,
+        "is_final_segment": False,
+        "previous_tail_lines": [],
+    }
+    without_ctx = _build_segment_messages(**common, series_context=())
+    with_ctx = _build_segment_messages(
+        **common, series_context=("第一集：AI 入門",)
+    )
+
+    assert "SERIES CONTEXT" not in without_ctx[0]["content"]
+    assert "SERIES CONTEXT" in with_ctx[0]["content"]
+    assert "第一集：AI 入門" in with_ctx[0]["content"]
 
 
 # ── 13. sources 持久化：MockRepo.upsert_episode / update_episode_keys ──

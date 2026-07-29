@@ -20,6 +20,7 @@ import logging
 from typing import Any
 
 from shared.config import Settings, get_settings
+from shared.errors import ValidationError
 
 logger = logging.getLogger(__name__)
 
@@ -31,10 +32,15 @@ async def run_generate_job(
 ) -> str | None:
     """處理一筆 generate 訊息，回傳建立的 episode_id；storage 雙重失敗優雅結束回 None。
 
-    body：{big_topic, angle?, cluster_id?, deliver_date, user_ids[]}。
+    body：{big_topic, angle?, cluster_id?, deliver_date, user_ids[],
+    channel_id?, channel_topic_id?, series_context?}。
     冪等：失敗在落庫前 raise，worker 不 delete → vt 到期重投；成功後 worker delete。
     None 是第三種結果（見 run_pod 的 dead_letter 說明）：row 已清乾淨、worker 視為
     完成不重投，只是這次沒有集數產出，不是 raise 也不是成功建立 episode。
+
+    channel_id / channel_topic_id / series_context 是 run_pod 的 keyword-only
+    參數（非 body 直接讀取），這裡是唯一負責從 body 解出這三欄再轉呼叫的 thin
+    shim；三者缺席時分別補 None / None / []，不讓下游拿到 KeyError。
 
     **run_pod_kwargs 給測試 / demo 注入 LangGraph pod 內部元件用：
       chat / chat_failover / repo / r2 / queue / renderer / use_mock。
@@ -43,7 +49,18 @@ async def run_generate_job(
     cfg = settings or get_settings()
     from engine.pipeline.langgraph_pod import run_pod  # noqa: PLC0415 lazy import
 
-    episode_id = await run_pod(body, cfg, **run_pod_kwargs)
+    series_context = body.get("series_context") or []
+    if not isinstance(series_context, list):
+        raise ValidationError("series_context 必須是 list")
+
+    episode_id = await run_pod(
+        body,
+        cfg,
+        channel_id=body.get("channel_id"),
+        channel_topic_id=body.get("channel_topic_id"),
+        series_context=series_context,
+        **run_pod_kwargs,
+    )
     logger.info(
         "generate job 完成 episode_id=%s big_topic=%s 收件 %d 人",
         episode_id,

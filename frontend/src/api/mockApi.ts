@@ -1,5 +1,5 @@
 import { z } from 'zod'
-import type { AccountInfo, Activity, ActivityPatch, AdminEpsGenerateInput, AdminEpsGenerateResponse, AdminTokenUsageResponse, Api, DailyOrder, DictEntry, Settings, VocabItem } from './types'
+import type { AccountInfo, Activity, ActivityPatch, AdminEpisodeStatsResponse, Api, Channel, ChannelPlanResponse, ChannelPublic, ChannelTopic, DailyOrder, DictEntry, RecommendedEpisode, Settings, VocabItem } from './types'
 import type { Episode } from '../types/episode'
 import { CueSchema, SegmentSchema, SourceReferenceSchema } from './httpApi'
 import type { MockEpisode } from '../lib/episode'
@@ -113,6 +113,15 @@ const SEED_EPISODES: readonly MockEpisode[] = [
   },
 ] as const
 
+// mock 模式的頻道 seed：借用 SEED_EPISODES 既有的 topic 分類當作頻道對應（每個頻道對應
+// 一個 topic），不用另外建一套獨立的頻道-集數關聯資料——mock 資料只需要撐起每種 UI 狀態。
+const SEED_CHANNELS: readonly ChannelPublic[] = [
+  { slug: 'tech-daily', name: '科技脈動', description: '每天一則科技新知', topic: 'tech', episodeCount: 3 },
+  { slug: 'biz-weekly', name: '商業趨勢', description: '每週商業趨勢觀察', topic: 'business', episodeCount: 2 },
+  { slug: 'culture-corner', name: '文化角落', description: '藝術與文化的日常', topic: 'culture', episodeCount: 2 },
+  { slug: 'science-lab', name: '科學實驗室', description: '科學新知輕鬆懂', topic: 'science', episodeCount: 3 },
+] as const
+
 // mock fixture（public/data/episode.json）是手寫的單一示範檔，只需要滿足前端 domain
 // Episode 型別（id/title/audioUrl/cues/segments/references）；後端真實 wire schema
 // （httpApi.ts 的 EpisodeContentSchema）多出的 topic/cefrLevel/isFree 是驗「後端有沒有送」
@@ -141,6 +150,7 @@ async function fetchMockEpisode(): Promise<Episode> {
 const VOCAB_KEY = 'dawncast:vocab'
 const SETTINGS_KEY = 'dawncast:settings'
 const FAVORITES_KEY = 'dawncast:favorites'
+const CHANNEL_SUBS_KEY = 'dawncast:channel-subs'
 const DAILY_ORDER_KEY_PREFIX = 'dawncast:dailyOrder:'
 const LAST_ORDER_DATE_KEY = 'dawncast:lastOrderDate'
 const ACTIVITY_KEY = 'dawncast:mockActivity'
@@ -188,6 +198,15 @@ function readFavorites(): string[] {
 
 function writeFavorites(ids: readonly string[]): void {
   storageSet(FAVORITES_KEY, [...ids])
+}
+
+function readChannelSubs(): string[] {
+  const parsed = storageGet<unknown[]>(CHANNEL_SUBS_KEY)
+  return Array.isArray(parsed) ? parsed.filter((x): x is string => typeof x === 'string') : []
+}
+
+function writeChannelSubs(slugs: readonly string[]): void {
+  storageSet(CHANNEL_SUBS_KEY, [...slugs])
 }
 
 function readDailyOrder(date: string): DailyOrder | null {
@@ -413,8 +432,11 @@ export const mockApi: Api = {
     writeVocab(items.map(v => v.id === id ? { ...v, ...patch } : v))
   },
 
-  async listEpisodes() {
-    return SEED_EPISODES
+  async listEpisodes(opts) {
+    if (!opts?.channel) return SEED_EPISODES
+    const chan = SEED_CHANNELS.find(c => c.slug === opts.channel)
+    if (!chan) return []
+    return SEED_EPISODES.filter(ep => ep.topic === chan.topic)
   },
 
   // mock 模式只有單一示範節目檔，無論 slug 一律回 /data/episode.json，
@@ -435,6 +457,12 @@ export const mockApi: Api = {
     if (!target) return null
     const mock = await fetchMockEpisode()
     return { ...mock, id: target.id, title: target.title }
+  },
+
+  // mock 模式沒有 episodes.play_count 可寫，播放頁背景呼叫此處必須是 noop——
+  // 丟錯會讓 mock 模式的播放器炸掉，這裡不是 admin 唯讀查詢，是使用者端播放路徑。
+  async recordEpisodePlay(_episodeId) {
+    return undefined
   },
 
   // T1：mock 模式沒有真 worker，setOrder 仍會呼叫此處但純 noop
@@ -476,14 +504,78 @@ export const mockApi: Api = {
     for (const k of keysToRemove) localStorage.removeItem(k)
   },
 
-  // Admin trigger：mock 模式無真 worker，回丟擲讓 UI 提示「請切真實後端」。
-  async triggerAdminGenerate(_input: AdminEpsGenerateInput): Promise<AdminEpsGenerateResponse> {
-    throw new Error('mock 模式不支援管理員觸發，請將 VITE_USE_MOCK 設為 false')
+  // mock 模式沒有真實 episodes/gen_metrics/user_activity 資料可查。
+  async getAdminEpisodeStats(): Promise<AdminEpisodeStatsResponse> {
+    throw new Error('mock 模式不支援管理員查詢，請將 VITE_USE_MOCK 設為 false')
   },
 
-  // 同上：mock 模式沒有真實 episodes/gen_metrics 資料可查。
-  async getAdminTokenUsage(): Promise<AdminTokenUsageResponse> {
-    throw new Error('mock 模式不支援管理員查詢，請將 VITE_USE_MOCK 設為 false')
+  // 頻道管理同理：狀態在 DB，mock 沒有可寫的地方，一律明確擋掉而不是回假資料
+  // 讓人誤以為建好了。
+  async listAdminChannels(): Promise<readonly Channel[]> {
+    throw new Error('mock 模式不支援頻道管理，請將 VITE_USE_MOCK 設為 false')
+  },
+
+  async createAdminChannel(): Promise<Channel> {
+    throw new Error('mock 模式不支援頻道管理，請將 VITE_USE_MOCK 設為 false')
+  },
+
+  async updateAdminChannel(): Promise<Channel> {
+    throw new Error('mock 模式不支援頻道管理，請將 VITE_USE_MOCK 設為 false')
+  },
+
+  async uploadAdminChannelCover(): Promise<Channel> {
+    throw new Error('mock 模式不支援頻道管理，請將 VITE_USE_MOCK 設為 false')
+  },
+
+  async planAdminChannel(): Promise<ChannelPlanResponse> {
+    throw new Error('mock 模式不支援頻道管理，請將 VITE_USE_MOCK 設為 false')
+  },
+
+  async listAdminChannelTopics(): Promise<readonly ChannelTopic[]> {
+    throw new Error('mock 模式不支援頻道管理，請將 VITE_USE_MOCK 設為 false')
+  },
+
+  async updateAdminChannelTopic(): Promise<ChannelTopic> {
+    throw new Error('mock 模式不支援頻道管理，請將 VITE_USE_MOCK 設為 false')
+  },
+
+  // 使用者端公開頻道：訂閱狀態比照 favorites 存 localStorage，讓 mock 模式也能完整走過
+  // 追蹤→首頁推薦→取消追蹤整個流程。
+  async listChannels() {
+    return SEED_CHANNELS
+  },
+
+  async getChannel(slug) {
+    const found = SEED_CHANNELS.find(c => c.slug === slug)
+    if (!found) throw new Error(`mock 模式找不到頻道：${slug}`)
+    return found
+  },
+
+  async subscribeChannel(slug) {
+    const subs = readChannelSubs()
+    if (!subs.includes(slug)) writeChannelSubs([slug, ...subs])
+  },
+
+  async unsubscribeChannel(slug) {
+    writeChannelSubs(readChannelSubs().filter(s => s !== slug))
+  },
+
+  async listMySubscriptions() {
+    const subs = readChannelSubs()
+    return SEED_CHANNELS.filter(c => subs.includes(c.slug))
+  },
+
+  async getRecommendedEpisodes() {
+    const subscribedTopics = new Set(
+      SEED_CHANNELS.filter(c => readChannelSubs().includes(c.slug)).map(c => c.topic),
+    )
+    const listened = new Set(readActivity().listenedEpisodeIds)
+    return SEED_EPISODES
+      .filter(ep => subscribedTopics.has(ep.topic) && !listened.has(ep.id))
+      .map((ep): RecommendedEpisode => {
+        const chan = SEED_CHANNELS.find(c => c.topic === ep.topic)
+        return { ...ep, channelSlug: chan?.slug ?? '', channelName: chan?.name ?? '' }
+      })
   },
 
   // Push 訂閱：mock 模式沒有後端可登錄，noop 即可（設定頁的 toggle 仍能操作

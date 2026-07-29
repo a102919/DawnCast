@@ -4,6 +4,7 @@ import { Headphones, Play, Pause } from 'lucide-react'
 import { usePlayer } from '../../state'
 import { useSprings } from '../../lib/motion'
 import { computeProgress } from '../../lib/playback'
+import { isImmersivePath } from '../layout'
 
 /** 離開播放頁後浮在 BottomNav 上方的迷你播放列（手機版）；點擊回全螢幕播放頁。 */
 export function MiniPlayer() {
@@ -11,7 +12,7 @@ export function MiniPlayer() {
   const { pathname } = useLocation()
   const navigate = useNavigate()
   const { gentle, press } = useSprings()
-  const visible = currentEpisode !== null && !pathname.startsWith('/player') && pathname !== '/login'
+  const visible = currentEpisode !== null && !pathname.startsWith('/player') && !isImmersivePath(pathname)
   const progress = computeProgress(currentTime, duration)
 
   return (

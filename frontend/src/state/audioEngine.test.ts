@@ -224,6 +224,23 @@ describe('audioEngine', () => {
     expect(engine.currentPositionSec(handle, 2)).toBeCloseTo(2)
   })
 
+  // 迴歸：offsetSec 曾經沒被算進錨點，位置一律少報 offsetSec（seek 完位置退回段頭）。
+  // 上面兩題 offsetSec 都是 0，兩種公式結果一樣，所以測不出來——這裡刻意用非 0 offset。
+  it('currentPositionSec：從段內 offset 起播時位置含 offset，不會退回段頭', async () => {
+    await engine.getBuffer('https://cdn/0.mp3')
+    const handle = engine.startPlayback({ url: 'https://cdn/0.mp3', globalStartSec: 100, offsetSec: 0.7, rate: 1 })!
+    expect(engine.currentPositionSec(handle, 1)).toBeCloseTo(100.7)
+    fakeCtx.currentTime = handle.ctxAnchorSec + 0.2
+    expect(engine.currentPositionSec(handle, 1)).toBeCloseTo(100.9)
+  })
+
+  it('stop：從段內 offset 起播時回傳位置含 offset（pausedAt 才不會倒退）', async () => {
+    await engine.getBuffer('https://cdn/0.mp3')
+    const handle = engine.startPlayback({ url: 'https://cdn/0.mp3', globalStartSec: 100, offsetSec: 0.7, rate: 1 })!
+    fakeCtx.currentTime = handle.ctxAnchorSec + 0.2
+    expect(engine.stop(handle, 1)).toBeCloseTo(100.9)
+  })
+
   it('duckDown/restoreVolume：AudioParam 三連發順序（cancel → setValueAtTime → ramp）', () => {
     engine.ensureContext()
     const mainGain = gains[0]!

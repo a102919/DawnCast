@@ -46,11 +46,18 @@ def _pick_angle(prior: list[dict[str, Any]]) -> str:
     return ANGLES[len(prior) % len(ANGLES)][0]
 
 
-def _collect_avoid_facts(prior: list[dict[str, Any]]) -> list[str]:
-    """攤平舊集 extracted_facts 的 claim。相容新格式（dict 帶 claim）與舊格式（純字串）。"""
+def collect_avoid_facts(prior: list[dict[str, Any]]) -> list[str]:
+    """攤平舊集 extracted_facts 的 claim。相容新格式（dict 帶 claim）與舊格式（純字串）。
+
+    public 而非底線開頭：頻道機制的 daily_batch 也要用同一份避重邏輯
+    （見 engine/pipeline/daily_batch.py），兩邊共用一份實作才不會漂移。
+
+    extracted_facts 可能是 NULL（手動匯入 / seed 的集沒跑過抽取），
+    所以逐列 `or []` 兜底，不能假設一定是 list。
+    """
     claims: list[str] = []
     for p in prior:
-        for fact in p["extracted_facts"]:
+        for fact in p["extracted_facts"] or []:
             claim = fact.get("claim") if isinstance(fact, dict) else str(fact)
             if claim:
                 claims.append(claim)
@@ -130,7 +137,7 @@ async def resolve_for_user(
     if angle is None:
         prior = await repo.list_prior_episode_meta(user_id, big_topic)
         angle = _pick_angle(prior)
-        avoid_facts = _collect_avoid_facts(prior)
+        avoid_facts = collect_avoid_facts(prior)
 
     body: dict[str, Any] = {
         "big_topic": big_topic,

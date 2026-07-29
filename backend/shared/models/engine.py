@@ -7,6 +7,7 @@ API 契約（camelCase，鏡像前端 types.ts）在 sibling 的 api.py；兩者
 from __future__ import annotations
 
 import difflib
+import logging
 from functools import lru_cache
 from typing import Literal, assert_never, get_args
 
@@ -14,6 +15,8 @@ import opencc
 from pydantic import BaseModel, Field, model_validator
 
 from shared.script_contract import first_duplicate_adjacent_index, missing_vocab_words
+
+logger = logging.getLogger(__name__)
 
 
 @lru_cache(maxsize=1)
@@ -28,27 +31,45 @@ def _s2t_converter() -> opencc.OpenCC:
 # 本來就是正體慣用寫法（台/臺、唇/脣、秘/祕……），但 s2t 仍會判定為「被轉換」而誤標成
 # 簡體字。前 39 字取自 opencc 套件內建 TWVariants.txt（col2，官方維護的字元變體表）；
 # 台/布不在該表（屬 STCharacters.txt 的多義字判斷），是實測補上的已知誤判。
+# 只：副詞「只是／只有／只能」在台灣本來就寫「只」，但 s2t 把它當「隻」的簡體字轉換，
+# 誤把口語對話裡最常見的用法改成動物量詞——實測（頻道生成）補上的已知誤判。
 # ponytail: 白名單基於實測樣本，不保證窮盡；新誤判照這個模式補字即可，不必整套換演算法。
 _TW_ACCEPTED_VARIANTS = frozenset(
-    "偽啟吃嫻媯峰么抬稜簷汙洩溈潀為床痺痴皂著睪秘灶粽韁才群唇參蒍眾裡核踴缽針鯰麵顎台布"
+    "偽啟吃嫻媯峰么抬稜簷汙洩溈潀為床痺痴皂著睪秘灶粽韁才群唇參蒍眾裡核踴缽針鯰麵顎台布只"
 )
 
 
-def _simplified_chars_in(text: str) -> list[str]:
-    """回傳 text 裡被 s2t（簡轉繁）轉換掉、且非台灣慣用變體字的字元，代表原文含簡體字。
+def _fix_simplified_chars(text: str) -> tuple[str, list[str]]:
+    """把 text 裡真正的簡體字換成繁體，回傳 (修正後文字, 被換掉的原始字元)。
+
+    台灣慣用變體字（_TW_ACCEPTED_VARIANTS）維持原樣，不套用 s2t 的「標準繁體」
+    寫法（理由同該常數定義處的註解）——只有落在允許清單外的字元才會被替換。
 
     用 difflib 對齊而不是逐字 zip：即使是字元級轉換，個別字元也可能一對多，轉換前後
-    長度不一定相同。
+    長度不一定相同；長度不同的 span 屬罕見情況，整段換成轉換結果，不逐字比對允許清單。
     """
     converted = _s2t_converter().convert(text)
     if converted == text:
-        return []
+        return text, []
 
     offenders: list[str] = []
-    for tag, start, end, _, _ in difflib.SequenceMatcher(a=text, b=converted).get_opcodes():
-        if tag in ("replace", "delete"):
-            offenders.extend(ch for ch in text[start:end] if ch not in _TW_ACCEPTED_VARIANTS)
-    return offenders
+    parts: list[str] = []
+    for tag, i1, i2, j1, j2 in difflib.SequenceMatcher(a=text, b=converted).get_opcodes():
+        if tag == "equal":
+            parts.append(text[i1:i2])
+            continue
+        original_span, fixed_span = text[i1:i2], converted[j1:j2]
+        if len(original_span) == len(fixed_span):
+            for orig_ch, fixed_ch in zip(original_span, fixed_span, strict=True):
+                if orig_ch in _TW_ACCEPTED_VARIANTS:
+                    parts.append(orig_ch)
+                else:
+                    offenders.append(orig_ch)
+                    parts.append(fixed_ch)
+        else:
+            offenders.extend(ch for ch in original_span if ch not in _TW_ACCEPTED_VARIANTS)
+            parts.append(fixed_span)
+    return "".join(parts), offenders
 
 
 Speaker = Literal["Alex", "Sarah", "Nova"]
@@ -249,13 +270,20 @@ class ScriptJSON(BaseModel):
 
     @model_validator(mode="after")
     def _zh_no_simplified_chars(self) -> ScriptJSON:
-        offenders: list[str] = []
+        """偵測到簡體字直接修正該字，不整份重寫——修正是確定性字元替換，成本遠低於
+        逼 write_script 整段重打，且重打不保證下一次就不再混入簡體字。
+        """
         for i, line in enumerate(self.script):
-            bad = _simplified_chars_in(line.zh)
-            if bad:
-                offenders.append(f"script[{i}].zh 出現簡體字 {bad!r}: {line.zh!r}")
-        if offenders:
-            raise ValueError("zh 必須是台灣正體中文，偵測到簡體字：\n" + "\n".join(offenders))
+            corrected, offenders = _fix_simplified_chars(line.zh)
+            if offenders:
+                logger.warning(
+                    "script[%d].zh 出現簡體字 %r，已自動修正: %r -> %r",
+                    i,
+                    offenders,
+                    line.zh,
+                    corrected,
+                )
+                line.zh = corrected
         return self
 
 
@@ -318,3 +346,27 @@ class ClaimVerification(BaseModel):
 
     checks: list[ClaimCheck] = Field(default_factory=list)
     unsupported_ratio: float = Field(ge=0.0, le=1.0)
+
+
+# ── 頻道選題契約（engine/pipeline/channel_plan.py 用）──────────────
+
+
+class ChannelTopicCandidate(BaseModel):
+    """選題 LLM 產生的單一候選主題。
+
+    prompt-instructed JSON（MiniMax 無原生 tool calling / structured output）：
+    channel_plan.py 剝 code fence 後用 model_validate_json 解析，失敗即重試。
+    """
+
+    canonical_topic: str = Field(min_length=1)
+    angle: str
+    rationale: str = Field(min_length=1)
+    score: float = Field(ge=0.0, le=1.0)
+    continues_episode_slug: str | None = None
+
+    @model_validator(mode="after")
+    def _angle_in_taxonomy(self) -> ChannelTopicCandidate:
+        valid_angles = {name for name, _ in ANGLES}
+        if self.angle not in valid_angles:
+            raise ValueError(f"angle 必須是 ANGLES taxonomy 其中一值，收到 {self.angle!r}")
+        return self

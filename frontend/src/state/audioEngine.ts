@@ -20,8 +20,11 @@ const DUCK_RAMP_SEC = 0.05
 export interface PlaybackHandle {
   readonly source: AudioBufferSourceNode
   readonly ctxAnchorSec: number
-  /** 對應 cue.start；currentPositionSec = globalStartSec + (ctx.currentTime - ctxAnchor) * rate */
-  readonly globalStartSec: number
+  /** ctxAnchorSec 那一瞬間對應的**全域**播放秒數，已含段內 offset（＝globalStartSec + offsetSec）。
+   *  currentPositionSec = anchorPositionSec + (ctx.currentTime - ctxAnchorSec) * rate。
+   *  刻意不叫 globalStartSec：那個名字會讓人以為填 seg.start 就好，漏掉 offset 後
+   *  seek 過的位置一律少報 offsetSec，連鎖弄壞進度條、pausedAt 與單句循環。 */
+  readonly anchorPositionSec: number
 }
 
 export interface StartPlaybackArgs {
@@ -154,12 +157,14 @@ export function createAudioEngine(): AudioEngine {
     void audioElRef.current?.play().catch(() => undefined)
     const remaining = args.durationSec !== undefined ? Math.min(args.durationSec, buf.duration - args.offsetSec) : undefined
     source.start(0, args.offsetSec, remaining)
-    return { source, ctxAnchorSec: ctx.currentTime, globalStartSec: args.globalStartSec }
+    // 錨點位置＝段起點 + 段內 offset：source 是從 buffer 的 offsetSec 處開始播的，
+    // 少加這一項就等於宣稱「不管從哪裡起播，位置都從段頭開始算」。
+    return { source, ctxAnchorSec: ctx.currentTime, anchorPositionSec: args.globalStartSec + args.offsetSec }
   }
 
   function stop(handle: PlaybackHandle, rate: number): number {
     const ctx = ctxRef.current
-    const pos = ctx ? handle.globalStartSec + (ctx.currentTime - handle.ctxAnchorSec) * rate : handle.globalStartSec
+    const pos = ctx ? handle.anchorPositionSec + (ctx.currentTime - handle.ctxAnchorSec) * rate : handle.anchorPositionSec
     try { handle.source.stop() } catch { /* already stopped */ }
     handle.source.disconnect()
     return pos
@@ -171,8 +176,8 @@ export function createAudioEngine(): AudioEngine {
 
   function currentPositionSec(handle: PlaybackHandle, rate: number): number {
     const ctx = ctxRef.current
-    if (!ctx) return handle.globalStartSec
-    return handle.globalStartSec + (ctx.currentTime - handle.ctxAnchorSec) * rate
+    if (!ctx) return handle.anchorPositionSec
+    return handle.anchorPositionSec + (ctx.currentTime - handle.ctxAnchorSec) * rate
   }
 
   function setVolume(v: number): void {

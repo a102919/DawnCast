@@ -214,8 +214,32 @@ export interface paths {
         /**
          * List Episodes
          * @description 免費集，或該 user 有 delivery 授權的集數。
+         *
+         *     channel：可選頻道 slug，帶了就只回該頻道底下的集數（供 /channels/:slug 詳情頁用）；
+         *     不帶維持既有行為（全站免費／已授權集數）不變。
          */
         get: operations["list_episodes_episodes_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/episodes/recommended": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List Recommended Episodes
+         * @description 追蹤頻道裡「還沒聽完」的最新集數。跟 Apple Podcasts／Spotify「關注節目的新集數」
+         *     同一種推薦邏輯——不做機器學習或協同過濾，沒人要求，也沒資料量支撐。
+         */
+        get: operations["list_recommended_episodes_episodes_recommended_get"];
         put?: never;
         post?: never;
         delete?: never;
@@ -236,6 +260,103 @@ export interface paths {
         put?: never;
         post?: never;
         delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/episodes/{slug}/play": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Record Episode Play
+         * @description 播放次數 +1。不去重——使用者重播就是重播，這正是「次數」的語意。
+         *
+         *     先過 _fetch_authorized 同一套授權檢查，未授權集數不得灌水播放數。
+         */
+        post: operations["record_episode_play_episodes__slug__play_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/channels": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List Channels Endpoint
+         * @description 全部上架中（status=active）的頻道，供探索頁使用。
+         */
+        get: operations["list_channels_endpoint_channels_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/channels/subscriptions": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List My Subscriptions
+         * @description 我追蹤的頻道，供首頁「你追蹤的頻道」區塊與推薦集數使用。
+         */
+        get: operations["list_my_subscriptions_channels_subscriptions_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/channels/{slug}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Channel Endpoint */
+        get: operations["get_channel_endpoint_channels__slug__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/channels/{slug}/subscribe": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Subscribe Channel */
+        post: operations["subscribe_channel_channels__slug__subscribe_post"];
+        /** Unsubscribe Channel */
+        delete: operations["unsubscribe_channel_channels__slug__subscribe_delete"];
         options?: never;
         head?: never;
         patch?: never;
@@ -308,10 +429,10 @@ export interface paths {
             cookie?: never;
         };
         /**
-         * List Admin Episodes
-         * @description Debug 用集數清單，含 hasAudio（audio_r2_key 是否已寫入）判斷生成是否完成。
+         * Get Admin Episode Stats
+         * @description 單集數據總覽：全集數彙總 + 最近 100 筆明細（播放／聽完／收藏／token／耗時）。
          */
-        get: operations["list_admin_episodes_admin_episodes_get"];
+        get: operations["get_admin_episode_stats_admin_episodes_get"];
         put?: never;
         post?: never;
         delete?: never;
@@ -340,26 +461,6 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/admin/token-usage": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /**
-         * Get Admin Token Usage
-         * @description token 用量總覽：全集數 input/output 加總 + 最近 50 筆明細（含分階段耗時）。
-         */
-        get: operations["get_admin_token_usage_admin_token_usage_get"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
     "/admin/eps/generate": {
         parameters: {
             query?: never;
@@ -378,6 +479,156 @@ export interface paths {
          *     帶 user_ids → 仍 is_free=True，但額外建立 deliveries 給指定使用者。
          */
         post: operations["generate_admin_episode_admin_eps_generate_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/admin/channels": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List Channels Endpoint
+         * @description 頻道清單（admin 管理用），可選依 status（active/paused/archived）過濾。
+         */
+        get: operations["list_channels_endpoint_admin_channels_get"];
+        put?: never;
+        /**
+         * Create Channel Endpoint
+         * @description 建立新頻道。slug 撞到既有頻道會讓 UniqueViolation 往上炸——YAGNI，
+         *     目前不特別接成 409，交給全站 unhandled_handler 落地成 generic 500
+         *     （對外訊息一律「伺服器發生錯誤」，不洩漏 SQL 細節；需要精準 409 語意時
+         *     再接，見 create_channel docstring）。
+         */
+        post: operations["create_channel_endpoint_admin_channels_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/admin/channels/{channel_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        /**
+         * Update Channel Endpoint
+         * @description 部分更新頻道欄位；只有明確帶到的欄位才會被改動（exclude_unset）。
+         *
+         *     不先查存在性——update_channel 對不存在的 id 是無害 no-op（fields 為空時
+         *     甚至不發查詢），最終用 get_channel 的結果同時判斷「更新完成」與「找不到
+         *     就 404」，省一趟查詢。update_channel 的 SET 目標欄位就是 channel_id 本身，
+         *     不像 topic PATCH 有「topic 是否真的屬於這個 channel」的歸屬疑慮。
+         */
+        patch: operations["update_channel_endpoint_admin_channels__channel_id__patch"];
+        trace?: never;
+    };
+    "/admin/channels/{channel_id}/topics": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List Channel Topics Endpoint
+         * @description 該頻道的選題庫，可選依 status（candidate/scheduled/published/rejected/stale）過濾。
+         */
+        get: operations["list_channel_topics_endpoint_admin_channels__channel_id__topics_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/admin/channels/{channel_id}/topics/{topic_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        /**
+         * Update Channel Topic Endpoint
+         * @description 管理員事後否決（rejected）或復活（candidate）選題，或修正選題文字。
+         *
+         *     先查 topic_id 是否真的屬於 channel_id 再寫入——update_topic_status 只認
+         *     topic_id（不吃 channel_id 做範圍限制），若不先驗證歸屬，URL 帶錯
+         *     channel_id 也會直接改到別頻道的選題，等寫完才發現就太遲了。
+         */
+        patch: operations["update_channel_topic_endpoint_admin_channels__channel_id__topics__topic_id__patch"];
+        trace?: never;
+    };
+    "/admin/channels/{channel_id}/plan": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Plan Channel Endpoint
+         * @description 手動觸發該頻道的選題。API process 不做外部 I/O（不直接呼叫選題 LLM），
+         *     只入 control 佇列，實際選題由 worker 執行（仿 POST /admin/eps/generate）。
+         */
+        post: operations["plan_channel_endpoint_admin_channels__channel_id__plan_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/admin/channels/{channel_id}/cover": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Upload Channel Cover
+         * @description 封面上傳：不用 multipart（省一個 python-multipart 依賴），前端直接以檔案
+         *     bytes 當 body 送出：
+         *
+         *         fetch(url, { method: 'POST', body: file,
+         *                       headers: { 'Content-Type': file.type, 'X-Admin-Token': token } })
+         *
+         *     Trust boundary 驗證（全部要過，一項都不能省）：
+         *       1. 頻道必須存在（404）
+         *       2. body 非空（400）
+         *       3. 大小不超過 settings.channel_cover_max_bytes（413）
+         *       4. content-type 落在 allowlist，明確排除 svg（400）
+         *       5. 宣告的 content-type 與實際 magic bytes 一致（400）
+         *
+         *     ponytail: 原檔直存不產縮圖，列表小圖也載全尺寸；真的變慢再上 Pillow 產多尺寸。
+         */
+        post: operations["upload_channel_cover_admin_channels__channel_id__cover_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -544,10 +795,13 @@ export interface components {
             sourceSentenceZh?: string | null;
         };
         /**
-         * AdminEpisode
-         * @description admin debug 用集數清單項。hasAudio 用 audio_r2_key 是否已寫入代理生成完成訊號。
+         * AdminEpisodeStats
+         * @description 單集數據頁一列：內容身分 + 播放／聽完／收藏 + 生成成本與耗時。
+         *
+         *     listenerCount／favoriteCount 是即時跨表統計，playCount 是累積計數器
+         *     （見 episodes.play_count，只從 migration 0023 部署後起算，無歷史）。
          */
-        AdminEpisode: {
+        AdminEpisodeStats: {
             /** Id */
             id: string;
             /** Title */
@@ -565,11 +819,6 @@ export interface components {
              */
             isFree: boolean;
             /**
-             * Isfeatured
-             * @default false
-             */
-            isFeatured: boolean;
-            /**
              * Episodeno
              * @default 0
              */
@@ -581,18 +830,67 @@ export interface components {
             publishedAt: string;
             /** Createdat */
             createdAt: string;
-            /**
-             * Freshnessclass
-             * @default evergreen
-             */
-            freshnessClass: string;
-            /** Expiresat */
-            expiresAt?: string | null;
+            /** Channelname */
+            channelName?: string | null;
             /**
              * Hasaudio
              * @default false
              */
             hasAudio: boolean;
+            /**
+             * Playcount
+             * @default 0
+             */
+            playCount: number;
+            /**
+             * Listenercount
+             * @default 0
+             */
+            listenerCount: number;
+            /**
+             * Favoritecount
+             * @default 0
+             */
+            favoriteCount: number;
+            /**
+             * Inputtokens
+             * @default 0
+             */
+            inputTokens: number;
+            /**
+             * Outputtokens
+             * @default 0
+             */
+            outputTokens: number;
+            /** Wallms */
+            wallMs?: number | null;
+            /** Stages */
+            stages?: components["schemas"]["StageMetric"][];
+        };
+        /** AdminEpisodeStatsResponse */
+        AdminEpisodeStatsResponse: {
+            /**
+             * Episodecount
+             * @default 0
+             */
+            episodeCount: number;
+            /**
+             * Totalinputtokens
+             * @default 0
+             */
+            totalInputTokens: number;
+            /**
+             * Totaloutputtokens
+             * @default 0
+             */
+            totalOutputTokens: number;
+            /**
+             * Totalplaycount
+             * @default 0
+             */
+            totalPlayCount: number;
+            /** Items */
+            items?: components["schemas"]["AdminEpisodeStats"][];
         };
         /**
          * AdminEpsGenerateBody
@@ -667,51 +965,6 @@ export interface components {
             /** Totalmessages */
             totalMessages?: number | null;
         };
-        /** AdminTokenUsageItem */
-        AdminTokenUsageItem: {
-            /** Slug */
-            slug: string;
-            /** Title */
-            title: string;
-            /**
-             * Inputtokens
-             * @default 0
-             */
-            inputTokens: number;
-            /**
-             * Outputtokens
-             * @default 0
-             */
-            outputTokens: number;
-            /** Createdat */
-            createdAt: string;
-            /** Generationstartedat */
-            generationStartedAt?: string | null;
-            /** Generationfinishedat */
-            generationFinishedAt?: string | null;
-            /** Stages */
-            stages?: components["schemas"]["StageMetric"][];
-        };
-        /** AdminTokenUsageResponse */
-        AdminTokenUsageResponse: {
-            /**
-             * Totalinputtokens
-             * @default 0
-             */
-            totalInputTokens: number;
-            /**
-             * Totaloutputtokens
-             * @default 0
-             */
-            totalOutputTokens: number;
-            /**
-             * Episodecount
-             * @default 0
-             */
-            episodeCount: number;
-            /** Items */
-            items?: components["schemas"]["AdminTokenUsageItem"][];
-        };
         /** ApiResponse[AccountInfo] */
         ApiResponse_AccountInfo_: {
             /** Ok */
@@ -726,6 +979,13 @@ export interface components {
             data?: components["schemas"]["Activity"] | null;
             error?: components["schemas"]["ErrorBody"] | null;
         };
+        /** ApiResponse[AdminEpisodeStatsResponse] */
+        ApiResponse_AdminEpisodeStatsResponse_: {
+            /** Ok */
+            ok: boolean;
+            data?: components["schemas"]["AdminEpisodeStatsResponse"] | null;
+            error?: components["schemas"]["ErrorBody"] | null;
+        };
         /** ApiResponse[AdminEpsGenerateResponse] */
         ApiResponse_AdminEpsGenerateResponse_: {
             /** Ok */
@@ -733,11 +993,32 @@ export interface components {
             data?: components["schemas"]["AdminEpsGenerateResponse"] | null;
             error?: components["schemas"]["ErrorBody"] | null;
         };
-        /** ApiResponse[AdminTokenUsageResponse] */
-        ApiResponse_AdminTokenUsageResponse_: {
+        /** ApiResponse[ChannelPlanResponse] */
+        ApiResponse_ChannelPlanResponse_: {
             /** Ok */
             ok: boolean;
-            data?: components["schemas"]["AdminTokenUsageResponse"] | null;
+            data?: components["schemas"]["ChannelPlanResponse"] | null;
+            error?: components["schemas"]["ErrorBody"] | null;
+        };
+        /** ApiResponse[ChannelPublic] */
+        ApiResponse_ChannelPublic_: {
+            /** Ok */
+            ok: boolean;
+            data?: components["schemas"]["ChannelPublic"] | null;
+            error?: components["schemas"]["ErrorBody"] | null;
+        };
+        /** ApiResponse[ChannelTopic] */
+        ApiResponse_ChannelTopic_: {
+            /** Ok */
+            ok: boolean;
+            data?: components["schemas"]["ChannelTopic"] | null;
+            error?: components["schemas"]["ErrorBody"] | null;
+        };
+        /** ApiResponse[Channel] */
+        ApiResponse_Channel_: {
+            /** Ok */
+            ok: boolean;
+            data?: components["schemas"]["Channel"] | null;
             error?: components["schemas"]["ErrorBody"] | null;
         };
         /** ApiResponse[DailyOrder] */
@@ -807,20 +1088,36 @@ export interface components {
             } | null;
             error?: components["schemas"]["ErrorBody"] | null;
         };
-        /** ApiResponse[list[AdminEpisode]] */
-        ApiResponse_list_AdminEpisode__: {
-            /** Ok */
-            ok: boolean;
-            /** Data */
-            data?: components["schemas"]["AdminEpisode"][] | null;
-            error?: components["schemas"]["ErrorBody"] | null;
-        };
         /** ApiResponse[list[AdminJobQueue]] */
         ApiResponse_list_AdminJobQueue__: {
             /** Ok */
             ok: boolean;
             /** Data */
             data?: components["schemas"]["AdminJobQueue"][] | null;
+            error?: components["schemas"]["ErrorBody"] | null;
+        };
+        /** ApiResponse[list[ChannelPublic]] */
+        ApiResponse_list_ChannelPublic__: {
+            /** Ok */
+            ok: boolean;
+            /** Data */
+            data?: components["schemas"]["ChannelPublic"][] | null;
+            error?: components["schemas"]["ErrorBody"] | null;
+        };
+        /** ApiResponse[list[ChannelTopic]] */
+        ApiResponse_list_ChannelTopic__: {
+            /** Ok */
+            ok: boolean;
+            /** Data */
+            data?: components["schemas"]["ChannelTopic"][] | null;
+            error?: components["schemas"]["ErrorBody"] | null;
+        };
+        /** ApiResponse[list[Channel]] */
+        ApiResponse_list_Channel__: {
+            /** Ok */
+            ok: boolean;
+            /** Data */
+            data?: components["schemas"]["Channel"][] | null;
             error?: components["schemas"]["ErrorBody"] | null;
         };
         /** ApiResponse[list[DailyOrder]] */
@@ -839,6 +1136,14 @@ export interface components {
             data?: components["schemas"]["EpisodeListItem"][] | null;
             error?: components["schemas"]["ErrorBody"] | null;
         };
+        /** ApiResponse[list[RecommendedEpisode]] */
+        ApiResponse_list_RecommendedEpisode__: {
+            /** Ok */
+            ok: boolean;
+            /** Data */
+            data?: components["schemas"]["RecommendedEpisode"][] | null;
+            error?: components["schemas"]["ErrorBody"] | null;
+        };
         /** ApiResponse[list[VocabItem]] */
         ApiResponse_list_VocabItem__: {
             /** Ok */
@@ -854,6 +1159,188 @@ export interface components {
             /** Data */
             data?: string[] | null;
             error?: components["schemas"]["ErrorBody"] | null;
+        };
+        /**
+         * Channel
+         * @description Admin 頻道管理用完整視圖：含經營指標（episodeCount/candidateCount）。
+         *
+         *     themePrompt 是給選題 LLM 的系統提示，只在這個 admin 視圖出現；使用者端
+         *     一律走 ChannelPublic（刻意不含這個欄位）。coverImageUrl 是簽章後的 URL，
+         *     不是 channels.cover_r2_key 原始值——跟 Episode.audio_url 只對外給簽章
+         *     URL 同精神，簽章由 router 層呼叫 r2.presigned_get_url 產生。
+         */
+        Channel: {
+            /** Id */
+            id: string;
+            /** Slug */
+            slug: string;
+            /** Name */
+            name: string;
+            /** Description */
+            description?: string | null;
+            /** Themeprompt */
+            themePrompt: string;
+            /** Topic */
+            topic: string;
+            /**
+             * Topictype
+             * @default evergreen
+             */
+            topicType: string;
+            /**
+             * Lengthtier
+             * @default medium
+             */
+            lengthTier: string;
+            /**
+             * Cefrlevel
+             * @default B1
+             */
+            cefrLevel: string;
+            /**
+             * Targetintervaldays
+             * @default 3
+             */
+            targetIntervalDays: number;
+            /**
+             * Status
+             * @default active
+             */
+            status: string;
+            /** Coverimageurl */
+            coverImageUrl?: string | null;
+            /** Lastpublishedat */
+            lastPublishedAt?: string | null;
+            /**
+             * Episodecount
+             * @default 0
+             */
+            episodeCount: number;
+            /**
+             * Candidatecount
+             * @default 0
+             */
+            candidateCount: number;
+        };
+        /**
+         * ChannelPlanResponse
+         * @description 手動觸發選題已排入 control 佇列的確認資訊。202 僅表示已入列，實際選題
+         *     由 worker 執行（同 AdminEpsGenerateResponse 的 202 語意）。
+         */
+        ChannelPlanResponse: {
+            /** Channelid */
+            channelId: string;
+            /** Msgid */
+            msgId: number;
+            /**
+             * Status
+             * @default queued
+             * @constant
+             */
+            status: "queued";
+        };
+        /**
+         * ChannelPublic
+         * @description 使用者端頻道卡片：刻意不含 themePrompt（那是內部選題指令，不對外曝光）。
+         */
+        ChannelPublic: {
+            /** Slug */
+            slug: string;
+            /** Name */
+            name: string;
+            /** Description */
+            description?: string | null;
+            /** Topic */
+            topic: string;
+            /** Coverimageurl */
+            coverImageUrl?: string | null;
+            /**
+             * Episodecount
+             * @default 0
+             */
+            episodeCount: number;
+        };
+        /**
+         * ChannelTopic
+         * @description 頻道選題庫單筆項目：admin 選題審核清單用（candidate/scheduled/...）。
+         */
+        ChannelTopic: {
+            /** Id */
+            id: string;
+            /** Channelid */
+            channelId: string;
+            /** Canonicaltopic */
+            canonicalTopic: string;
+            /** Angle */
+            angle: string;
+            /** Rationale */
+            rationale?: string | null;
+            /**
+             * Score
+             * @default 0
+             */
+            score: number;
+            /**
+             * Status
+             * @default candidate
+             */
+            status: string;
+            /** Parentepisodeid */
+            parentEpisodeId?: string | null;
+            /** Episodeid */
+            episodeId?: string | null;
+            /** Createdat */
+            createdAt: string;
+            /** Decidedat */
+            decidedAt?: string | null;
+        };
+        /**
+         * CreateChannelBody
+         * @description 建立頻道；欄位邊界對齊 migration 0021 與 shared.db.channels.create_channel 簽名。
+         */
+        CreateChannelBody: {
+            /** Slug */
+            slug: string;
+            /** Name */
+            name: string;
+            /** Themeprompt */
+            themePrompt: string;
+            /**
+             * Topic
+             * @enum {string}
+             */
+            topic: "tech" | "business" | "culture" | "science";
+            /** Description */
+            description?: string | null;
+            /**
+             * Topictype
+             * @default evergreen
+             * @enum {string}
+             */
+            topicType: "news" | "product" | "evergreen" | "skill";
+            /**
+             * Lengthtier
+             * @default medium
+             * @enum {string}
+             */
+            lengthTier: "short" | "medium" | "long";
+            /**
+             * Cefrlevel
+             * @default B1
+             * @enum {string}
+             */
+            cefrLevel: "A2" | "B1" | "B2";
+            /**
+             * Targetintervaldays
+             * @default 3
+             */
+            targetIntervalDays: number;
+            /**
+             * Status
+             * @default active
+             * @enum {string}
+             */
+            status: "active" | "paused" | "archived";
         };
         /** Cue */
         Cue: {
@@ -1118,6 +1605,54 @@ export interface components {
             endpoint: string;
         };
         /**
+         * RecommendedEpisode
+         * @description 首頁「根據你追蹤的頻道」用：EpisodeListItem 加頻道身分兩欄。
+         */
+        RecommendedEpisode: {
+            /** Id */
+            id: string;
+            /** Title */
+            title: string;
+            /**
+             * Titlezh
+             * @default
+             */
+            titleZh: string;
+            /** Topic */
+            topic: string;
+            /**
+             * Cefrlevel
+             * @default B1
+             */
+            cefrLevel: string;
+            /** Covericon */
+            coverIcon?: string | null;
+            /**
+             * Isfree
+             * @default false
+             */
+            isFree: boolean;
+            /**
+             * Isfeatured
+             * @default false
+             */
+            isFeatured: boolean;
+            /**
+             * Episode
+             * @default 0
+             */
+            episode: number;
+            /**
+             * Publishedat
+             * @default
+             */
+            publishedAt: string;
+            /** Channelslug */
+            channelSlug: string;
+            /** Channelname */
+            channelName: string;
+        };
+        /**
          * SaveDailyOrderBody
          * @description saveDailyOrder(order)。前端送完整 DailyOrder；date 為 key。
          */
@@ -1238,6 +1773,47 @@ export interface components {
              * @default 1
              */
             attempt: number;
+        };
+        /**
+         * UpdateChannelBody
+         * @description 更新頻道（PATCH 局部更新）：全 optional，只有明確帶到的欄位才會被送進
+         *     update_channel(**fields)（router 端用 model_dump(exclude_unset=True) 篩選，
+         *     未帶到的欄位維持原值不動）。
+         */
+        UpdateChannelBody: {
+            /** Slug */
+            slug?: string | null;
+            /** Name */
+            name?: string | null;
+            /** Description */
+            description?: string | null;
+            /** Themeprompt */
+            themePrompt?: string | null;
+            /** Topic */
+            topic?: ("tech" | "business" | "culture" | "science") | null;
+            /** Topictype */
+            topicType?: ("news" | "product" | "evergreen" | "skill") | null;
+            /** Lengthtier */
+            lengthTier?: ("short" | "medium" | "long") | null;
+            /** Cefrlevel */
+            cefrLevel?: ("A2" | "B1" | "B2") | null;
+            /** Targetintervaldays */
+            targetIntervalDays?: number | null;
+            /** Status */
+            status?: ("active" | "paused" | "archived") | null;
+        };
+        /**
+         * UpdateChannelTopicBody
+         * @description 管理員事後否決（rejected）或復活（candidate）候選選題，或修正選題文字。
+         *
+         *     status 刻意只收窄成這兩態——scheduled/published/stale 是生成 pipeline
+         *     自動轉移的狀態，不開放 admin 直接改。兩欄皆可選、可只給一個。
+         */
+        UpdateChannelTopicBody: {
+            /** Status */
+            status?: ("candidate" | "rejected") | null;
+            /** Canonicaltopic */
+            canonicalTopic?: string | null;
         };
         /**
          * UpdateSettingsBody
@@ -1912,7 +2488,9 @@ export interface operations {
     };
     list_episodes_episodes_get: {
         parameters: {
-            query?: never;
+            query?: {
+                channel?: string | null;
+            };
             header?: {
                 authorization?: string | null;
             };
@@ -1928,6 +2506,37 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ApiResponse_list_EpisodeListItem__"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_recommended_episodes_episodes_recommended_get: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiResponse_list_RecommendedEpisode__"];
                 };
             };
             /** @description Validation Error */
@@ -1961,6 +2570,187 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ApiResponse_Episode_"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    record_episode_play_episodes__slug__play_post: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path: {
+                slug: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiResponse_NoneType_"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_channels_endpoint_channels_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiResponse_list_ChannelPublic__"];
+                };
+            };
+        };
+    };
+    list_my_subscriptions_channels_subscriptions_get: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiResponse_list_ChannelPublic__"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_channel_endpoint_channels__slug__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                slug: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiResponse_ChannelPublic_"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    subscribe_channel_channels__slug__subscribe_post: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path: {
+                slug: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiResponse_NoneType_"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    unsubscribe_channel_channels__slug__subscribe_delete: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path: {
+                slug: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiResponse_NoneType_"];
                 };
             };
             /** @description Validation Error */
@@ -2135,7 +2925,7 @@ export interface operations {
             };
         };
     };
-    list_admin_episodes_admin_episodes_get: {
+    get_admin_episode_stats_admin_episodes_get: {
         parameters: {
             query?: never;
             header?: {
@@ -2152,7 +2942,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["ApiResponse_list_AdminEpisode__"];
+                    "application/json": components["schemas"]["ApiResponse_AdminEpisodeStatsResponse_"];
                 };
             };
             /** @description Validation Error */
@@ -2197,37 +2987,6 @@ export interface operations {
             };
         };
     };
-    get_admin_token_usage_admin_token_usage_get: {
-        parameters: {
-            query?: never;
-            header?: {
-                "X-Admin-Token"?: string | null;
-            };
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ApiResponse_AdminTokenUsageResponse_"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
     generate_admin_episode_admin_eps_generate_post: {
         parameters: {
             query?: never;
@@ -2250,6 +3009,250 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ApiResponse_AdminEpsGenerateResponse_"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_channels_endpoint_admin_channels_get: {
+        parameters: {
+            query?: {
+                status?: string | null;
+            };
+            header?: {
+                "X-Admin-Token"?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiResponse_list_Channel__"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    create_channel_endpoint_admin_channels_post: {
+        parameters: {
+            query?: never;
+            header?: {
+                "X-Admin-Token"?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CreateChannelBody"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiResponse_Channel_"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    update_channel_endpoint_admin_channels__channel_id__patch: {
+        parameters: {
+            query?: never;
+            header?: {
+                "X-Admin-Token"?: string | null;
+            };
+            path: {
+                channel_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["UpdateChannelBody"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiResponse_Channel_"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_channel_topics_endpoint_admin_channels__channel_id__topics_get: {
+        parameters: {
+            query?: {
+                status?: string | null;
+            };
+            header?: {
+                "X-Admin-Token"?: string | null;
+            };
+            path: {
+                channel_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiResponse_list_ChannelTopic__"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    update_channel_topic_endpoint_admin_channels__channel_id__topics__topic_id__patch: {
+        parameters: {
+            query?: never;
+            header?: {
+                "X-Admin-Token"?: string | null;
+            };
+            path: {
+                channel_id: string;
+                topic_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["UpdateChannelTopicBody"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiResponse_ChannelTopic_"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    plan_channel_endpoint_admin_channels__channel_id__plan_post: {
+        parameters: {
+            query?: never;
+            header?: {
+                "X-Admin-Token"?: string | null;
+            };
+            path: {
+                channel_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiResponse_ChannelPlanResponse_"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    upload_channel_cover_admin_channels__channel_id__cover_post: {
+        parameters: {
+            query?: never;
+            header?: {
+                "X-Admin-Token"?: string | null;
+            };
+            path: {
+                channel_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiResponse_Channel_"];
                 };
             };
             /** @description Validation Error */

@@ -190,24 +190,70 @@ class EpisodeListItem(CamelModel):
     published_at: str = ""
 
 
-# ── Ops / admin 契約（T7，X-Admin-Token 驗證，internal debug 用）───────
+class RecommendedEpisode(EpisodeListItem):
+    """首頁「根據你追蹤的頻道」用：EpisodeListItem 加頻道身分兩欄。"""
+
+    channel_slug: str
+    channel_name: str
 
 
-class AdminEpisode(CamelModel):
-    """admin debug 用集數清單項。hasAudio 用 audio_r2_key 是否已寫入代理生成完成訊號。"""
+# ── 頻道（Channel）機制 ─────────────────────────────────────────
 
-    id: str  # 對外用 slug
-    title: str
+
+class Channel(CamelModel):
+    """Admin 頻道管理用完整視圖：含經營指標（episodeCount/candidateCount）。
+
+    themePrompt 是給選題 LLM 的系統提示，只在這個 admin 視圖出現；使用者端
+    一律走 ChannelPublic（刻意不含這個欄位）。coverImageUrl 是簽章後的 URL，
+    不是 channels.cover_r2_key 原始值——跟 Episode.audio_url 只對外給簽章
+    URL 同精神，簽章由 router 層呼叫 r2.presigned_get_url 產生。
+    """
+
+    id: str
+    slug: str
+    name: str
+    description: str | None = None
+    theme_prompt: str
     topic: str
+    topic_type: str = "evergreen"
+    length_tier: str = "medium"
     cefr_level: str = "B1"
-    is_free: bool = False
-    is_featured: bool = False
-    episode_no: int = 0
-    published_at: str = ""
+    target_interval_days: int = 3
+    status: str = "active"
+    cover_image_url: str | None = None
+    last_published_at: str | None = None
+    episode_count: int = 0
+    candidate_count: int = 0
+
+
+class ChannelTopic(CamelModel):
+    """頻道選題庫單筆項目：admin 選題審核清單用（candidate/scheduled/...）。"""
+
+    id: str
+    channel_id: str
+    canonical_topic: str
+    angle: str
+    rationale: str | None = None
+    score: float = 0.0
+    status: str = "candidate"
+    parent_episode_id: str | None = None
+    episode_id: str | None = None
     created_at: str
-    freshness_class: str = "evergreen"
-    expires_at: str | None = None
-    has_audio: bool = False
+    decided_at: str | None = None
+
+
+class ChannelPublic(CamelModel):
+    """使用者端頻道卡片：刻意不含 themePrompt（那是內部選題指令，不對外曝光）。"""
+
+    slug: str
+    name: str
+    description: str | None = None
+    topic: str
+    cover_image_url: str | None = None
+    episode_count: int = 0
+
+
+# ── Ops / admin 契約（T7，X-Admin-Token 驗證，internal debug 用）───────
 
 
 class AdminJobQueue(CamelModel):
@@ -232,22 +278,38 @@ class StageMetric(CamelModel):
     attempt: int = 1
 
 
-class AdminTokenUsageItem(CamelModel):
-    slug: str
+class AdminEpisodeStats(CamelModel):
+    """單集數據頁一列：內容身分 + 播放／聽完／收藏 + 生成成本與耗時。
+
+    listenerCount／favoriteCount 是即時跨表統計，playCount 是累積計數器
+    （見 episodes.play_count，只從 migration 0023 部署後起算，無歷史）。
+    """
+
+    id: str  # 對外用 slug
     title: str
+    topic: str
+    cefr_level: str = "B1"
+    is_free: bool = False
+    episode_no: int = 0
+    published_at: str = ""
+    created_at: str
+    channel_name: str | None = None
+    has_audio: bool = False
+    play_count: int = 0
+    listener_count: int = 0
+    favorite_count: int = 0
     input_tokens: int = 0
     output_tokens: int = 0
-    created_at: str
-    generation_started_at: str | None = None
-    generation_finished_at: str | None = None
+    wall_ms: int | None = None
     stages: list[StageMetric] = Field(default_factory=list)
 
 
-class AdminTokenUsageResponse(CamelModel):
+class AdminEpisodeStatsResponse(CamelModel):
+    episode_count: int = 0
     total_input_tokens: int = 0
     total_output_tokens: int = 0
-    episode_count: int = 0
-    items: list[AdminTokenUsageItem] = Field(default_factory=list)
+    total_play_count: int = 0
+    items: list[AdminEpisodeStats] = Field(default_factory=list)
 
 
 class AdminEpsGenerateResponse(CamelModel):

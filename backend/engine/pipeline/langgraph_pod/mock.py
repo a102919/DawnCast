@@ -45,6 +45,8 @@ class _EpisodeRow:
     input_tokens: int = 0
     output_tokens: int = 0
     is_free: bool = True
+    channel_id: str | None = None
+    episode_no: int | None = None
     audio_key: str | None = None
     audio_keys: list[str] = field(default_factory=list)
     srt_key: str | None = None
@@ -162,6 +164,8 @@ class MockRepo:
         generation_started_at: datetime | None = None,
         gen_metrics: dict[str, Any] | None = None,
         research_metrics: dict[str, Any] | None = None,
+        channel_id: str | None = None,
+        episode_no: int | None = None,
     ) -> tuple[str, bool]:
         if self.fail_upsert:
             raise RuntimeError("mock: upsert_episode forced failure")
@@ -187,6 +191,8 @@ class MockRepo:
             input_tokens=input_tokens,
             output_tokens=output_tokens,
             is_free=is_free,
+            channel_id=channel_id,
+            episode_no=episode_no,
             sources=[dict(s) for s in (sources or [])],
             generation_started_at=generation_started_at,
             gen_metrics=dict(gen_metrics or {}),

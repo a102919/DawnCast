@@ -2,10 +2,10 @@ import { BrowserRouter, Routes, Route, Navigate, useLocation } from 'react-route
 import { AnimatePresence, motion } from 'framer-motion'
 import { Toaster } from 'sonner'
 import { useEffect, type ReactNode } from 'react'
-import { AuthProvider, ActivityProvider, EpisodesProvider, PlayerProvider, VocabProvider, SettingsProvider, FavoritesProvider, DailyOrderProvider, useAuth, usePlayer, useActivity } from './state'
-import { TopBar, BottomNav } from './components/layout'
+import { AuthProvider, ActivityProvider, EpisodesProvider, PlayerProvider, VocabProvider, SettingsProvider, FavoritesProvider, ChannelSubscriptionsProvider, DailyOrderProvider, useAuth, usePlayer, useActivity } from './state'
+import { TopBar, BottomNav, isImmersivePath } from './components/layout'
 import { MiniPlayer } from './components/player'
-import { HomeRoute, PlayerRoute, VocabRoute, FavoritesRoute, SettingsRoute, ProgressRoute, FlashcardRoute, DailyRoute, LoginRoute, AdminRoute } from './routes'
+import { HomeRoute, PlayerRoute, VocabRoute, FavoritesRoute, SettingsRoute, ProgressRoute, FlashcardRoute, DailyRoute, ChannelsRoute, ChannelDetailRoute, LoginRoute, AdminLayout, AdminEpisodesPage, AdminChannelsPage } from './routes'
 import { useSprings } from './lib/motion'
 import { UpdatePrompt } from './components/UpdatePrompt'
 import { PushPrompt } from './components/PushPrompt'
@@ -24,6 +24,9 @@ function AnimatedRoutes() {
   const location = useLocation()
   const { gentle } = useSprings()
   const isPlayer = location.pathname.startsWith('/player')
+  // /admin/* 自帶側邊導覽，子路由切換是同一個「頁面」內部換內容，不該讓整棵樹
+  // 隨每次分頁切換淡出重掛——側邊欄會跟著閃一下。收斂成單一 key。
+  const animKey = location.pathname.startsWith('/admin') ? '/admin' : location.pathname
 
   useEffect(() => {
     window.scrollTo(0, 0)
@@ -32,7 +35,7 @@ function AnimatedRoutes() {
   return (
     <AnimatePresence mode="wait">
       <motion.div
-        key={location.pathname}
+        key={animKey}
         custom={isPlayer}
         variants={pageVariants}
         initial="initial"
@@ -47,11 +50,17 @@ function AnimatedRoutes() {
           <Route path="/vocab" element={<VocabRoute />} />
           <Route path="/favorites" element={<FavoritesRoute />} />
           <Route path="/daily" element={<DailyRoute />} />
+          <Route path="/channels" element={<ChannelsRoute />} />
+          <Route path="/channels/:slug" element={<ChannelDetailRoute />} />
           <Route path="/settings" element={<SettingsRoute />} />
           <Route path="/progress" element={<ProgressRoute />} />
           <Route path="/flashcards" element={<FlashcardRoute />} />
           <Route path="/login" element={<LoginRoute />} />
-          <Route path="/admin" element={<AdminRoute />} />
+          <Route path="/admin" element={<AdminLayout />}>
+            <Route index element={<Navigate to="episodes" replace />} />
+            <Route path="episodes" element={<AdminEpisodesPage />} />
+            <Route path="channels" element={<AdminChannelsPage />} />
+          </Route>
         </Routes>
       </motion.div>
     </AnimatePresence>
@@ -61,7 +70,7 @@ function AnimatedRoutes() {
 function AuthenticatedContent() {
   const { pathname } = useLocation()
   const { currentEpisode } = usePlayer()
-  const isImmersive = pathname === '/login'
+  const isImmersive = isImmersivePath(pathname)
   const isPlayer = pathname.startsWith('/player')
   const hasMiniPlayer = currentEpisode !== null && !isPlayer && !isImmersive
 
@@ -109,9 +118,11 @@ function AuthenticatedShell() {
           <PlayerProviderWithActivity>
             <VocabProvider>
               <FavoritesProvider>
-                <DailyOrderProvider>
-                  <AuthenticatedContent />
-                </DailyOrderProvider>
+                <ChannelSubscriptionsProvider>
+                  <DailyOrderProvider>
+                    <AuthenticatedContent />
+                  </DailyOrderProvider>
+                </ChannelSubscriptionsProvider>
               </FavoritesProvider>
             </VocabProvider>
           </PlayerProviderWithActivity>

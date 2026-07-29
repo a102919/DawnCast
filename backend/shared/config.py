@@ -172,6 +172,21 @@ class Settings(BaseSettings):
     long_pause_sec: float = 0.7
     sample_rate: int = 24000
 
+    # ── 頻道（Channel）機制 ──────────────────────────────────
+    # 每日最多產幾集：成本天花板。pick_daily_topics 的 limit 參數吃這個值，
+    # 候選不足時自然回少於此數（甚至 0），這裡只設「上限」不是「目標」。
+    channel_daily_max_slots: int = 4
+    # 候選主題可被排程的最低分數門檻。選題 LLM 打分低於此值的主題永遠留在
+    # candidate 狀態陪跑，不會被 pick_daily_topics 選中，也不算數量不足的錯誤。
+    channel_min_topic_score: float = 0.6
+    # 每頻道選題庫的目標存量：達標就跳過本輪選題，不為了「湊庫存」白燒 LLM
+    # token（見 count_candidates）。5 大約是「兩週份」的緩衝（多數頻道
+    # target_interval_days 落在 2~7 天）。
+    channel_backlog_target: int = 5
+    # 封面上傳大小上限（bytes）。2MB 足夠一張高解析度封面，同時擋住使用者
+    # 誤傳原始相機檔案把 R2 儲存成本養大。
+    channel_cover_max_bytes: int = 2 * 1024 * 1024
+
     # ── 寫稿品質（LangGraph pod 用）────────────────────────
     # 寫稿引擎預設用的 CEFR 等級（pod 會帶進 prompt）
     cefr_level: str = "B1"

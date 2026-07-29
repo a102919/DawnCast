@@ -2,15 +2,21 @@ import { z } from 'zod'
 import type {
   AccountInfo,
   Activity,
-  AdminEpsGenerateInput,
-  AdminEpsGenerateResponse,
-  AdminTokenUsageResponse,
+  AdminEpisodeStats,
+  AdminEpisodeStatsResponse,
   Api,
+  Channel,
+  ChannelPlanResponse,
+  ChannelPublic,
+  ChannelTopic,
+  CreateChannelInput,
   DailyOrder,
   DailyOrderStatus,
   DictEntry,
   PushSubscriptionInput,
+  RecommendedEpisode,
   Settings,
+  UpdateChannelInput,
   VocabItem,
 } from './types'
 import type { components } from './generated'
@@ -45,20 +51,64 @@ const LAST_ORDER_DATE_KEY = 'dawncast:lastOrderDate'
 
 // Admin token：與一般 user JWT 完全獨立的認證（後端 router 用常數時間比對）。
 // 不放 env（會隨 build 散佈到 client bundle，公開站暴露 admin 風險），
-// 不放程式碼（單一 admin 也不需要 build-time injection），改在 AdminRoute UI 貼上、
-// 存 localStorage。見 AdminRoute.tsx / docs/lessons.md。
+// 不放程式碼（單一 admin 也不需要 build-time injection），改在 AdminTokenCard UI 貼上、
+// 存 localStorage。見 routes/admin/AdminTokenCard.tsx。
 const ADMIN_TOKEN_KEY = 'dawncast:adminToken'
+// 明文久存 localStorage 暴露面大，至少加到期時間讓權杖不會無限期留在瀏覽器裡。
+const ADMIN_TOKEN_TTL_MS = 24 * 60 * 60 * 1000
+
+interface StoredAdminToken {
+  readonly token: string
+  readonly expiresAt: number
+}
+
+const StoredAdminTokenSchema = z.object({
+  token: z.string().min(1),
+  expiresAt: z.number(),
+}) satisfies z.ZodType<StoredAdminToken>
+
+/** localStorage 內容是外部輸入（使用者可自行改寫），一律 Zod parse；
+ *  壞掉的 JSON 或不合格式一律當成「沒有權杖」。 */
+function parseStoredAdminToken(raw: string): StoredAdminToken | null {
+  try {
+    const parsed = StoredAdminTokenSchema.safeParse(JSON.parse(raw))
+    return parsed.success ? parsed.data : null
+  } catch {
+    return null
+  }
+}
 
 export function getAdminToken(): string | null {
-  return localStorage.getItem(ADMIN_TOKEN_KEY)
+  const raw = localStorage.getItem(ADMIN_TOKEN_KEY)
+  if (!raw) return null
+
+  // 格式壞掉與已過期走同一條路：清掉再回 null，不把爛資料留在瀏覽器裡。
+  const stored = parseStoredAdminToken(raw)
+  if (!stored || Date.now() > stored.expiresAt) {
+    localStorage.removeItem(ADMIN_TOKEN_KEY)
+    return null
+  }
+  return stored.token
 }
 
 export function setAdminToken(token: string): void {
-  localStorage.setItem(ADMIN_TOKEN_KEY, token)
+  const stored: StoredAdminToken = { token, expiresAt: Date.now() + ADMIN_TOKEN_TTL_MS }
+  localStorage.setItem(ADMIN_TOKEN_KEY, JSON.stringify(stored))
 }
 
 export function clearAdminToken(): void {
   localStorage.removeItem(ADMIN_TOKEN_KEY)
+}
+
+/** admin 端點共用 header。沒 token 就地丟錯（fail-closed），不要送出去被後端回 401 才發現。
+ *  後端 ADMIN_TOKEN 是 secrets.compare_digest，header 大小寫不敏感但統一用官方慣例
+ *  X-Admin-Token 對齊 curl / 文件範例。 */
+function adminHeaders(): Record<string, string> {
+  const token = getAdminToken()
+  if (!token) {
+    throw new AppError('missing_admin_token', '尚未設定管理員權杖，請先在管理後台貼上')
+  }
+  return { 'X-Admin-Token': token }
 }
 
 // ─── Envelope 解包 ─────────────────────────────────────────────────────────
@@ -83,11 +133,18 @@ type RequestOptions = {
   readonly nullable?: boolean
   /** 額外 header（admin token 等）；與既有 Authorization 並存 */
   readonly extraHeaders?: Readonly<Record<string, string>>
+  /** 原始 body（封面上傳）：給定時不做 JSON.stringify，Content-Type 用檔案自己的 MIME。 */
+  readonly rawBody?: { readonly data: BodyInit; readonly contentType: string }
+}
+
+function requestBody(opts: RequestOptions): BodyInit | undefined {
+  if (opts.rawBody) return opts.rawBody.data
+  return opts.body === undefined ? undefined : JSON.stringify(opts.body)
 }
 
 async function request<T>(path: string, opts: RequestOptions): Promise<T> {
   const token = await getAccessToken()
-  const headers: Record<string, string> = { 'Content-Type': 'application/json' }
+  const headers: Record<string, string> = { 'Content-Type': opts.rawBody?.contentType ?? 'application/json' }
   if (token) headers.Authorization = `Bearer ${token}`
   if (opts.extraHeaders) Object.assign(headers, opts.extraHeaders)
 
@@ -99,7 +156,7 @@ async function request<T>(path: string, opts: RequestOptions): Promise<T> {
     res = await fetch(`${API_BASE_URL}${path}`, {
       method: opts.method ?? 'GET',
       headers,
-      body: opts.body === undefined ? undefined : JSON.stringify(opts.body),
+      body: requestBody(opts),
       signal: controller.signal,
     })
   } catch (err) {
@@ -301,14 +358,6 @@ const AccountInfoSchema = z.object({
   createdAt: z.string(),
 }) satisfies z.ZodType<AccountInfo> & z.ZodType<components['schemas']['AccountInfo']>
 
-// 後端 AdminEpsGenerateResponse 欄位為 camelCase（CamelModel + to_camel），
-// 直接用 generated components 對齊，避免手寫 schema 與後端漂移。
-const AdminEpsGenerateResponseSchema = z.object({
-  idempotencyKey: z.string(),
-  msgId: z.number(),
-  status: z.literal('queued'),
-}) satisfies z.ZodType<AdminEpsGenerateResponse> & z.ZodType<components['schemas']['AdminEpsGenerateResponse']>
-
 const StageMetricSchema = z.object({
   node: z.string(),
   durationMs: z.number(),
@@ -316,23 +365,94 @@ const StageMetricSchema = z.object({
   attempt: z.number(),
 }) satisfies z.ZodType<components['schemas']['StageMetric']>
 
-const AdminTokenUsageResponseSchema = z.object({
+const AdminEpisodeStatsSchema = z.object({
+  id: z.string(),
+  title: z.string(),
+  topic: z.string(),
+  cefrLevel: z.string(),
+  isFree: z.boolean(),
+  episodeNo: z.number(),
+  publishedAt: z.string(),
+  createdAt: z.string(),
+  channelName: z.string().nullable().optional(),
+  hasAudio: z.boolean(),
+  playCount: z.number(),
+  listenerCount: z.number(),
+  favoriteCount: z.number(),
+  inputTokens: z.number(),
+  outputTokens: z.number(),
+  wallMs: z.number().nullable().optional(),
+  stages: z.array(StageMetricSchema),
+}) satisfies z.ZodType<AdminEpisodeStats> & z.ZodType<components['schemas']['AdminEpisodeStats']>
+
+const AdminEpisodeStatsResponseSchema = z.object({
+  episodeCount: z.number(),
   totalInputTokens: z.number(),
   totalOutputTokens: z.number(),
+  totalPlayCount: z.number(),
+  items: z.array(AdminEpisodeStatsSchema),
+}) satisfies z.ZodType<AdminEpisodeStatsResponse> & z.ZodType<components['schemas']['AdminEpisodeStatsResponse']>
+
+const ChannelSchema = z.object({
+  id: z.string(),
+  slug: z.string(),
+  name: z.string(),
+  description: z.string().nullable().optional(),
+  themePrompt: z.string(),
+  topic: z.string(),
+  topicType: z.string(),
+  lengthTier: z.string(),
+  cefrLevel: z.string(),
+  targetIntervalDays: z.number(),
+  status: z.string(),
+  coverImageUrl: z.string().nullable().optional(),
+  lastPublishedAt: z.string().nullable().optional(),
   episodeCount: z.number(),
-  items: z.array(
-    z.object({
-      slug: z.string(),
-      title: z.string(),
-      inputTokens: z.number(),
-      outputTokens: z.number(),
-      createdAt: z.string(),
-      generationStartedAt: z.string().nullable().optional(),
-      generationFinishedAt: z.string().nullable().optional(),
-      stages: z.array(StageMetricSchema),
-    }),
-  ),
-}) satisfies z.ZodType<AdminTokenUsageResponse> & z.ZodType<components['schemas']['AdminTokenUsageResponse']>
+  candidateCount: z.number(),
+}) satisfies z.ZodType<Channel> & z.ZodType<components['schemas']['Channel']>
+
+const ChannelListSchema = z.array(ChannelSchema)
+
+const ChannelTopicSchema = z.object({
+  id: z.string(),
+  channelId: z.string(),
+  canonicalTopic: z.string(),
+  angle: z.string(),
+  rationale: z.string().nullable().optional(),
+  score: z.number(),
+  status: z.string(),
+  parentEpisodeId: z.string().nullable().optional(),
+  episodeId: z.string().nullable().optional(),
+  createdAt: z.string(),
+  decidedAt: z.string().nullable().optional(),
+}) satisfies z.ZodType<ChannelTopic> & z.ZodType<components['schemas']['ChannelTopic']>
+
+const ChannelTopicListSchema = z.array(ChannelTopicSchema)
+
+const ChannelPlanResponseSchema = z.object({
+  channelId: z.string(),
+  msgId: z.number(),
+  status: z.literal('queued'),
+}) satisfies z.ZodType<ChannelPlanResponse> & z.ZodType<components['schemas']['ChannelPlanResponse']>
+
+const ChannelPublicSchema = z.object({
+  slug: z.string(),
+  name: z.string(),
+  description: z.string().nullable().optional(),
+  topic: z.string(),
+  coverImageUrl: z.string().nullable().optional(),
+  episodeCount: z.number(),
+}) satisfies z.ZodType<ChannelPublic> & z.ZodType<components['schemas']['ChannelPublic']>
+
+const ChannelPublicListSchema = z.array(ChannelPublicSchema)
+
+// MockEpisodeSchema 的欄位 + 頻道身分兩欄，對齊後端 RecommendedEpisode 用繼承表達同一件事。
+const RecommendedEpisodeSchema = MockEpisodeSchema.extend({
+  channelSlug: z.string(),
+  channelName: z.string(),
+}) satisfies z.ZodType<RecommendedEpisode> & z.ZodType<components['schemas']['RecommendedEpisode']>
+
+const RecommendedEpisodeListSchema = z.array(RecommendedEpisodeSchema)
 
 // getEpisode / getDeliveredEpisode 共用的 EpisodeContentSchema → Episode 映射。
 function toEpisode(content: z.infer<typeof EpisodeContentSchema>): Episode {
@@ -451,8 +571,9 @@ export const httpApi: Api = {
     localStorage.setItem(LAST_ORDER_DATE_KEY, date)
   },
 
-  async listEpisodes() {
-    return request<readonly MockEpisode[]>('/episodes', { schema: EpisodeListSchema })
+  async listEpisodes(opts) {
+    const query = opts?.channel ? `?channel=${encodeURIComponent(opts.channel)}` : ''
+    return request<readonly MockEpisode[]>(`/episodes${query}`, { schema: EpisodeListSchema })
   },
 
   async getEpisode(slug) {
@@ -474,6 +595,10 @@ export const httpApi: Api = {
     )
     if (content === null) return null
     return toEpisode(content)
+  },
+
+  async recordEpisodePlay(episodeId) {
+    await request<null>(`/episodes/${encodeURIComponent(episodeId)}/play`, { method: 'POST', schema: null })
   },
 
   async triggerGenerateJob(date) {
@@ -502,30 +627,113 @@ export const httpApi: Api = {
     await request<null>('/me', { method: 'DELETE', schema: null })
   },
 
-  async triggerAdminGenerate(input: AdminEpsGenerateInput) {
-    // 沒 token 早點丟錯（fail-closed），不要送出去被後端回 401 才發現。
-    const token = getAdminToken()
-    if (!token) {
-      throw new AppError('missing_admin_token', '尚未設定管理員權杖，請先在管理後台貼上')
-    }
-    return request<AdminEpsGenerateResponse>('/admin/eps/generate', {
-      method: 'POST',
-      body: input,
-      schema: AdminEpsGenerateResponseSchema,
-      // 後端 ADMIN_TOKEN 是 secrets.compare_digest，header 大小寫不敏感但統一用
-      // 官方慣例 X-Admin-Token 對齊 curl / 文件範例。
-      extraHeaders: { 'X-Admin-Token': token },
+  async getAdminEpisodeStats() {
+    return request<AdminEpisodeStatsResponse>('/admin/episodes', {
+      schema: AdminEpisodeStatsResponseSchema,
+      extraHeaders: adminHeaders(),
     })
   },
 
-  async getAdminTokenUsage() {
-    const token = getAdminToken()
-    if (!token) {
-      throw new AppError('missing_admin_token', '尚未設定管理員權杖，請先在管理後台貼上')
-    }
-    return request<AdminTokenUsageResponse>('/admin/token-usage', {
-      schema: AdminTokenUsageResponseSchema,
-      extraHeaders: { 'X-Admin-Token': token },
+  async listAdminChannels() {
+    return request<readonly Channel[]>('/admin/channels', {
+      schema: ChannelListSchema,
+      extraHeaders: adminHeaders(),
+    })
+  },
+
+  async createAdminChannel(input: CreateChannelInput) {
+    const body = input satisfies components['schemas']['CreateChannelBody']
+    return request<Channel>('/admin/channels', {
+      method: 'POST',
+      body,
+      schema: ChannelSchema,
+      extraHeaders: adminHeaders(),
+    })
+  },
+
+  async updateAdminChannel(channelId: string, patch: UpdateChannelInput) {
+    const body = patch satisfies components['schemas']['UpdateChannelBody']
+    return request<Channel>(`/admin/channels/${encodeURIComponent(channelId)}`, {
+      method: 'PATCH',
+      body,
+      schema: ChannelSchema,
+      extraHeaders: adminHeaders(),
+    })
+  },
+
+  async uploadAdminChannelCover(channelId: string, file: File) {
+    // 後端收原始 body（省掉 python-multipart 依賴），Content-Type 就是檔案自己的 MIME。
+    // 型別／大小的把關在後端做（magic bytes + 上限）——前端擋是體驗，不是安全邊界。
+    return request<Channel>(`/admin/channels/${encodeURIComponent(channelId)}/cover`, {
+      method: 'POST',
+      rawBody: { data: file, contentType: file.type },
+      schema: ChannelSchema,
+      extraHeaders: adminHeaders(),
+    })
+  },
+
+  async planAdminChannel(channelId: string) {
+    return request<ChannelPlanResponse>(`/admin/channels/${encodeURIComponent(channelId)}/plan`, {
+      method: 'POST',
+      schema: ChannelPlanResponseSchema,
+      extraHeaders: adminHeaders(),
+    })
+  },
+
+  async listAdminChannelTopics(channelId: string, status?: string) {
+    const query = status ? `?status=${encodeURIComponent(status)}` : ''
+    return request<readonly ChannelTopic[]>(
+      `/admin/channels/${encodeURIComponent(channelId)}/topics${query}`,
+      { schema: ChannelTopicListSchema, extraHeaders: adminHeaders() },
+    )
+  },
+
+  async updateAdminChannelTopic(
+    channelId: string,
+    topicId: string,
+    patch: { readonly status?: 'candidate' | 'rejected'; readonly canonicalTopic?: string },
+  ) {
+    const body = patch satisfies components['schemas']['UpdateChannelTopicBody']
+    return request<ChannelTopic>(
+      `/admin/channels/${encodeURIComponent(channelId)}/topics/${encodeURIComponent(topicId)}`,
+      { method: 'PATCH', body, schema: ChannelTopicSchema, extraHeaders: adminHeaders() },
+    )
+  },
+
+  // 使用者端公開頻道：JWT 認證，跟上面 Admin 那組 X-Admin-Token 分開。
+  async listChannels() {
+    return request<readonly ChannelPublic[]>('/channels', { schema: ChannelPublicListSchema })
+  },
+
+  async getChannel(slug: string) {
+    return request<ChannelPublic>(`/channels/${encodeURIComponent(slug)}`, {
+      schema: ChannelPublicSchema,
+    })
+  },
+
+  async subscribeChannel(slug: string) {
+    await request<null>(`/channels/${encodeURIComponent(slug)}/subscribe`, {
+      method: 'POST',
+      schema: null,
+    })
+  },
+
+  async unsubscribeChannel(slug: string) {
+    await request<null>(`/channels/${encodeURIComponent(slug)}/subscribe`, {
+      method: 'DELETE',
+      schema: null,
+    })
+  },
+
+  async listMySubscriptions() {
+    return request<readonly ChannelPublic[]>('/channels/subscriptions', {
+      schema: ChannelPublicListSchema,
+    })
+  },
+
+  async getRecommendedEpisodes() {
+    return request<readonly RecommendedEpisode[]>('/episodes/recommended', {
+      schema: RecommendedEpisodeListSchema,
     })
   },
 

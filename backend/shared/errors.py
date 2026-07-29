@@ -46,6 +46,13 @@ class ConflictError(AppError):
     status_code = 409
 
 
+class PayloadTooLargeError(AppError):
+    """上傳內容超過大小上限（如頻道封面圖）。"""
+
+    code = "payload_too_large"
+    status_code = 413
+
+
 # ── 引擎 / 批次層（worker 用，不對外）──────────────────────────
 
 

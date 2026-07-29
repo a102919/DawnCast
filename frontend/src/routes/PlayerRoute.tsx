@@ -2,6 +2,7 @@ import { useState, useEffect, useMemo, useCallback, useRef } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
 import { Sparkles, BookMarked, MessageCircle } from 'lucide-react'
 import { toast } from 'sonner'
+import { api } from '../api'
 import { ErrorBanner } from '../components/primitives/ErrorBanner'
 import { PlayerControls } from '../components/player/PlayerControls'
 import { EpisodeReferences } from '../components/player/EpisodeReferences'
@@ -40,6 +41,7 @@ export function PlayerRoute() {
   useEpisodeProgress({
     episode, currentTime, duration, loadState, currentEpisode,
     seekTo, loadProgress, markListened, addListenMinutes, markPlayed,
+    recordPlay: api.recordEpisodePlay,
   })
 
   useEffect(() => {

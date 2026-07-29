@@ -102,6 +102,9 @@ async def run_pod(
     source_provider_factory: SourceProviderFactory | None = None,
     thread_id: str | None = None,
     enqueued_at: datetime | None = None,
+    channel_id: str | None = None,
+    channel_topic_id: str | None = None,
+    series_context: list[str] | None = None,
 ) -> str | None:
     """跑一集 LangGraph pod，回傳 episode_id；storage 雙重失敗優雅結束時回 None。
 
@@ -113,6 +116,12 @@ async def run_pod(
 
     enqueued_at：pgmq 訊息入列時間，從 worker 一路傳進來算 queue_wait_ms
     （見 metrics.py）。demo / 直接呼叫時可留 None。
+
+    channel_id / channel_topic_id / series_context：頻道機制專用，keyword-only
+    （非 body 欄位）——generate_job.py 是唯一負責從 pgmq body 解出這三欄再轉呼叫
+    的 thin shim。刻意不放進 body 直接讀取（不像 big_topic/angle 等既有欄位），
+    是要讓「頻道相關的呼叫端」以後加新 axis 時不會因為參數順序或字典 key 打錯字
+    而默默送錯欄位（見 lessons.md 2026-07-15「keyword-only 是好朋友」）。
 
     回傳 None 只發生在 dead_letter_node 那條路徑（storage 上傳雙重失敗、row
     已被刪除、pipeline_runs 已 finalize 成 dead_letter）：這是刻意的優雅結束，
@@ -191,6 +200,9 @@ async def run_pod(
         "length_tier": body.get("length_tier") or "medium",
         "cefr": body.get("cefr") or cfg.cefr_level,
         "avoid_facts": list(body.get("avoid_facts") or []),
+        "channel_id": channel_id,
+        "channel_topic_id": channel_topic_id,
+        "series_context": list(series_context or []),
         "sources": [],
         "grounded": False,
         "research_questions": [],

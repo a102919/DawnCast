@@ -1,13 +1,16 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { AnimatePresence, motion } from 'framer-motion'
-import { Play, Brain, SearchX } from 'lucide-react'
+import { Play, Brain, SearchX, CalendarDays, ChevronRight } from 'lucide-react'
+import { Card } from '../components/primitives/Card'
 import { Chip } from '../components/primitives/Chip'
 import { SectionLabel } from '../components/primitives/SectionLabel'
 import { ErrorBanner } from '../components/primitives/ErrorBanner'
 import { TodayHeroCard } from '../components/home/TodayHeroCard'
 import { HomeHeroFallback } from '../components/home/HomeHeroFallback'
 import { WeeklyCard } from '../components/home/WeeklyCard'
+import { ChannelsRail } from '../components/home/ChannelsRail'
+import { RecommendedRail } from '../components/home/RecommendedRail'
 import { useDailyOrder, useEpisodes, useVocab } from '../state'
 import { EpisodeRow } from '../components/shared/EpisodeRow'
 import { api } from '../api'
@@ -217,6 +220,24 @@ export function HomeRoute() {
           )}
         </Link>
       </div>
+
+      {/* ── 每日訂閱入口：從底部導覽移出（讓位給「頻道」），首頁補一個顯眼入口 ── */}
+      <Link to="/daily">
+        <Card padding="sm" className="flex items-center gap-3 hover:border-accent/40 active:scale-[0.99] transition-[border-color,transform] duration-fast">
+          <div className="w-9 h-9 rounded-full bg-accent/10 text-accent grid place-items-center shrink-0">
+            <CalendarDays size={16} />
+          </div>
+          <div className="flex-1 min-w-0">
+            <div className="text-sm font-medium text-text-primary">每日訂閱</div>
+            <div className="text-xs text-text-secondary">查看訂單行事曆與歷史記錄</div>
+          </div>
+          <ChevronRight size={16} className="text-text-tertiary shrink-0" />
+        </Card>
+      </Link>
+
+      {/* ── 你追蹤的頻道 + 根據追蹤頻道的推薦 ── */}
+      <ChannelsRail />
+      <RecommendedRail />
 
       {/* ── 集數庫 ── */}
       <section className="space-y-4">

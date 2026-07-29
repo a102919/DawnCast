@@ -10,8 +10,9 @@
  * 當下暫停又立刻恢復播放」兩條非同步鏈同時對同一段呼叫 startSource，疊出兩個同時在播的
  * source，聽起來像卡住重複播放。
  *
- * playbackRate 走 source.playbackRate.value；currentTime = seg.start +
- * (ctx.currentTime - ctxAnchor) * playbackRate。單字抽樣 playSegment 走 ducking：
+ * playbackRate 走 source.playbackRate.value；currentTime = seg.start + offsetSec +
+ * (ctx.currentTime - ctxAnchor) * playbackRate——offsetSec 由 audioEngine 收進
+ * handle.anchorPositionSec，漏掉它等於宣稱每次都從段頭起播。單字抽樣 playSegment 走 ducking：
  * main gain ramp 50ms 降到 0.3，duration 結束 ramp 回 1.0。
  *
  * iOS Safari：首次 play() 必須 click handler 同步路徑內 ctx.resume()，否則 gesture 解鎖
@@ -58,13 +59,17 @@ const ALREADY_ABORTED_SIGNAL: AbortSignal = (() => {
  *  框架無關、不含 dispatch——是 startSource（主播放）跟 duckAndPlaySegment（試聽）
  *  共用的核心機制。 */
 function startCore(
-  deps: { readonly engine: AudioEngine; readonly activeRef: RefObject<PlaybackHandle | null> },
+  deps: { readonly engine: AudioEngine; readonly activeRef: RefObject<PlaybackHandle | null>; readonly activeIsPreviewRef: RefObject<boolean> },
   args: { readonly url: string; readonly globalStartSec: number; readonly offsetSec: number; readonly durationSec?: number; readonly rate: number },
   onNaturalEnd: () => void,
 ): PlaybackHandle | null {
   const handle = deps.engine.startPlayback(args)
   if (!handle) return null
   deps.activeRef.current = handle
+  // 「這個 handle 是不是試聽」直接由 durationSec 有無推導（只有試聽會限定播放長度，
+  // 主播放一律播到段尾），不另開一個要跟 activeRef 人工同步的旗標——兩者在同一行設定，
+  // 就不會有「換了 handle 忘了換旗標」的漂移。
+  deps.activeIsPreviewRef.current = args.durationSec !== undefined
   handle.source.onended = () => {
     if (deps.activeRef.current !== handle) return
     onNaturalEnd()
@@ -77,17 +82,17 @@ interface PreviewDeps {
   readonly episodeRef: RefObject<Episode | null>
   readonly rateRef: RefObject<number>
   readonly activeRef: RefObject<PlaybackHandle | null>
+  readonly activeIsPreviewRef: RefObject<boolean>
   readonly duckTimeoutRef: RefObject<number | null>
-  readonly segIdxRef: RefObject<number>
   readonly ensureBuffer: (idx: number) => Promise<AudioBuffer | null>
   readonly beginIntent: () => AbortSignal
   readonly stopActive: () => void
 }
 
-/** 單字/片語試聽（發音按鈕/字卡重播）。模組層級函式，deps 刻意不含 dispatch——
- *  這個函式的作用域裡物理上沒有 dispatch 這個自由變數，想動全域 isPlaying/loadState
- *  會直接編譯不過，不是「忘了加判斷」防得住的層級。播完也不會自動接播下一段，因為
- *  這裡根本沒有 segIdx-advance 的邏輯可以呼叫。 */
+/** 單字/片語試聽（發音按鈕/字卡重播）。模組層級函式，deps 刻意不含 dispatch 與 segIdxRef——
+ *  這個函式的作用域裡物理上沒有這兩個自由變數，想動全域 isPlaying/loadState 或主播放的
+ *  段落游標會直接編譯不過，不是「忘了加判斷」防得住的層級。播完也不會自動接播下一段，
+ *  因為這裡根本沒有 segIdx-advance 的邏輯可以呼叫。 */
 async function duckAndPlaySegment(deps: PreviewDeps, segIdx: number, offsetSec: number, durationSec: number): Promise<void> {
   const signal = deps.beginIntent()
   const buf = await deps.ensureBuffer(segIdx)
@@ -102,8 +107,7 @@ async function duckAndPlaySegment(deps: PreviewDeps, segIdx: number, offsetSec: 
   }, durationSec * 1000)
   const seg = deps.episodeRef.current?.segments[segIdx]
   if (!seg) return
-  deps.segIdxRef.current = segIdx
-  startCore({ engine: deps.engine, activeRef: deps.activeRef }, {
+  startCore({ engine: deps.engine, activeRef: deps.activeRef, activeIsPreviewRef: deps.activeIsPreviewRef }, {
     url: seg.audioUrl, globalStartSec: seg.start, offsetSec, durationSec, rate: deps.rateRef.current,
   }, deps.stopActive)
 }
@@ -126,6 +130,9 @@ export function useSegmentPlayer(): SegmentPlayer {
    *  任何新播放意圖（stopActive 涵蓋的所有情況）都要立刻取消並馬上恢復滿音量，不能放著等
    *  原本排定的時間到才回復，不然會出現「恢復播放後音量卡在 duck 音量一段時間」的問題。 */
   const duckTimeoutRef = useRef<number | null>(null)
+  /** activeRef 目前指的是不是「試聽」handle（見 startCore）。試聽是一次性的抽樣播放，
+   *  不屬於主播放游標，停止時不可把它的位置寫回 pausedAtRef。 */
+  const activeIsPreviewRef = useRef<boolean>(false)
 
   const [state, dispatch] = useReducer(playerReducer, initialMainPlayerState)
   const { loadState, isPlaying } = toPublicFields(state)
@@ -154,7 +161,10 @@ export function useSegmentPlayer(): SegmentPlayer {
     }
     const a = activeRef.current
     if (a) {
-      pausedAtRef.current = engine.stop(a, rateRef.current)
+      const pos = engine.stop(a, rateRef.current)
+      // 只有主播放的停止位置算數。試聽（字卡發音／重聽這句）結束時若把它的位置寫回
+      // pausedAtRef，關掉字卡後的「續播」會從剛才試聽的那一行接續，而不是原本暫停的位置。
+      if (!activeIsPreviewRef.current) pausedAtRef.current = pos
       activeRef.current = null
     }
   }, [engine])
@@ -176,7 +186,7 @@ export function useSegmentPlayer(): SegmentPlayer {
   const startSource = useCallback((segIdx: number, offsetSec: number) => {
     const seg = episodeRef.current?.segments[segIdx]
     if (!seg) return
-    const handle = startCore({ engine, activeRef }, {
+    const handle = startCore({ engine, activeRef, activeIsPreviewRef }, {
       url: seg.audioUrl, globalStartSec: seg.start, offsetSec, rate: rateRef.current,
     }, () => {
       stopActive()
@@ -204,7 +214,7 @@ export function useSegmentPlayer(): SegmentPlayer {
 
   const playSegment = useCallback((segIdx: number, offsetSec: number, durationSec: number) => {
     void duckAndPlaySegment({
-      engine, episodeRef, rateRef, activeRef, duckTimeoutRef, segIdxRef, ensureBuffer, beginIntent, stopActive,
+      engine, episodeRef, rateRef, activeRef, activeIsPreviewRef, duckTimeoutRef, ensureBuffer, beginIntent, stopActive,
     }, segIdx, offsetSec, durationSec)
   }, [engine, ensureBuffer, beginIntent, stopActive])
 
@@ -258,6 +268,10 @@ export function useSegmentPlayer(): SegmentPlayer {
     stopActive()
     pausedAtRef.current = globalSec
     segIdxRef.current = idx
+    // 同步把 currentTime 推到新位置，不等 rAF：暫停時 seek 根本沒有 activeRef，
+    // rAF 那圈永遠不會跑到 setCurrentTime，進度條會卡在舊位置；播放時則是要讓
+    // 依賴 currentTime 的邏輯（單句循環）立刻讀到新位置，而不是上一幀的舊值。
+    setCurrentTime(globalSec)
     void prefetchAround(idx)
     if (wasPlaying) void ensureBuffer(idx).then(b => { if (b && !signal.aborted) startSource(idx, offsetSec) })
   }, [beginIntent, ensureBuffer, prefetchAround, startSource, stopActive])

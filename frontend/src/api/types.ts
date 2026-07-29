@@ -121,27 +121,6 @@ export type AccountInfo = {
   readonly createdAt: string
 }
 
-/** Admin 主動觸發單集生成（公開 podcast）的 request body。
- *  鏡像後端 backend/app/schemas.py AdminEpsGenerateBody（CamelModel，camelCase）。
- *  後端 source 寫死 "fallback" → upsert_episode_node 自動推導 is_free=True，
- *  任何登入使用者首頁可見；user_ids 留空即純公開。 */
-export type AdminEpsGenerateInput = {
-  readonly topic: string
-  readonly angle?: '定義' | '人物故事' | '常見誤解' | '應用場景' | '歷史' | '對比'
-  readonly topicType?: 'news' | 'product' | 'evergreen' | 'skill'
-  readonly lengthTier?: 'short' | 'medium' | 'long'
-  readonly cefr?: 'A2' | 'B1' | 'B2'
-  readonly userIds?: readonly string[]
-  readonly deliverDate?: string | null
-}
-
-/** 202 response：已入 pgmq.generate 的確認。完成需另 query /admin/episodes。 */
-export type AdminEpsGenerateResponse = {
-  readonly idempotencyKey: string
-  readonly msgId: number
-  readonly status: 'queued'
-}
-
 /** 單一 LangGraph node 的耗時；鏡像後端 shared/models/api.py StageMetric。 */
 export type StageMetric = {
   readonly node: string
@@ -150,24 +129,130 @@ export type StageMetric = {
   readonly attempt: number
 }
 
-/** GET /admin/token-usage 明細列，鏡像後端 AdminTokenUsageItem。 */
-export type AdminTokenUsageItem = {
-  readonly slug: string
+/** GET /admin/episodes 明細列，鏡像後端 AdminEpisodeStats。
+ *  listenerCount／favoriteCount 是即時跨表統計；playCount 是累積計數器，
+ *  只從 episodes.play_count 欄位部署後起算，無歷史（見 migration 0023）。 */
+export type AdminEpisodeStats = {
+  readonly id: string
   readonly title: string
+  readonly topic: string
+  readonly cefrLevel: string
+  readonly isFree: boolean
+  readonly episodeNo: number
+  readonly publishedAt: string
+  readonly createdAt: string
+  readonly channelName?: string | null
+  readonly hasAudio: boolean
+  readonly playCount: number
+  readonly listenerCount: number
+  readonly favoriteCount: number
   readonly inputTokens: number
   readonly outputTokens: number
-  readonly createdAt: string
-  readonly generationStartedAt?: string | null
-  readonly generationFinishedAt?: string | null
+  readonly wallMs?: number | null
   readonly stages: readonly StageMetric[]
 }
 
-/** GET /admin/token-usage 回應：全站加總 + 最近 50 筆明細。 */
-export type AdminTokenUsageResponse = {
+/** GET /admin/episodes 回應：全站加總 + 最近 100 筆明細。 */
+export type AdminEpisodeStatsResponse = {
+  readonly episodeCount: number
   readonly totalInputTokens: number
   readonly totalOutputTokens: number
+  readonly totalPlayCount: number
+  readonly items: readonly AdminEpisodeStats[]
+}
+
+export type ChannelCategory = 'tech' | 'business' | 'culture' | 'science'
+export type ChannelStatus = 'active' | 'paused' | 'archived'
+export type TopicType = 'news' | 'product' | 'evergreen' | 'skill'
+export type CefrLevel = 'A2' | 'B1' | 'B2'
+
+/** 頻道 admin 完整視圖，鏡像後端 shared/models/api.py Channel。
+ *  回應欄位刻意是寬鬆的 string（後端就是這樣宣告的）——DB 裡的值不受前端 union 管轄，
+ *  多一個狀態值不該讓整個面板 schema 驗證失敗。input 端才收斂成 union（見下）。 */
+export type Channel = {
+  readonly id: string
+  readonly slug: string
+  readonly name: string
+  readonly description?: string | null
+  readonly themePrompt: string
+  readonly topic: string
+  readonly topicType: string
+  readonly lengthTier: string
+  readonly cefrLevel: string
+  readonly targetIntervalDays: number
+  readonly status: string
+  /** 已簽章的 R2 URL，不是 cover_r2_key 原始值。 */
+  readonly coverImageUrl?: string | null
+  readonly lastPublishedAt?: string | null
   readonly episodeCount: number
-  readonly items: readonly AdminTokenUsageItem[]
+  readonly candidateCount: number
+}
+
+/** 使用者端頻道卡片，鏡像後端 ChannelPublic：刻意不含 themePrompt（內部選題指令）。 */
+export type ChannelPublic = {
+  readonly slug: string
+  readonly name: string
+  readonly description?: string | null
+  readonly topic: string
+  readonly coverImageUrl?: string | null
+  readonly episodeCount: number
+}
+
+/** 首頁「根據你追蹤的頻道」用：MockEpisode 加頻道身分兩欄，鏡像後端 RecommendedEpisode。 */
+export type RecommendedEpisode = MockEpisode & {
+  readonly channelSlug: string
+  readonly channelName: string
+}
+
+/** 選題庫單筆候選，鏡像後端 ChannelTopic。 */
+export type ChannelTopic = {
+  readonly id: string
+  readonly channelId: string
+  readonly canonicalTopic: string
+  readonly angle: string
+  readonly rationale?: string | null
+  readonly score: number
+  readonly status: string
+  readonly parentEpisodeId?: string | null
+  readonly episodeId?: string | null
+  readonly createdAt: string
+  readonly decidedAt?: string | null
+}
+
+/** 鏡像 CreateChannelBody。有 server-side 預設的欄位在型別上仍是必填（openapi-typescript
+ *  對 default 的產出就是必填），表單本來就每個欄位都有值，不特別做成 optional。 */
+export type CreateChannelInput = {
+  readonly slug: string
+  readonly name: string
+  readonly themePrompt: string
+  readonly topic: ChannelCategory
+  readonly description?: string | null
+  readonly topicType: TopicType
+  readonly lengthTier: LengthTier
+  readonly cefrLevel: CefrLevel
+  readonly targetIntervalDays: number
+  readonly status: ChannelStatus
+}
+
+/** 鏡像 UpdateChannelBody：全 optional，只 patch 有給的欄位。 */
+export type UpdateChannelInput = {
+  readonly slug?: string | null
+  readonly name?: string | null
+  readonly description?: string | null
+  readonly themePrompt?: string | null
+  readonly topic?: ChannelCategory | null
+  readonly topicType?: TopicType | null
+  readonly lengthTier?: LengthTier | null
+  readonly cefrLevel?: CefrLevel | null
+  readonly targetIntervalDays?: number | null
+  readonly status?: ChannelStatus | null
+}
+
+/** 202 response：選題已入 control 佇列，實際由 worker 執行（後端 admin.eps/generate 端點同一種語意）。 */
+export type ChannelPlanResponse = {
+  readonly channelId: string
+  readonly msgId: number
+  readonly status: 'queued'
 }
 
 /** 瀏覽器 PushSubscription.toJSON() 的必要欄位（送給後端登錄推播訂閱）。 */
@@ -202,11 +287,22 @@ export interface Api {
   deleteDailyOrder(date: string): Promise<void>
   getLastOrderDate(): Promise<string | null>
   setLastOrderDate(date: string): Promise<void>
-  // podcast episode 內容
-  listEpisodes(): Promise<readonly MockEpisode[]>
+  // podcast episode 內容。opts.channel：可選頻道 slug，帶了只回該頻道底下的集數
+  // （/channels/:slug 詳情頁用）；不帶維持既有行為（全站免費／已授權集數）。
+  listEpisodes(opts?: { readonly channel?: string }): Promise<readonly MockEpisode[]>
   getEpisode(slug: string): Promise<Episode>
   // 依日期取當日交付的集數（player ?date= 連結用）；找不到回 null 由前端 fallback
   getDeliveredEpisode(date: string): Promise<Episode | null>
+  // 播放次數 +1，不去重。播放頁背景呼叫，失敗不影響播放體驗。
+  recordEpisodePlay(episodeId: string): Promise<void>
+  // 使用者端公開頻道：探索／詳情／訂閱（JWT 認證，跟 Admin 那組 X-Admin-Token 分開）
+  listChannels(): Promise<readonly ChannelPublic[]>
+  getChannel(slug: string): Promise<ChannelPublic>
+  subscribeChannel(slug: string): Promise<void>
+  unsubscribeChannel(slug: string): Promise<void>
+  listMySubscriptions(): Promise<readonly ChannelPublic[]>
+  // 首頁「根據你追蹤的頻道」：追蹤頻道裡還沒聽完的最新集數
+  getRecommendedEpisodes(): Promise<readonly RecommendedEpisode[]>
   // T1：送訂單後 fire-and-forget 觸發 worker 跑當日 pipeline（POST /jobs/orders/{date}/generate，
   // 後端回 202 + envelope；前端 Promise<void> 不解析 body，失敗僅 log 不 throw）
   triggerGenerateJob(date: string): Promise<void>
@@ -216,11 +312,24 @@ export interface Api {
   // 帳號自我管理（T4）：查詢 / 刪除本人帳號
   getMe(): Promise<AccountInfo>
   deleteAccount(): Promise<void>
-  // Admin 主動觸發單集公開 podcast 生成（X-Admin-Token 認證，非 Supabase JWT）。
-  // httpApi 內部會從 localStorage 讀 admin token；mock 模式 noop 回丟擲。
-  triggerAdminGenerate(input: AdminEpsGenerateInput): Promise<AdminEpsGenerateResponse>
-  // Admin token 用量與分階段耗時總覽（同一組 X-Admin-Token 認證）。
-  getAdminTokenUsage(): Promise<AdminTokenUsageResponse>
+  // Admin 單集數據總覽：播放／聽完／收藏／token／耗時（X-Admin-Token 認證，非 Supabase JWT）。
+  getAdminEpisodeStats(): Promise<AdminEpisodeStatsResponse>
+  // Admin 頻道管理（同一組 X-Admin-Token）。使用者端的頻道瀏覽／訂閱是另一組
+  // 走 JWT 的公開端點（見下方 listChannels 等），這裡一律加 Admin 前綴避免撞名。
+  listAdminChannels(): Promise<readonly Channel[]>
+  createAdminChannel(input: CreateChannelInput): Promise<Channel>
+  updateAdminChannel(channelId: string, patch: UpdateChannelInput): Promise<Channel>
+  /** 封面走原始 body 上傳（非 multipart），Content-Type 就是檔案自己的 MIME。 */
+  uploadAdminChannelCover(channelId: string, file: File): Promise<Channel>
+  /** 手動觸發選題；202 只代表已入列，候選要等 worker 跑完才會出現。 */
+  planAdminChannel(channelId: string): Promise<ChannelPlanResponse>
+  listAdminChannelTopics(channelId: string, status?: string): Promise<readonly ChannelTopic[]>
+  /** 事後否決候選（status='rejected'）或修正標題。 */
+  updateAdminChannelTopic(
+    channelId: string,
+    topicId: string,
+    patch: { readonly status?: 'candidate' | 'rejected'; readonly canonicalTopic?: string },
+  ): Promise<ChannelTopic>
   // Web Push：一台裝置一筆訂閱。「有沒有訂閱」就是通知開關狀態，沒有額外欄位。
   subscribePush(subscription: PushSubscriptionInput): Promise<void>
   unsubscribePush(endpoint: string): Promise<void>

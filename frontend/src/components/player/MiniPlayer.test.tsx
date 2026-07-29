@@ -3,7 +3,8 @@
 //
 // 覆蓋：
 //  - 沒有 currentEpisode 時不渲染。
-//  - 在 /player、/login 上即使有 currentEpisode 也不渲染（避免跟全螢幕播放頁重複）。
+//  - 在 /player、/login、/admin 上即使有 currentEpisode 也不渲染（避免跟全螢幕播放頁
+//    重複，或跟 admin 側邊導覽疊在一起）。
 //  - 其他頁面顯示標題，點播放/暫停鈕只切換播放狀態，不觸發導頁。
 
 ;(globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
@@ -82,6 +83,13 @@ describe('MiniPlayer：顯示條件', () => {
   it('在 /login 上不渲染', () => {
     mockEpisode = EPISODE
     const { root, container } = renderAt('/login')
+    pendingRoots.push(root)
+    expect(container.textContent).toBe('')
+  })
+
+  it('在 /admin 下任何子頁面都不渲染', () => {
+    mockEpisode = EPISODE
+    const { root, container } = renderAt('/admin/episodes')
     pendingRoots.push(root)
     expect(container.textContent).toBe('')
   })

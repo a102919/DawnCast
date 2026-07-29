@@ -1,3 +1,4 @@
+import type { ReactNode } from 'react'
 import { Link } from 'react-router-dom'
 import { Clock } from 'lucide-react'
 import { CEFR_COLOR, TOPIC_LABELS, formatDateZhTW, formatTime } from '../../lib'
@@ -8,6 +9,8 @@ interface WeeklyCardProps {
   readonly ep: MockEpisode
   readonly duration?: number
   readonly className?: string
+  /** 有給時取代預設的發布日期那一行（例如「根據你追蹤的頻道」要顯示頻道名稱）。 */
+  readonly metaLabel?: ReactNode
 }
 
 /**
@@ -19,7 +22,7 @@ interface WeeklyCardProps {
  * 互動：active:scale-[0.98] 對齊 apple-design §1「回應立即」；border-color hover
  * 用 transition-[border-color,transform] 同步兩個屬性動畫，不引入多餘 transition。
  */
-export function WeeklyCard({ ep, duration, className = '' }: WeeklyCardProps) {
+export function WeeklyCard({ ep, duration, className = '', metaLabel }: WeeklyCardProps) {
   return (
     <Link
       to={`/player/${ep.id}`}
@@ -50,7 +53,7 @@ export function WeeklyCard({ ep, duration, className = '' }: WeeklyCardProps) {
             <Clock size={11} />
             <span>{duration ? formatTime(duration) : '—'}</span>
             <span>·</span>
-            <span>{formatDateZhTW(ep.publishedAt)}</span>
+            <span className="truncate">{metaLabel ?? formatDateZhTW(ep.publishedAt)}</span>
           </div>
         </div>
       </article>

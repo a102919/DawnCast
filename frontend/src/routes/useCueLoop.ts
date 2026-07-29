@@ -38,9 +38,13 @@ export function useCueLoop({ episode, currentTime, activeCueIdx, seekTo, play, p
   useEffect(() => {
     if (!episode || loopCueIdx === null) return
     const cue = episode.cues[loopCueIdx]
-    if (!cue || (currentTime >= cue.start && currentTime < cue.end)) return
+    // 只認「越過尾端」這一個回捲條件。原本寫成「不在 [start, end) 區間內就回捲」，
+    // 把「currentTime 還沒追上 start」也算進去了——seek 完到下一幀位置更新之間本來就
+    // 會短暫落在區間前面，只要位置回報偏低一點，這個 effect 就會每幀重跑一次
+    // seek + play，同一句被無限重啟，聽起來就是卡住一直發同一個聲音。
+    if (!cue || currentTime < cue.end) return
     seekTo(cue.start)
-    play()
+    void play()
   }, [currentTime, episode, loopCueIdx, play, seekTo])
 
   const toggle = useCallback(() => {

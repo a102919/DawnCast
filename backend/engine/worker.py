@@ -24,6 +24,7 @@ from zoneinfo import ZoneInfo
 
 from engine.pipeline import dict_translate
 from engine.pipeline import reuse_repo as repo
+from engine.pipeline.channel_plan import plan_channels
 from engine.pipeline.daily_batch import enqueue_daily_batch
 from engine.pipeline.evergreen import run_evergreen
 from engine.pipeline.generate_job import run_generate_job
@@ -89,9 +90,16 @@ async def _handle_control(body: dict[str, Any]) -> None:
         logger.info("collect_open：%d 筆訂單翻 queued（date=%s）", n, anchor)
     elif task == "daily_podcast":
         # 02:00 每日公開批次：DB function 用 deliver_date 做 atomic claim，
-        # duplicate control 只會回傳 0，不會重送 generate。
-        n = await enqueue_daily_batch(anchor)
-        logger.info("daily_podcast：送出 %d 筆 generate（date=%s）", n, anchor)
+        # duplicate control 會回傳 -1（未送出任何訊息），不會重送 generate。
+        # 這裡刻意不再記一行 log——回傳值有 -1／0／正整數三種語意，
+        # enqueue_daily_batch 內部已分別記錄，外層再印一次會變成
+        # 「送出 -1 筆」這種假訊息。
+        await enqueue_daily_batch(anchor)
+    elif task == "channel_plan":
+        # 01:00 頻道選題：admin 手動觸發會帶 channel_id，cron 送的訊息不帶
+        # （＝跑全部 active 頻道）。
+        n = await plan_channels(channel_id=body.get("channel_id"))
+        logger.info("channel_plan：新增 %d 筆候選主題", n)
     elif task == "push_daily":
         await _push_daily(anchor)
     else:

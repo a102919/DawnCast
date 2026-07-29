@@ -382,6 +382,31 @@ def _sources_block(sources: list[SourceSnippet], avoid_facts: tuple[str, ...] = 
     return "\n".join(lines)
 
 
+def _series_block(series_context: tuple[str, ...], parent_title: str | None = None) -> str:
+    """頻道系列感——跟 avoid_facts 職責相反：那邊「不要重複」，這裡「可以呼應」。
+
+    series_context 是該頻道最近 2-3 集的標題，純粹提供自然呼應的素材，建立
+    「這是同一個頻道」的連續感；不是硬性規則，LLM 不呼應也完全合法，因此措辭
+    只用「若自然，可簡短呼應」，不像 avoid_facts 那樣是程式會擋下來的硬性規則。
+
+    parent_title：保留給未來頻道顯示名稱使用（目前 PodState 沒有對應欄位，
+    呼叫端一律不帶，None 時該行退化成無頻道名稱版本）。
+
+    series_context 為空 → 回傳空字串，prompt 不會多出一個空標題的區塊
+    （呼叫端沿用 _sources_block/_verified_research_block 同款的空字串合併寫法）。
+    """
+    if not series_context:
+        return ""
+    lines = ["\n# SERIES CONTEXT（僅供自然呼應，非必要）"]
+    recent = "、".join(series_context)
+    if parent_title:
+        lines.append(f"本頻道《{parent_title}》最近幾集談過：{recent}。")
+    else:
+        lines.append(f"本頻道前幾集談過：{recent}。")
+    lines.append("若自然，可簡短呼應建立連續感；但不要重述其內容。")
+    return "\n".join(lines)
+
+
 def _verified_research_block(
     verified_claims: list[VerifiedClaim], source_conflicts: list[str]
 ) -> str:
@@ -465,6 +490,7 @@ def _build_outline_messages(
     verified_claims: list[VerifiedClaim] | None = None,
     source_conflicts: list[str] | None = None,
     feedback: list[str] | None = None,
+    series_context: tuple[str, ...] = (),
 ) -> list[dict[str, str]]:
     """大綱 LLM 呼叫：只規劃「哪些內容切到哪幾段、各段帶哪些字彙」，不寫對話。
 
@@ -510,6 +536,7 @@ def _build_outline_messages(
         f" 全集合計 target_vocab 數量上限 {target_vocab_size} 個。\n\n"
         f"# SOURCES\n{_sources_block(sources or [], avoid_facts)}\n\n"
         f"{_verified_research_block(verified_claims or [], source_conflicts or [])}\n\n"
+        f"{_series_block(series_context)}\n\n"
         "JSON SCHEMA (must match exactly):\n"
         '{"topic": str, "topic_zh": str, '
         '"category": "tech"|"business"|"culture"|"science", '
@@ -567,6 +594,7 @@ def _build_segment_messages(
     previous_tail_lines: list[ScriptLine],
     extracted_facts: list[SourcedFact] | None = None,
     feedback: list[str] | None = None,
+    series_context: tuple[str, ...] = (),
 ) -> list[dict[str, str]]:
     """單段擴寫 LLM 呼叫：只負責這段的對話內容，不重複 topic/vocab/facts。
 
@@ -623,6 +651,7 @@ def _build_segment_messages(
         "也禁止兩個連續行的 zh 一模一樣（這是程式會擋下來的硬性規則）。\n\n"
         "# SOURCES\n"
         f"{_sources_block(sources or [], avoid_facts)}\n\n"
+        f"{_series_block(series_context)}\n\n"
         f"{few_shots}\n\n"
         f"{_EMOTION_GUIDE}\n"
         "JSON SCHEMA (must match exactly, ONLY the script array):\n"
@@ -1133,6 +1162,7 @@ async def _generate_outline(
         avoid_facts=tuple(state.get("avoid_facts") or ()),
         verified_claims=state.get("verified_claims"),
         source_conflicts=state.get("source_conflicts"),
+        series_context=tuple(state.get("series_context") or ()),
     )
     msgs = build_msgs(feedback=feedback)
 
@@ -1225,6 +1255,7 @@ async def _generate_segment(  # type: ignore[return]
         is_final_segment=is_final_segment,
         previous_tail_lines=previous_tail_lines,
         extracted_facts=extracted_facts,
+        series_context=tuple(state.get("series_context") or ()),
     )
     msgs = build_msgs(feedback=feedback)
 
@@ -1950,8 +1981,13 @@ async def upsert_episode_node(state: PodState, config: RunnableConfig) -> dict[s
     cefr = state.get("cefr") or "B1"
     source = state.get("source") or "fallback"
     is_free = source != "specified"
+    channel_id = state.get("channel_id")
+    channel_topic_id = state.get("channel_topic_id")
 
     # format 是 derived（=resolve_format(topic_type, length_tier)），不重複併入 idem_key。
+    # channel_id 同理絕對不可進 idem_key：canonical_topic 已足以區分內容，把 channel
+    # 加進 key 會讓同一個題目在不同頻道被視為「不同集」而重複完整生成一次，白白
+    # 浪費 LLM 與 TTS 配額（頻道只是這集的「歸屬／編號」屬性，不是內容維度）。
     idem_key = compute_idempotency_key(
         cluster_id=cluster_id,
         deliver_date=deliver_date,
@@ -1967,6 +2003,15 @@ async def upsert_episode_node(state: PodState, config: RunnableConfig) -> dict[s
     usage_log = state.get("token_usage") or []
     total_in = sum(int(u.get("input_tokens", 0)) for u in usage_log)
     total_out = sum(int(u.get("output_tokens", 0)) for u in usage_log)
+
+    # 屬於某個頻道 → 先取頻道內流水號（不屬於任何頻道時完全跳過，維持既有個人化
+    # 生成路徑零開銷）。next_episode_no 失敗刻意不 try/except：這是要落庫的真實
+    # 資料，不是可事後補的次要資訊，失敗就該讓整條 graph 照現有重試機制處理。
+    episode_no: int | None = None
+    if channel_id is not None:
+        from shared.db import channels  # noqa: PLC0415 lazy import（頻道機制專用）
+
+        episode_no = await channels.next_episode_no(channel_id)
 
     # repo 是 MockRepo 或 shared.db.repo 模組，surface 相同——直接呼叫，不做 hasattr 分派。
     episode_id, already_rendered = await repo.upsert_episode(
@@ -1990,11 +2035,48 @@ async def upsert_episode_node(state: PodState, config: RunnableConfig) -> dict[s
         generation_started_at=collector.started_at if collector is not None else None,
         gen_metrics=collector.gen_metrics() if collector is not None else None,
         research_metrics=collector.research_metrics() if collector is not None else None,
+        channel_id=channel_id,
+        episode_no=episode_no,
     )
 
     run_id = ctx.get("pipeline_run_id")
     if run_id is not None and not already_rendered:
         await repo.attach_pipeline_run_episode(run_id, episode_id)
+
+    # 頻道選題回填：只在「這次真的新產出」時才回填（already_rendered=True 代表撞到
+    # 既有集，選題狀態 / 頻道進度早該在第一次成功時就已回填過，這裡不重複做）。
+    # 兩個回填呼叫都必須容錯——這集已經產出來了，回填失敗是「選題庫狀態沒更新」
+    # 這種可事後修的次要問題，不可讓它拖垮整條已經成功的 graph（同 2026-07-20
+    # FK violation 死循環教訓：compensation / 回填一律 try/except 記 warning 就好）。
+    if not already_rendered:
+        if channel_topic_id is not None:
+            try:
+                from shared.db import channels  # noqa: PLC0415 lazy import
+
+                await channels.update_topic_status(
+                    channel_topic_id, "published", episode_id=episode_id
+                )
+            except Exception:
+                logger.warning(
+                    "頻道選題狀態回填失敗（不影響本集產出）"
+                    "channel_topic_id=%s episode_id=%s",
+                    channel_topic_id,
+                    episode_id,
+                    exc_info=True,
+                )
+        if channel_id is not None:
+            try:
+                from shared.db import channels  # noqa: PLC0415 lazy import
+
+                await channels.mark_channel_published(channel_id, deliver_date)
+            except Exception:
+                logger.warning(
+                    "頻道出版狀態回填失敗（不影響本集產出）"
+                    "channel_id=%s deliver_date=%s",
+                    channel_id,
+                    deliver_date,
+                    exc_info=True,
+                )
 
     if usage_log:
         logger.info(

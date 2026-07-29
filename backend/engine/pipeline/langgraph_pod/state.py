@@ -47,6 +47,11 @@ class PodState(TypedDict, total=False):
     cefr: str  # A2 / B1 / B2，從 users.cefr_target 一路帶下來；缺省退 settings.cefr_level
     avoid_facts: list[str]  # 同 user 同主題舊集的 facts，寫稿 prompt 避重用
 
+    # ── 頻道機制（Channel）─────────────────────────────────────
+    channel_id: str | None  # 這集屬於哪個頻道；None＝不屬於任何頻道（既有個人化生成路徑）
+    channel_topic_id: str | None  # 選題庫候選 id；生成成功後回填該筆狀態為 published
+    series_context: list[str]  # 該頻道最近 2-3 集標題，供寫稿自然呼應建立連續感（非避重複用途）
+
     # ── request contract ─────────────────────────────────────
     tone: str  # curious / playful / contemplative / debate
     format: ScriptFormat  # dialogue / monologue，由 resolve_format 依 topic_type×length_tier 決定
