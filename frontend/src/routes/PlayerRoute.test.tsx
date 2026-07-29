@@ -352,6 +352,7 @@ describe('PlayerRoute：單句循環', () => {
   })
 
   it('循環中越過 cue end 會自動 seek 回起點並 play', async () => {
+    playerIsPlaying = true // 回捲只在播放中發生：暫停後不准被循環蓋掉（見 useCueLoop guard）
     playerCurrentTime = 0.5
     const { root, container } = await renderAt('/player/ep-2')
     pendingRoots.push(root)

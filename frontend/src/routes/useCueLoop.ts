@@ -17,13 +17,14 @@ export interface UseCueLoopParams {
   readonly episode: Episode | null
   readonly currentTime: number
   readonly activeCueIdx: number
+  readonly isPlaying: boolean
   seekTo(time: number): void
   play(): Promise<void>
   playWithUnlock(): void
 }
 
 /** 單句循環狀態機：越過 lock 住的 cue 尾端就自動 seek 回起點續播。 */
-export function useCueLoop({ episode, currentTime, activeCueIdx, seekTo, play, playWithUnlock }: UseCueLoopParams): UseCueLoopResult {
+export function useCueLoop({ episode, currentTime, activeCueIdx, isPlaying, seekTo, play, playWithUnlock }: UseCueLoopParams): UseCueLoopResult {
   const [loopCueIdx, setLoopCueIdx] = useState<number | null>(null)
   const episodeIdRef = useRef<string | null>(null)
 
@@ -43,9 +44,14 @@ export function useCueLoop({ episode, currentTime, activeCueIdx, seekTo, play, p
     // 會短暫落在區間前面，只要位置回報偏低一點，這個 effect 就會每幀重跑一次
     // seek + play，同一句被無限重啟，聽起來就是卡住一直發同一個聲音。
     if (!cue || currentTime < cue.end) return
+    // 回捲是「播放中」才存在的行為。少了這個 guard，暫停的 click 若剛好插在
+    // 「rAF 把 currentTime 推過 cue.end」與這個 effect flush 之間，effect 會在
+    // pause() 之後才跑，無條件 seek + play 把使用者的暫停直接蓋掉——循環還鎖著，
+    // 於是那句 cue（尤其是唸單字的短句）被無限重播，聽起來像卡住一直發同一個聲音。
+    if (!isPlaying) return
     seekTo(cue.start)
     void play()
-  }, [currentTime, episode, loopCueIdx, play, seekTo])
+  }, [currentTime, episode, isPlaying, loopCueIdx, play, seekTo])
 
   const toggle = useCallback(() => {
     if (loopCueIdx !== null) {

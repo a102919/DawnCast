@@ -36,14 +36,14 @@ function mountLoop(episode: Episode) {
   const playWithUnlock = vi.fn()
   let last: UseCueLoopResult | null = null
 
-  function Probe({ currentTime, activeCueIdx }: { readonly currentTime: number; readonly activeCueIdx: number }) {
-    last = useCueLoop({ episode, currentTime, activeCueIdx, seekTo, play, playWithUnlock })
+  function Probe({ currentTime, activeCueIdx, isPlaying }: { readonly currentTime: number; readonly activeCueIdx: number; readonly isPlaying: boolean }) {
+    last = useCueLoop({ episode, currentTime, activeCueIdx, isPlaying, seekTo, play, playWithUnlock })
     return null
   }
 
   const root: Root = createRoot(document.createElement('div'))
-  const render = (currentTime: number, activeCueIdx = 1) => {
-    act(() => { root.render(createElement(Probe, { currentTime, activeCueIdx })) })
+  const render = (currentTime: number, activeCueIdx = 1, isPlaying = true) => {
+    act(() => { root.render(createElement(Probe, { currentTime, activeCueIdx, isPlaying })) })
   }
   return {
     seekTo, play, playWithUnlock, render,
@@ -98,6 +98,26 @@ describe('useCueLoop', () => {
 
     for (const t of [1.2, 1.6, 2.0]) h.render(t)
     expect(h.seekTo).not.toHaveBeenCalled()
+    h.unmount()
+  })
+
+  // 線上災情二號：播放中按暫停，若 click 剛好插在「rAF 推過 cue.end」與 effect flush
+  // 之間，effect 會在 pause 之後跑，seek + play 把暫停蓋掉，循環中的短句（唸單字）
+  // 被無限重播，聽起來像卡住一直發同一個聲音。暫停狀態下越過尾端一律不准回捲。
+  it('暫停狀態下越過尾端不回捲也不觸發播放', () => {
+    const h = mountLoop(makeEpisode())
+    h.render(1.5)
+    act(() => { h.result.toggle() }) // 鎖定 cue 1 = [1.1, 2.1]
+    h.seekTo.mockClear()
+    h.play.mockClear()
+
+    h.render(2.15, 1, false) // 已暫停 + 位置越過 end
+    expect(h.seekTo).not.toHaveBeenCalled()
+    expect(h.play).not.toHaveBeenCalled()
+
+    h.render(2.15, 1, true) // 恢復播放後循環照常回捲
+    expect(h.seekTo).toHaveBeenCalledWith(1.1)
+    expect(h.play).toHaveBeenCalled()
     h.unmount()
   })
 

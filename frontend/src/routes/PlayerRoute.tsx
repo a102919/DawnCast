@@ -60,7 +60,7 @@ export function PlayerRoute() {
     void play()
   }, [play, getSegmentPlayer])
 
-  const cueLoop = useCueLoop({ episode, currentTime, activeCueIdx, seekTo, play, playWithUnlock })
+  const cueLoop = useCueLoop({ episode, currentTime, activeCueIdx, isPlaying, seekTo, play, playWithUnlock })
   const { retarget: retargetCueLoop } = cueLoop
   const wordLookup = useWordLookup({ isPlaying, pause, playWithUnlock, addLookupCount })
 

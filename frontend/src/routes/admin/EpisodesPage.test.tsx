@@ -132,11 +132,11 @@ describe('EpisodesPage', () => {
     await act(async () => {
       withoutStages?.click()
     })
-    expect(container.textContent).not.toContain('write_script')
+    expect(container.textContent).not.toContain('撰寫腳本')
 
     await act(async () => {
       withStages?.click()
     })
-    expect(container.textContent).toContain('write_script')
+    expect(container.textContent).toContain('撰寫腳本')
   })
 })
