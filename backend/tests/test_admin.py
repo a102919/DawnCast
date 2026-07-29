@@ -1,13 +1,16 @@
 """Admin / ops endpoint 測試（T7）。
 
-授權機制與一般 API 完全不同（X-Admin-Token 固定字串比對，非 Supabase JWT），
-故自成一份測試檔、自帶 FakeConnection，不共用 test_api.py 的 patch_db fixture。
+授權機制與一般 API 不同：X-Admin-Token 固定字串比對、或 Supabase JWT 的
+email claim 對上 ADMIN_EMAIL，兩條路徑擇一即可（見 app/routers/admin.py
+require_admin）。故自成一份測試檔、自帶 FakeConnection，不共用 test_api.py
+的 patch_db fixture。
 
 驗證重點：
   (a) 帶正確 X-Admin-Token → 200，資料形狀正確（camelCase）
   (b) 不帶 / 帶錯 token → 401
-  (c) 帶合法 Supabase JWT 但不帶 admin token → 仍 401（兩套授權互不相通）
-  (d) ADMIN_TOKEN 未設定（空字串）時 fail-closed，一律拒絕
+  (c) 帶合法 Supabase JWT 但 ADMIN_EMAIL 未設定 / email 不符 → 仍 401
+  (d) ADMIN_EMAIL 設定且 JWT email 相符（大小寫不敏感）→ 200，不需 admin token
+  (e) ADMIN_TOKEN 未設定（空字串）時 fail-closed，一律拒絕
 """
 
 from __future__ import annotations
@@ -436,6 +439,56 @@ def test_admin_token_unset_denies_even_empty_header(
     assert res_empty_header.status_code == 401
 
 
+# ── admin_email：用 Supabase JWT（Google 登入）當第二條 admin 授權路徑 ──────
+
+
+def test_admin_email_matching_jwt_allows_access_without_token(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from tests._auth import auth_header
+
+    monkeypatch.setattr(
+        admin_router,
+        "get_settings",
+        lambda: Settings(
+            environment="dev", admin_token=ADMIN_TOKEN, admin_email="Admin@Example.com"
+        ),
+    )
+    res = client.get(
+        "/admin/episodes", headers=auth_header("some-user-id", email="admin@example.com")
+    )
+    assert res.status_code == 200
+
+
+def test_admin_email_mismatched_jwt_still_401(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from tests._auth import auth_header
+
+    monkeypatch.setattr(
+        admin_router,
+        "get_settings",
+        lambda: Settings(
+            environment="dev", admin_token=ADMIN_TOKEN, admin_email="admin@example.com"
+        ),
+    )
+    res = client.get(
+        "/admin/episodes", headers=auth_header("some-user-id", email="someone-else@example.com")
+    )
+    assert res.status_code == 401
+    assert res.json()["error"]["code"] == "unauthorized"
+
+
+def test_admin_email_unset_denies_jwt_even_with_email_claim(client: TestClient) -> None:
+    """預設 fixture 未設 admin_email：帶 email claim 的合法 JWT 仍不能開後台。"""
+    from tests._auth import auth_header
+
+    res = client.get(
+        "/admin/episodes", headers=auth_header("some-user-id", email="admin@example.com")
+    )
+    assert res.status_code == 401
+
+
 # ── /admin/eps/generate ────────────────────────────────────────────
 
 
@@ -774,9 +827,7 @@ def test_list_channel_topics_filters_by_status(client: TestClient) -> None:
 
 
 def test_list_channel_topics_channel_not_found_returns_404(client: TestClient) -> None:
-    res = client.get(
-        "/admin/channels/does-not-exist/topics", headers=_admin_headers(ADMIN_TOKEN)
-    )
+    res = client.get("/admin/channels/does-not-exist/topics", headers=_admin_headers(ADMIN_TOKEN))
     assert res.status_code == 404
     assert res.json()["error"]["code"] == "not_found"
 
@@ -867,9 +918,7 @@ def test_plan_channel_returns_202_and_enqueues_control_queue(client: TestClient)
 
 
 def test_plan_channel_not_found_returns_404(client: TestClient) -> None:
-    res = client.post(
-        "/admin/channels/does-not-exist/plan", headers=_admin_headers(ADMIN_TOKEN)
-    )
+    res = client.post("/admin/channels/does-not-exist/plan", headers=_admin_headers(ADMIN_TOKEN))
     assert res.status_code == 404
     assert res.json()["error"]["code"] == "not_found"
     assert SENT_MESSAGES == []

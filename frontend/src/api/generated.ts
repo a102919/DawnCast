@@ -2929,6 +2929,7 @@ export interface operations {
         parameters: {
             query?: never;
             header?: {
+                authorization?: string | null;
                 "X-Admin-Token"?: string | null;
             };
             path?: never;
@@ -2960,6 +2961,7 @@ export interface operations {
         parameters: {
             query?: never;
             header?: {
+                authorization?: string | null;
                 "X-Admin-Token"?: string | null;
             };
             path?: never;
@@ -2991,6 +2993,7 @@ export interface operations {
         parameters: {
             query?: never;
             header?: {
+                authorization?: string | null;
                 "X-Admin-Token"?: string | null;
             };
             path?: never;
@@ -3028,6 +3031,7 @@ export interface operations {
                 status?: string | null;
             };
             header?: {
+                authorization?: string | null;
                 "X-Admin-Token"?: string | null;
             };
             path?: never;
@@ -3059,6 +3063,7 @@ export interface operations {
         parameters: {
             query?: never;
             header?: {
+                authorization?: string | null;
                 "X-Admin-Token"?: string | null;
             };
             path?: never;
@@ -3094,6 +3099,7 @@ export interface operations {
         parameters: {
             query?: never;
             header?: {
+                authorization?: string | null;
                 "X-Admin-Token"?: string | null;
             };
             path: {
@@ -3133,6 +3139,7 @@ export interface operations {
                 status?: string | null;
             };
             header?: {
+                authorization?: string | null;
                 "X-Admin-Token"?: string | null;
             };
             path: {
@@ -3166,6 +3173,7 @@ export interface operations {
         parameters: {
             query?: never;
             header?: {
+                authorization?: string | null;
                 "X-Admin-Token"?: string | null;
             };
             path: {
@@ -3204,6 +3212,7 @@ export interface operations {
         parameters: {
             query?: never;
             header?: {
+                authorization?: string | null;
                 "X-Admin-Token"?: string | null;
             };
             path: {
@@ -3237,6 +3246,7 @@ export interface operations {
         parameters: {
             query?: never;
             header?: {
+                authorization?: string | null;
                 "X-Admin-Token"?: string | null;
             };
             path: {

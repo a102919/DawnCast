@@ -49,7 +49,10 @@ const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL ?? '').replace(/\/$/, ''
 // getLastOrderDate / setLastOrderDate 屬純 UI 狀態，留在 localStorage（後端聖約外）。
 const LAST_ORDER_DATE_KEY = 'dawncast:lastOrderDate'
 
-// Admin token：與一般 user JWT 完全獨立的認證（後端 router 用常數時間比對）。
+// Admin token：X-Admin-Token 是後端 admin 驗證的其中一條路徑（另一條是既有
+// Supabase JWT 的 email 白名單，見 backend/app/routers/admin.py require_admin）。
+// 兩者擇一即可，故這裡沒 token 時不擋請求——Authorization header（request() 已
+// 自動帶入）走 email 白名單那條路就夠。
 // 不放 env（會隨 build 散佈到 client bundle，公開站暴露 admin 風險），
 // 不放程式碼（單一 admin 也不需要 build-time injection），改在 AdminTokenCard UI 貼上、
 // 存 localStorage。見 routes/admin/AdminTokenCard.tsx。
@@ -100,15 +103,13 @@ export function clearAdminToken(): void {
   localStorage.removeItem(ADMIN_TOKEN_KEY)
 }
 
-/** admin 端點共用 header。沒 token 就地丟錯（fail-closed），不要送出去被後端回 401 才發現。
+/** admin 端點共用 header。沒 token 時不擋——已登入的 Supabase session（Google
+ *  帳號）走 email 白名單那條路即可，後端沒認出來才會回 401（由 request() 統一處理）。
  *  後端 ADMIN_TOKEN 是 secrets.compare_digest，header 大小寫不敏感但統一用官方慣例
  *  X-Admin-Token 對齊 curl / 文件範例。 */
 function adminHeaders(): Record<string, string> {
   const token = getAdminToken()
-  if (!token) {
-    throw new AppError('missing_admin_token', '尚未設定管理員權杖，請先在管理後台貼上')
-  }
-  return { 'X-Admin-Token': token }
+  return token ? { 'X-Admin-Token': token } : {}
 }
 
 // ─── Envelope 解包 ─────────────────────────────────────────────────────────

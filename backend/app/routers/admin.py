@@ -1,7 +1,9 @@
 """Ops / admin router：internal debug 用，查 episode / job / token 用量。
 
-授權機制與一般 API 不同——不是 Supabase JWT，是單一固定 token
-（X-Admin-Token header，走環境變數 ADMIN_TOKEN 比對，常數時間比對防 timing attack）。
+授權機制：兩條路徑擇一即可，見 require_admin。
+  1. X-Admin-Token header，走環境變數 ADMIN_TOKEN 比對（常數時間比對防 timing attack）。
+  2. 既有 Supabase JWT（Google 登入）的 email claim 對上環境變數 ADMIN_EMAIL——
+     用已登入的帳號就能開後台，不用每次手動複製貼上 token。
 YAGNI：目前只有單一管理員需求，不建 admin_users 表；之後若真的要多管理員，
 屆時再加表也不遲。
 """
@@ -18,6 +20,7 @@ from zoneinfo import ZoneInfo
 from fastapi import APIRouter, Depends, Header, Request, status
 from psycopg.rows import dict_row
 
+from app.deps import decode_jwt_payload, extract_bearer_token
 from app.response import ApiResponse, ok
 from app.schemas import (
     AdminEpsGenerateBody,
@@ -44,19 +47,35 @@ from shared.storage import r2
 logger = logging.getLogger(__name__)
 
 
-def require_admin_token(
+def require_admin(
+    authorization: str | None = Header(default=None),
     x_admin_token: str | None = Header(default=None, alias="X-Admin-Token"),
 ) -> None:
-    """驗 X-Admin-Token。fail-closed：ADMIN_TOKEN 未設定（空字串）時一律拒絕，
-    不可因為『環境沒設』就放行。對外只回 generic 401，不洩漏比對細節。
+    """驗 admin 身分：X-Admin-Token 或 Supabase JWT email 白名單，擇一即可。
+    fail-closed：兩條路徑都沒設定 / 都不符 → 一律拒絕。對外只回 generic 401，
+    不洩漏比對細節（不透露是 token 錯還是 email 不符）。
     """
     settings = get_settings()
-    expected = settings.admin_token
-    if not expected or not x_admin_token or not secrets.compare_digest(x_admin_token, expected):
-        raise AuthError("認證失敗")
+    if (
+        settings.admin_token
+        and x_admin_token
+        and secrets.compare_digest(x_admin_token, settings.admin_token)
+    ):
+        return
+    if settings.admin_email:
+        token = extract_bearer_token(authorization)
+        if token:
+            try:
+                payload = decode_jwt_payload(token)
+            except AuthError:
+                payload = None
+            email = str(payload.get("email") or "") if payload else ""
+            if email and email.lower() == settings.admin_email.lower():
+                return
+    raise AuthError("認證失敗")
 
 
-router = APIRouter(prefix="/admin", tags=["admin"], dependencies=[Depends(require_admin_token)])
+router = APIRouter(prefix="/admin", tags=["admin"], dependencies=[Depends(require_admin)])
 
 
 _EPISODE_STATS_AGGREGATE_SQL = """
@@ -367,9 +386,7 @@ async def create_channel_endpoint(body: CreateChannelBody) -> ApiResponse[Channe
 
 
 @router.patch("/channels/{channel_id}", response_model=ApiResponse[Channel])
-async def update_channel_endpoint(
-    channel_id: str, body: UpdateChannelBody
-) -> ApiResponse[Channel]:
+async def update_channel_endpoint(channel_id: str, body: UpdateChannelBody) -> ApiResponse[Channel]:
     """部分更新頻道欄位；只有明確帶到的欄位才會被改動（exclude_unset）。
 
     不先查存在性——update_channel 對不存在的 id 是無害 no-op（fields 為空時

@@ -102,6 +102,12 @@ class Settings(BaseSettings):
     # 不可硬寫在程式碼；空字串 = 未設定，prod 會被 assert_secure() 擋下。
     admin_token: str = ""
 
+    # admin 驗證的第二條路徑：既有 Supabase JWT（Google 登入）email claim 白名單。
+    # 與 admin_token 擇一即可通過 require_admin——不用每次手動複製貼上 token，
+    # 直接用已登入的 Google 帳號就能開後台。單一 email（YAGNI：目前只有單一管理員，
+    # 見 admin.py 註解）；不可硬寫在程式碼，空字串 = 不啟用這條路徑。
+    admin_email: str = ""
+
     # ── 生成引擎（PRD §8，env 一鍵切）─────────────────────────
     generation_engine: EngineName = "api_key"
     failover_mode: FailoverMode = "degrade"
@@ -251,8 +257,8 @@ class Settings(BaseSettings):
             raise ConfigError("prod 的 CORS_ALLOWED_ORIGINS 不可包含 '*'")
         if self.cors_allowed_origin_regex.strip():
             raise ConfigError("prod 的 CORS_ALLOWED_ORIGIN_REGEX 不可設定（dev-only；prod 留空）")
-        if self.admin_token == "":
-            raise ConfigError("prod 未設定 ADMIN_TOKEN（不可用空字串）")
+        if not self.admin_token and not self.admin_email:
+            raise ConfigError("prod 未設定 ADMIN_TOKEN 或 ADMIN_EMAIL（至少擇一，不可兩者皆空）")
 
 
 @lru_cache
