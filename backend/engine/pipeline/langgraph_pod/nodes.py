@@ -115,15 +115,16 @@ _CEFR_GUIDE: dict[str, str] = {
 
 
 def resolve_format(topic_type: str, length_tier: str) -> ScriptFormat:
-    """依入口類型 × 長度 tier 自動決定格式，使用者不手動切換（PRD 重新設計 §3）。
+    """依入口類型決定格式，使用者不手動切換（PRD 重新設計 §3）。
 
-    news        → 單人口白（快訊，Up First / Apple News+ Narrated 模式）
-    evergreen 長篇 → 單人口白（深度技術解說，避免雙人虛擬人設分散注意力）
-    其餘         → 雙主持對話（保留 SLA 對話建模與化學效應價值）
+    news    → 單人口白（快訊，Up First / Apple News+ Narrated 模式）
+    其餘    → 雙主持對話（保留 SLA 對話建模與化學效應價值）
+
+    注意：原本「evergreen 長篇 → 單人口白」會把所有長篇技術/科普講成
+    Nova 獨白 7 分鐘，沒有對話節奏與角色互動；對依賴 dialogue chemistry
+    的使用者體驗是直接降級，已在 2026-07-29 拿掉，一律走 dialogue。
     """
     if topic_type == "news":
-        return "monologue"
-    if topic_type == "evergreen" and length_tier == "long":
         return "monologue"
     return "dialogue"
 

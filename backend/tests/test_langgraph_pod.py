@@ -733,12 +733,13 @@ def test_resolve_format_news_always_monologue() -> None:
     assert resolve_format("news", "long") == "monologue"
 
 
-def test_resolve_format_evergreen_long_is_monologue_otherwise_dialogue() -> None:
+def test_resolve_format_evergreen_always_dialogue() -> None:
+    """evergreen 不論長短都走 dialogue（不再強制 long → monologue，見 nodes.py）。"""
     from engine.pipeline.langgraph_pod.nodes import resolve_format
 
-    assert resolve_format("evergreen", "long") == "monologue"
     assert resolve_format("evergreen", "short") == "dialogue"
     assert resolve_format("evergreen", "medium") == "dialogue"
+    assert resolve_format("evergreen", "long") == "dialogue"
 
 
 def test_resolve_format_product_always_dialogue() -> None:

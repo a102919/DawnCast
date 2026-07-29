@@ -23,6 +23,29 @@ function formatDuration(ms: number): string {
   return min > 0 ? `${min}分${sec}秒` : `${sec}秒`
 }
 
+// LangGraph node 名稱 → 繁體中文 label。
+// 來源：backend/engine/pipeline/langgraph_pod/graph.py:add_node() 的 16 個字串字面值。
+// 未列在 map 裡的 node（未來新增）會 fallback 回原 snake_case，符合 CLAUDE.md
+// 技術識別碼不受翻譯規則限制的條款；同時方便工程師對回 backend metric。
+const PIPELINE_NODE_LABELS: Readonly<Record<string, string>> = {
+  decompose_research: '研究拆解',
+  gather_evidence: '蒐集證據',
+  cross_verify: '交叉驗證',
+  tone_selector: '語氣選角',
+  write_script: '撰寫腳本',
+  failover_write_script: '改寫腳本',
+  verify_script_claims: '查證內容',
+  quality_judge: '品質評分',
+  rewrite_iter_bump: '重寫進位',
+  upsert_episode: '寫入集數',
+  render_episode: '合成音檔',
+  upload_artifacts: '上傳產出',
+  dead_letter: '死信終止',
+  update_episode_keys: '更新金鑰',
+  insert_deliveries: '寫入推播',
+  backfill_dict: '回填詞庫',
+}
+
 type SortKey = 'recent' | 'plays' | 'listeners' | 'cost'
 
 const SORT_OPTIONS: ReadonlyArray<{ key: SortKey; label: string }> = [
@@ -183,7 +206,7 @@ function EpisodeStatsRow({ item }: { readonly item: AdminEpisodeStats }) {
           {item.stages.map((stage, i) => (
             <div key={`${stage.node}-${stage.attempt}-${i}`} className="flex items-center justify-between text-[11px]">
               <span className={stage.status === 'failed' ? 'text-danger' : 'text-text-primary'}>
-                {stage.node}
+                {PIPELINE_NODE_LABELS[stage.node] ?? stage.node}
                 {stage.attempt > 1 && <span className="text-text-secondary"> (第 {stage.attempt} 次)</span>}
               </span>
               <span className="text-text-secondary font-mono">{formatDuration(stage.durationMs)}</span>

@@ -141,7 +141,7 @@ export function PlayerRoute() {
   return (
     <div className="bg-bg-canvas h-[calc(100dvh-56px-env(safe-area-inset-top,0px))] overflow-hidden text-text-primary flex flex-col">
       {/* 大歌詞：佔滿中間剩餘空間，封面與標題作為第一個 scroll item 一起滾動 */}
-      <main className="flex-1 min-h-0 relative pb-[100px] lg:pb-40">
+      <main className="flex-1 min-h-0 overflow-hidden relative">
         <LyricsView
           episodeId={episode.id}
           episodeTitle={episode.title}
@@ -149,14 +149,8 @@ export function PlayerRoute() {
           currentTime={currentTime}
           onWordClick={handleWordClick}
           onCueClick={handleCueClick}
+          references={episode.references}
         />
-        {/* 行動版參考資料浮動卡：LyricsView 自帶滾動（無外部 container 可掛），
-            故以 absolute 浮在 main 的 padding-bottom 區；桌面版同一元件進 footer。 */}
-        {episode.references && episode.references.length > 0 && (
-          <div className="lg:hidden absolute inset-x-4 bottom-4 z-20">
-            <EpisodeReferences references={episode.references} />
-          </div>
-        )}
       </main>
 
       {/* 控制列（桌面） */}

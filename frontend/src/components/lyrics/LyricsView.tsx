@@ -1,10 +1,11 @@
 import { useEffect, useMemo, useRef } from 'react'
 import { useReducedMotion } from 'framer-motion'
-import type { Cue } from '../../types/episode'
+import type { Cue, SourceReference } from '../../types/episode'
 import { useVocab } from '../../state'
 import { findActiveCueIndex, splitTextToWords, getCoverArt, coverArtBackground } from '../../lib'
 import { renderTokenized } from '../shared/renderTokenized'
 import { EpisodeCover } from '../shared/EpisodeCover'
+import { EpisodeReferences } from '../player/EpisodeReferences'
 
 const RESUME_AUTOSCROLL_MS = 3000
 
@@ -15,6 +16,8 @@ interface LyricsViewProps {
   readonly currentTime: number
   readonly onWordClick: (word: string, cue: Cue) => void
   readonly onCueClick?: (cue: Cue) => void
+  /** 行動版參考資料浮動卡；桌面版由 PlayerRoute footer 另渲一份 */
+  readonly references?: readonly SourceReference[]
 }
 
 /** Apple Music 風大歌詞：當句大字置中、上下句半透、自動捲入中央；點字同樣接查詞。
@@ -25,7 +28,7 @@ interface LyricsViewProps {
  * - 自動捲：activeCueIdx 變動時 scrollIntoView({ block: 'center' })。使用者手動滾動
  *   （wheel / touchmove）時暫停自動捲動，停手 3 秒後自動恢復跟隨當句。
  */
-export function LyricsView({ episodeId, episodeTitle, cues, currentTime, onWordClick, onCueClick }: LyricsViewProps) {
+export function LyricsView({ episodeId, episodeTitle, cues, currentTime, onWordClick, onCueClick, references }: LyricsViewProps) {
   const { isInVocab } = useVocab()
   const art = useMemo(() => getCoverArt(episodeId), [episodeId])
   const activeCueIdx = useMemo(() => findActiveCueIndex(cues, currentTime), [cues, currentTime])
@@ -69,7 +72,7 @@ export function LyricsView({ episodeId, episodeTitle, cues, currentTime, onWordC
       <div className="absolute inset-0 lyrics-scrim pointer-events-none" />
       <div
         ref={containerRef}
-        className="relative z-10 h-full overflow-y-auto px-6"
+        className="relative z-10 h-full overflow-y-auto px-6 pb-[100px] lg:pb-40"
         aria-label="歌詞"
       >
         {/* Cover + title：當成第一個 scroll item，與歌詞一起滾動 */}
@@ -142,6 +145,13 @@ export function LyricsView({ episodeId, episodeTitle, cues, currentTime, onWordC
               </div>
             )
           })}
+
+          {/* 行動版參考資料：與台詞同一層，desktop 由 footer 另渲一份避免重複。 */}
+          {references && references.length > 0 && (
+            <div className="lg:hidden">
+              <EpisodeReferences references={references} />
+            </div>
+          )}
         </div>
       </div>
     </div>
