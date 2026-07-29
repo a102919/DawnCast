@@ -264,7 +264,12 @@ async def test_combined_provider_aclose_closes_all() -> None:
 
 def test_factory_dispatches_by_topic_type() -> None:
     settings = _settings()
-    assert isinstance(make_source_provider("news", settings), GdeltProvider)
+    # news：GDELT 連線可能 timeout，Tavily news mode 補；CombinedProvider 任一失敗
+    # 吞掉（見 engine/sources/base.py:CombinedProvider.fetch）。
+    news = make_source_provider("news", settings)
+    assert isinstance(news, CombinedProvider)
+    assert isinstance(news._providers[0], GdeltProvider)  # noqa: SLF001
+    assert isinstance(news._providers[1], TavilyProvider)  # noqa: SLF001
     assert isinstance(make_source_provider("product", settings), TavilyProvider)
     evergreen = make_source_provider("evergreen", settings)
     assert isinstance(evergreen, CombinedProvider)

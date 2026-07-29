@@ -149,6 +149,57 @@ async def test_gather_evidence_keeps_partial_success_and_closes_every_provider()
     assert all(provider.closed for provider in created)
 
 
+async def test_gather_evidence_propagates_provider_errors_to_collector() -> None:
+    """gather 失敗的 provider 訊息要進 research_metrics.errors ── 沒這條，
+    prod 6 個 sub-question 全 timeout 時只看到 grounded=false，看不出哪家掛了。
+    """
+    from engine.pipeline.langgraph_pod.metrics import MetricsCollector
+    from engine.pipeline.langgraph_pod.nodes import gather_evidence_node
+    from shared.config import get_settings
+    from shared.errors import SourceFetchError
+    from shared.models import ResearchQuestion, SourceSnippet
+
+    class BrokenProvider:
+        name = "broken"
+
+        async def fetch(self, query: str) -> list[SourceSnippet]:
+            raise SourceFetchError("broken provider timeout")
+
+        async def aclose(self) -> None:
+            return None
+
+    def factory(topic_type: str, settings: object) -> BrokenProvider:
+        return BrokenProvider()
+
+    collector = MetricsCollector(idempotency_key="test-errors")
+    config = {
+        "configurable": {
+            "settings": get_settings(),
+            "source_provider_factory": factory,
+            "metrics_collector": collector,
+        }
+    }
+    state = {
+        "big_topic": "科技",
+        "topic_type": "news",
+        "research_questions": [
+            ResearchQuestion(question="q1", kind="claim_check"),
+            ResearchQuestion(question="q2", kind="claim_check"),
+        ],
+    }
+
+    result = await gather_evidence_node(state, config)
+
+    # state 端 errors 還是要回傳（LangGraph reducer），但重點是 collector 也收一份
+    assert len(result["errors"]) == 2
+    assert all("broken" in e for e in result["errors"])
+    metrics = collector.research_metrics()
+    assert metrics["source_count"] == 0
+    assert metrics["grounded"] is False
+    assert metrics["provider_counts"] == {}
+    assert metrics["errors"] == result["errors"]
+
+
 async def test_cross_verify_preserves_source_conflicts() -> None:
     import json
 

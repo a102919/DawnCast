@@ -25,7 +25,18 @@ def make_source_provider(
 ) -> SourceProvider | None:
     cfg = settings or get_settings()
     if topic_type == "news":
-        return GdeltProvider(cfg)
+        # GDELT 免費但 Zeabur api-ovate container outbound 對 gdeltproject.org
+        # 不一定連得到（已實測 ConnectTimeout）。跟 evergreen 同模式：兩個並跑，
+        # GDELT 連不上被 CombinedProvider 吞掉，Tavily news mode (topic=news +
+        # days=tavily_recency_days) 補實際拿不到時的 fallback。修這條前 prod 跑
+        # news 集數永遠是 provider_counts={}、grounded=false，podcast 變純 LLM
+        # 生成無佐證。
+        return CombinedProvider(
+            [
+                GdeltProvider(cfg),
+                TavilyProvider(cfg, recency_days=cfg.tavily_recency_days),
+            ]
+        )
     if topic_type == "product":
         return TavilyProvider(cfg, recency_days=cfg.tavily_recency_days)
     if topic_type == "evergreen":

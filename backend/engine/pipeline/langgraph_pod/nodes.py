@@ -891,12 +891,18 @@ async def gather_evidence_node(state: PodState, config: RunnableConfig) -> dict[
         provider_counts: dict[str, int] = {}
         for card in cards:
             provider_counts[card.provider] = provider_counts.get(card.provider, 0) + 1
-        collector.set_research_summary(
+        # errors 寫進 collector 才能在 prod dashboard 看到「為什麼這集 grounded=false」
+        # ── 沒這條，6 個 sub-question 全部 SourceFetchError 被 except 吞掉，表面上
+        # 永遠像「沒事實佐證」，debug 一片黑（見 2026-07-29 GDELT 連線 timeout 案例）。
+        summary_kwargs: dict[str, Any] = dict(
             source_count=len(sources),
             evidence_card_count=len(cards),
             grounded=bool(sources),
             provider_counts=provider_counts,
         )
+        if errors:
+            summary_kwargs["errors"] = errors
+        collector.set_research_summary(**summary_kwargs)
 
     result: dict[str, Any] = {
         "sources": sources,
