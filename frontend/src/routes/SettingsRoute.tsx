@@ -28,6 +28,13 @@ function isTopicChoice(s: string): s is Exclude<TopicKey, 'all'> {
   return (TOPIC_CHOICES as readonly string[]).includes(s)
 }
 
+// UI 顯示用白名單，對齊後端 ADMIN_EMAIL（backend/app/routers/admin.py require_admin）。
+// 只決定按鈕看不看得到，不是安全邊界——後端 JWT email 比對才是真正的授權。
+const ADMIN_EMAIL = 'q06637557832@gmail.com'
+function isAdminEmail(email: string | null | undefined): boolean {
+  return !!email && email.toLowerCase() === ADMIN_EMAIL
+}
+
 export function SettingsRoute() {
   const { settings, updateSettings } = useSettings()
   const { clearVocab, items } = useVocab()
@@ -305,18 +312,22 @@ export function SettingsRoute() {
             沿用 confirmClear 的 AnimatePresence 二次確認模式，避免引入新互動元件。 */}
         <SettingSection title="帳號">
           <div>
-            <SettingRow
-              label="管理後台"
-              description="主動觸發單集公開 podcast 生成"
-            >
-              <Link
-                to="/admin"
-                className="text-sm text-accent hover:underline cursor-pointer px-3 py-2 -mr-3 rounded min-h-[44px] inline-flex items-center gap-1.5"
+            {/* 純 UX 遮蔽，不是授權邊界——真正的驗證在後端 require_admin（token 或
+                ADMIN_EMAIL 白名單），這裡藏起來只是不讓其他帳號看到一個點了會 401 的按鈕。 */}
+            {isAdminEmail(user?.email) && (
+              <SettingRow
+                label="管理後台"
+                description="主動觸發單集公開 podcast 生成"
               >
-                <ShieldCheck size={14} />
-                進入
-              </Link>
-            </SettingRow>
+                <Link
+                  to="/admin"
+                  className="text-sm text-accent hover:underline cursor-pointer px-3 py-2 -mr-3 rounded min-h-[44px] inline-flex items-center gap-1.5"
+                >
+                  <ShieldCheck size={14} />
+                  進入
+                </Link>
+              </SettingRow>
+            )}
             {user ? (
               <SettingRow label="登入狀態" description={user.email}>
                 <button
