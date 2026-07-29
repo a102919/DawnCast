@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import time
+
 import httpx
 import pytest
 
@@ -27,6 +29,17 @@ def _settings(**overrides: object) -> Settings:
 
 def _swap_transport(client: httpx.AsyncClient, handler: httpx.MockTransport) -> None:
     client._transport = handler  # noqa: SLF001 測試替換底層 transport
+
+
+def _reset_gdelt_throttle() -> None:
+    """清掉跨測試的 process 級限流狀態。"""
+    import engine.sources.news as news_mod
+
+    news_mod._gdelt_last_call_ts = -news_mod._GDELT_MIN_INTERVAL_SECS  # noqa: SLF001
+
+
+# CI 排程誤差容忍：限流斷言用「≥ 冷卻期 − 0.5s」以避免 flaky。
+_THROTTLE_SLACK = 0.5
 
 
 # ── WikipediaProvider ────────────────────────────────────────
@@ -154,6 +167,8 @@ async def test_tavily_provider_http_error_raises_source_fetch_error() -> None:
 
 @pytest.mark.asyncio
 async def test_gdelt_provider_without_tavily_key_uses_title_only() -> None:
+    _reset_gdelt_throttle()
+
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(
             200,
@@ -182,6 +197,8 @@ async def test_gdelt_provider_without_tavily_key_uses_title_only() -> None:
 
 @pytest.mark.asyncio
 async def test_gdelt_provider_http_error_raises_source_fetch_error() -> None:
+    _reset_gdelt_throttle()
+
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(500)
 
@@ -254,3 +271,71 @@ def test_factory_dispatches_by_topic_type() -> None:
     assert isinstance(evergreen._providers[0], WikipediaProvider)  # noqa: SLF001
     assert isinstance(evergreen._providers[1], TavilyProvider)  # noqa: SLF001
     assert make_source_provider("skill", settings) is None
+
+
+# ── GdeltProvider 限流（避免 6 個 sub-question 連發自己打進 429）───
+
+
+@pytest.mark.asyncio
+async def test_gdelt_throttle_blocks_burst_within_5s() -> None:
+    """第一次 fetch 通過，緊接第二次會被節流等待 5s。"""
+    _reset_gdelt_throttle()
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"articles": []})
+
+    provider = GdeltProvider(_settings(tavily_api_key=""))
+    _swap_transport(provider._client, httpx.MockTransport(handler))  # noqa: SLF001
+
+    t0 = time.monotonic()
+    await provider.fetch("q1")
+    await provider.fetch("q2")
+    elapsed = time.monotonic() - t0
+    await provider.aclose()
+
+    # 第一次立刻通過，第二次必須等冷卻期，所以總耗時 ≥ 5s（扣點排程誤差）。
+    assert elapsed >= 5.0 - _THROTTLE_SLACK, f"預期被節流至少 5s，實際只等 {elapsed:.2f}s"
+
+
+@pytest.mark.asyncio
+async def test_gdelt_throttle_is_shared_across_instances() -> None:
+    """不同 GdeltProvider 實例仍共用同一個限流器（gather_evidence_node 會這樣用）。"""
+    _reset_gdelt_throttle()
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"articles": []})
+
+    p1 = GdeltProvider(_settings(tavily_api_key=""))
+    p2 = GdeltProvider(_settings(tavily_api_key=""))
+    _swap_transport(p1._client, httpx.MockTransport(handler))  # noqa: SLF001
+    _swap_transport(p2._client, httpx.MockTransport(handler))  # noqa: SLF001
+
+    t0 = time.monotonic()
+    await p1.fetch("q1")
+    await p2.fetch("q2")  # 跨實例仍須等
+    elapsed = time.monotonic() - t0
+    await p1.aclose()
+    await p2.aclose()
+
+    assert elapsed >= 5.0 - _THROTTLE_SLACK
+
+
+@pytest.mark.asyncio
+async def test_gdelt_throttle_three_calls_wait_two_intervals() -> None:
+    """三次連發：第一次立刻，後兩次各等 5s，總耗時 ≥ 10s。"""
+    _reset_gdelt_throttle()
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"articles": []})
+
+    provider = GdeltProvider(_settings(tavily_api_key=""))
+    _swap_transport(provider._client, httpx.MockTransport(handler))  # noqa: SLF001
+
+    t0 = time.monotonic()
+    await provider.fetch("q1")
+    await provider.fetch("q2")
+    await provider.fetch("q3")
+    elapsed = time.monotonic() - t0
+    await provider.aclose()
+
+    assert elapsed >= 10.0 - _THROTTLE_SLACK, f"預期 3 次共等 ≥ 10s，實際 {elapsed:.2f}s"

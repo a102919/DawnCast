@@ -2,7 +2,8 @@
 
 對照使用者看到的三種入口（PRD 重新設計 §1）：
   news      → 今日新聞（GDELT）
-  product   → 使用者指定主題（沿用既有 TopicType 值，語意重定義為「自訂主題」，走 Tavily）
+  product   → 使用者指定主題（沿用既有 TopicType 值，語意重定義為「自訂主題」，走 Tavily，
+              帶 recency_days 篩最近事件，避免撈到常青科普內容而非「這幾天發生的事」）
   evergreen → 深度知識，Wikipedia + Tavily 都查，結果合併當 grounding（Wikipedia 免費但
               不夠即時，Tavily 補即時網路搜尋）
   skill     → 語言技能類內容（口語、慣用語）本質上教學導向、非事實導向，
@@ -26,7 +27,7 @@ def make_source_provider(
     if topic_type == "news":
         return GdeltProvider(cfg)
     if topic_type == "product":
-        return TavilyProvider(cfg)
+        return TavilyProvider(cfg, recency_days=cfg.tavily_recency_days)
     if topic_type == "evergreen":
         return CombinedProvider([WikipediaProvider(cfg), TavilyProvider(cfg)])
     return None

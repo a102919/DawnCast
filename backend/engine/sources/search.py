@@ -10,6 +10,8 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 import httpx
 
 from shared.config import Settings, get_settings
@@ -24,28 +26,34 @@ class TavilyProvider(_HttpSourceProvider):
 
     name = "tavily"
 
-    def __init__(self, settings: Settings | None = None) -> None:
+    def __init__(
+        self, settings: Settings | None = None, *, recency_days: int | None = None
+    ) -> None:
         cfg = settings or get_settings()
         super().__init__(
             base_url=cfg.tavily_base_url, settings=cfg, read_timeout=cfg.source_fetch_timeout
         )
         self._api_key = cfg.tavily_api_key
         self._max_snippets = cfg.source_max_snippets
+        # 非 None 時查詢會帶 topic="news" + days，讓 Tavily 依新鮮度篩選；
+        # None（預設）維持原本的 general 搜尋，給 evergreen 深度知識用途不受時間窗限制。
+        self._recency_days = recency_days
 
     async def fetch(self, query: str) -> list[SourceSnippet]:
         if not self._api_key:
             # 沒設 key：視同未啟用這條來源，回空 list 讓上層降級成純 LLM 生成。
             return []
+        payload: dict[str, Any] = {
+            "api_key": self._api_key,
+            "query": query,
+            "search_depth": "basic",
+            "max_results": self._max_snippets,
+        }
+        if self._recency_days is not None:
+            payload["topic"] = "news"
+            payload["days"] = self._recency_days
         try:
-            resp = await self._client.post(
-                "/search",
-                json={
-                    "api_key": self._api_key,
-                    "query": query,
-                    "search_depth": "basic",
-                    "max_results": self._max_snippets,
-                },
-            )
+            resp = await self._client.post("/search", json=payload)
             resp.raise_for_status()
             data = resp.json()
         except (httpx.HTTPError, ValueError) as exc:
