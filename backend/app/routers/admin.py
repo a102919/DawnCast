@@ -54,25 +54,65 @@ def require_admin(
     """驗 admin 身分：X-Admin-Token 或 Supabase JWT email 白名單，擇一即可。
     fail-closed：兩條路徑都沒設定 / 都不符 → 一律拒絕。對外只回 generic 401，
     不洩漏比對細節（不透露是 token 錯還是 email 不符）。
+
+    細節陷阱：
+      - secrets.compare_digest 對含 ≥0x80 byte 的 str 會 TypeError（Starlette 用
+        latin-1 解 header，會把這種 byte 原樣帶進來），會冒成未認證 500 兼 log
+        traceback，也成為「ADMIN_TOKEN 有沒有設」的 oracle。先 encode 成 bytes
+        並 catch TypeError → 統一回 401。
+      - JWT email claim 只代表 Supabase 專案簽過此帳號，不代表 Google OAuth
+        驗證過。若 Supabase Email provider 開著且 Confirm email 關掉，攻擊者
+        可用 admin email 自助註冊拿到合法 JWT。雙保險：要求 email_verified 且
+        app_metadata.provider == "google"。
     """
     settings = get_settings()
-    if (
-        settings.admin_token
-        and x_admin_token
-        and secrets.compare_digest(x_admin_token, settings.admin_token)
-    ):
-        return
+    if settings.admin_token and x_admin_token:
+        try:
+            # surrogateescape 把 latin-1 解不出的 byte 留成 code point，避免
+            # compare_digest 直接 TypeError；對 admin_token 來自 Settings（純
+            # ASCII env var）永遠 encode 成功，這裡只防 x_admin_token 端。
+            token_bytes = x_admin_token.encode("utf-8", "surrogateescape")
+            expected_bytes = settings.admin_token.encode("utf-8", "surrogateescape")
+        except (UnicodeError, TypeError):
+            token_bytes = expected_bytes = b""
+        if secrets.compare_digest(token_bytes, expected_bytes):
+            return
     if settings.admin_email:
         token = extract_bearer_token(authorization)
         if token:
-            try:
-                payload = decode_jwt_payload(token)
-            except AuthError:
-                payload = None
-            email = str(payload.get("email") or "") if payload else ""
-            if email and email.lower() == settings.admin_email.lower():
+            payload = _decode_for_admin(token)
+            if _is_authorized_admin(payload, settings.admin_email):
                 return
     raise AuthError("認證失敗")
+
+
+def _decode_for_admin(token: str) -> dict[str, Any] | None:
+    """解 JWT payload；驗證失敗 / 沒 exp 視同沒帶憑證，回 None（不 throw）。
+
+    require_exp=True 免費防禦：python-jose 預設驗 exp 但不要求有 exp claim，
+    真實 Supabase token 一律帶 exp，但若攻擊者找到任何能自簽的窗口，缺 exp
+    的 token 不該被接受。
+    """
+    try:
+        return decode_jwt_payload(token, require_exp=True)
+    except AuthError:
+        return None
+
+
+def _is_authorized_admin(payload: dict[str, Any] | None, admin_email: str) -> bool:
+    """payload 是否可開後台：email 命中白名單 + email_verified=True +
+    app_metadata.provider == "google"。
+
+    拆出來方便測試單獨驗證（見 tests/test_admin.py）。
+    """
+    if not payload:
+        return False
+    if payload.get("email_verified") is not True:
+        return False
+    if str((payload.get("app_metadata") or {}).get("provider") or "") != "google":
+        return False
+    email = str(payload.get("email") or "")
+    return bool(email) and email.lower() == admin_email.lower()
 
 
 router = APIRouter(prefix="/admin", tags=["admin"], dependencies=[Depends(require_admin)])

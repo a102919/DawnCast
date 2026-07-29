@@ -218,6 +218,10 @@ class Settings(BaseSettings):
     # 沒設 key 的 provider 在 factory 裡直接跳過。
     tavily_api_key: str = ""
     tavily_base_url: str = "https://api.tavily.com"
+    # product 入口（使用者自訂主題）預設要時效性內容：帶 Tavily 的 topic="news"
+    # 才會依 days 篩最近事件，否則排序偏向常青／科普內容，選不到「這幾天發生的事」。
+    # evergreen 入口刻意不吃這個值（見 factory.py），深度知識不該被時間窗卡住。
+    tavily_recency_days: int = 7
     gdelt_base_url: str = "https://api.gdeltproject.org/api/v2/doc/doc"
     # 用 MediaWiki Action API（穩定、文件完整）而非 REST summary endpoint，
     # 同一支 URL 同時做 srsearch（找標題）與 prop=extracts（拿內文）。
@@ -253,6 +257,11 @@ class Settings(BaseSettings):
             raise ConfigError(
                 "prod 用 HS256 但 SUPABASE_JWT_SECRET 仍是預設哨兵值（dev-secret-change-me）"
             )
+        # HS256 是對稱簽章，secret 太短等於可猜——一旦猜到就能偽造任意 JWT
+        # 含 email claim 繞過 admin 白名單。要求 ≥32 chars 對齊 HS256 256-bit
+        # entropy 下界。prod 現值 36 char 通過。
+        if self.supabase_jwt_alg == "HS256" and len(self.supabase_jwt_secret) < 32:
+            raise ConfigError("prod HS256 SUPABASE_JWT_SECRET 必須 ≥32 chars")
         if "*" in self.cors_allowed_origins:
             raise ConfigError("prod 的 CORS_ALLOWED_ORIGINS 不可包含 '*'")
         if self.cors_allowed_origin_regex.strip():

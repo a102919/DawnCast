@@ -30,9 +30,14 @@ UserId = str
 # JWKS cache：避免每個 request 都打 Supabase。
 # Key rotation 期間 Supabase 會回 'kid not found'，屆時 invalidate cache 重抓一次。
 _JWKS_TTL_SEC = 3600
+# 強制重抓冷卻：未認證亂 kid 會把 cache 失效、若無 cooldown 等於每個請求打一次
+# Supabase JWKS endpoint，可把整個服務登入流程連坐打掛。冷卻期間直接 401，
+# 不打外網（rotation 期間真實使用者多撐 60 秒也只影響一次登入，可接受）。
+_JWKS_REFETCH_COOLDOWN_SEC = 60
 _jwks_lock = threading.Lock()
 _jwks_cache: dict[str, Any] | None = None
 _jwks_fetched_at: float = 0.0
+_jwks_last_forced_refetch: float = 0.0
 
 # 測試可 monkeypatch 這個 factory 注入 fake JWKS；prod 一律走 _fetch_jwks_http。
 _JwksFactory = Callable[[Settings], dict[str, Any]]
@@ -71,6 +76,24 @@ def _invalidate_jwks_cache() -> None:
         _jwks_fetched_at = 0.0
 
 
+def _force_refetch_jwks() -> bool:
+    """強制 invalidate + 重抓 JWKS，回傳 True = 在冷卻期內已跳過。
+
+    包成一個 step：callers 不需自己 invalidate 再 _get_jwks，避免兩段流程
+    各自觸發 fetch 導致計數翻倍。冷卻期間不 invalidate、不重抓，直接 False。
+    """
+    global _jwks_last_forced_refetch
+    now = time.monotonic()
+    with _jwks_lock:
+        last = _jwks_last_forced_refetch
+        if last > 0 and (now - last) < _JWKS_REFETCH_COOLDOWN_SEC:
+            return False
+        _jwks_last_forced_refetch = now
+        _jwks_cache = None
+        _jwks_fetched_at = 0.0
+    return True
+
+
 def extract_bearer_token(authorization: str | None) -> str | None:
     """從 Authorization header 取出 Bearer token 字串；格式不符或缺 token 回 None。
 
@@ -91,7 +114,7 @@ def _decode(token: str) -> str:
     return sub
 
 
-def decode_jwt_payload(token: str) -> dict[str, Any]:
+def decode_jwt_payload(token: str, *, require_exp: bool = False) -> dict[str, Any]:
     """驗 JWT，回傳完整 payload。給 account.py 的 _jwt_email 等需要額外 claim 的場景用。
 
     兩個 mode：
@@ -99,8 +122,13 @@ def decode_jwt_payload(token: str) -> dict[str, Any]:
     - HS256（self-host opt-in）：用 SUPABASE_JWT_SECRET 直接 verify。
       路徑在 SUPABASE_JWT_ALG=HS256 時啟用；prod 仍要求 secret 非預設（見
       Settings.assert_secure）。
+
+    require_exp=True：強制 token 必須帶 exp claim（python-jose 預設只驗 exp 合法
+    性，不要求存在）；admin 等敏感入口用，免費防禦長效 token。
     """
     settings = get_settings()
+
+    options = {"require_exp": require_exp} if require_exp else None
 
     if settings.supabase_jwt_alg == "HS256":
         try:
@@ -109,6 +137,7 @@ def decode_jwt_payload(token: str) -> dict[str, Any]:
                 settings.supabase_jwt_secret,
                 algorithms=["HS256"],
                 audience=settings.supabase_jwt_audience,
+                options=options,
             )
         except JWTError as exc:
             logger.info("JWT 驗證失敗（HS256）: %s", exc)
@@ -131,8 +160,11 @@ def decode_jwt_payload(token: str) -> dict[str, Any]:
         jwks = _get_jwks(settings)
         key = _find_key(jwks, kid)
         if key is None:
-            # 沒找到 → 強制 invalidate 重抓，cover key rotation 邊界
-            _invalidate_jwks_cache()
+            # 沒找到 → 強制重抓，cover key rotation 邊界；
+            # 但加冷卻避免未認證亂 kid 把整個服務打掛（共享 module-level cache，
+            # 會連坐把 get_current_user 一起拖累）。冷卻期間直接 401。
+            if not _force_refetch_jwks():
+                raise AuthError("認證失敗")
             jwks = _get_jwks(settings)
             key = _find_key(jwks, kid)
     except Exception as exc:
@@ -148,6 +180,7 @@ def decode_jwt_payload(token: str) -> dict[str, Any]:
             key,
             algorithms=["ES256"],
             audience=settings.supabase_jwt_audience,
+            options=options,
         )
     except JWTError as exc:
         logger.info("JWT 驗證失敗: %s", exc)

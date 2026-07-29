@@ -71,11 +71,24 @@ def _ensure_init() -> None:
 
 
 def sign_test_token(user_id: str, **extra: Any) -> str:
-    """簽一支 mock Supabase token：sub=user_id, aud=authenticated, header.kid=test key。"""
+    """簽一支 mock Supabase token：sub=user_id, aud=authenticated, header.kid=test key。
+
+    預設帶 email_verified=True + app_metadata.provider=google + exp=9999999999，
+    模擬真實 Google OAuth 登入 token（admin require_admin 用前兩條當白名單前置
+    條件、require_exp=True 要求帶 exp，見 backend/app/routers/admin.py）。測試
+    想驗「未驗證 email」/「非 Google provider」/「缺 exp」拒絕情境時用 extra 覆寫。
+    """
     _ensure_init()
     assert _priv_pem is not None
     settings = get_settings()
-    payload: dict[str, Any] = {"sub": user_id, "aud": settings.supabase_jwt_audience, **extra}
+    payload: dict[str, Any] = {
+        "sub": user_id,
+        "aud": settings.supabase_jwt_audience,
+        "email_verified": True,
+        "app_metadata": {"provider": "google"},
+        "exp": 9999999999,
+        **extra,
+    }
     return str(jwt.encode(payload, _priv_pem, algorithm=_ALG, headers={"kid": _KID}))
 
 

@@ -15,14 +15,21 @@ require_admin）。故自成一份測試檔、自帶 FakeConnection，不共用 
 
 from __future__ import annotations
 
+import base64
 import itertools
+import json
 from typing import Any
 
 import pytest
+from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.asymmetric import ec
 from fastapi.testclient import TestClient
+from jose import jwt as jose_jwt
 
+from app import deps as deps_mod
 from app.routers import admin as admin_router
 from shared.config import Settings
+from tests._auth import _KID, _ensure_init, _priv_pem  # type: ignore[attr-defined]
 from tests._db_fakes import FakeConnection as _BaseFakeConnection
 from tests._db_fakes import FakeCursor as _BaseFakeCursor
 from tests._db_fakes import fake_connection
@@ -487,6 +494,258 @@ def test_admin_email_unset_denies_jwt_even_with_email_claim(client: TestClient) 
         "/admin/episodes", headers=auth_header("some-user-id", email="admin@example.com")
     )
     assert res.status_code == 401
+
+
+# ── 第二輪稽核補的攻擊情境測試（見 audit-agent 報告）────────────────────
+
+
+def test_admin_email_unverified_jwt_still_401(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """email_verified != True 一律拒：避免 Supabase Email provider 開放自助註冊時
+    攻擊者用 admin email 自己註冊拿到合法 JWT（見 _is_authorized_admin）。"""
+    from tests._auth import auth_header
+
+    monkeypatch.setattr(
+        admin_router,
+        "get_settings",
+        lambda: Settings(
+            environment="dev", admin_token=ADMIN_TOKEN, admin_email="admin@example.com"
+        ),
+    )
+    res = client.get(
+        "/admin/episodes",
+        headers=auth_header(
+            "some-user-id",
+            email="admin@example.com",
+            email_verified=False,
+        ),
+    )
+    assert res.status_code == 401
+
+
+def test_admin_email_non_google_provider_still_401(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """app_metadata.provider != "google" 一律拒：確保只有 Google OAuth 登入的帳號
+    能開後台，email/password 註冊或 magiclink 等其他 provider 拿不到 admin。"""
+    from tests._auth import auth_header
+
+    monkeypatch.setattr(
+        admin_router,
+        "get_settings",
+        lambda: Settings(
+            environment="dev", admin_token=ADMIN_TOKEN, admin_email="admin@example.com"
+        ),
+    )
+    res = client.get(
+        "/admin/episodes",
+        headers=auth_header(
+            "some-user-id",
+            email="admin@example.com",
+            app_metadata={"provider": "email"},
+        ),
+    )
+    assert res.status_code == 401
+
+
+def test_admin_non_ascii_x_admin_token_does_not_500(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """非 ASCII byte 的 X-Admin-Token（Starlette latin-1 decode 後 ≥0x80）走進
+    secrets.compare_digest 會 TypeError → 必 401，不可 500 也不可 log traceback
+    （也避免 500/401 成為 ADMIN_TOKEN 有沒有設的 oracle）。"""
+    monkeypatch.setattr(
+        admin_router,
+        "get_settings",
+        lambda: Settings(environment="dev", admin_token=ADMIN_TOKEN, admin_email=""),
+    )
+    # 傳 bytes ≥ 0x80：httpx 不收非 ASCII str header，但吃 bytes 並以 latin-1
+    # 解碼還原成 Python str（Starlette 內部走同一條路徑），模擬 prod 收到的
+    # 「admin token 內含 latin-1 byte」邊界。
+    res = client.get(
+        "/admin/episodes",
+        headers={"X-Admin-Token": "pässwörd-with-é".encode("latin-1")},
+    )
+    assert res.status_code == 401
+
+
+def test_admin_jwt_missing_exp_claim_still_401(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """沒帶 exp claim 的合法簽章 JWT 一律拒：python-jose 預設只驗 exp 合法性
+    不要求存在；admin 入口強制 require_exp，免費防禦長效 token。"""
+    _ensure_init()
+    # _priv_pem 是 module-level mutable，from import 只在 load 時取值一次，
+    # 這裡透過 tests._auth module attribute 重新讀，確保拿到 _ensure_init 後的值。
+    from tests import _auth
+
+    assert _auth._priv_pem is not None
+    priv_pem = _auth._priv_pem
+
+    monkeypatch.setattr(
+        admin_router,
+        "get_settings",
+        lambda: Settings(
+            environment="dev", admin_token="", admin_email="admin@example.com"
+        ),
+    )
+    # 不放 exp claim，照樣 ES256 簽（sign_test_token 預設會帶 exp=9999999999，
+    # 這裡刻意覆寫 pop 把整個 claim 拿掉——jose 不讓 exp 為 None encode）
+    payload = {
+        "sub": "some-user-id",
+        "aud": "authenticated",
+        "email": "admin@example.com",
+        "email_verified": True,
+        "app_metadata": {"provider": "google"},
+    }
+    token = str(
+        jose_jwt.encode(payload, priv_pem, algorithm="ES256", headers={"kid": _KID})
+    )
+    res = client.get("/admin/episodes", headers={"Authorization": f"Bearer {token}"})
+    assert res.status_code == 401
+
+
+def test_admin_jwt_wrong_signature_with_valid_kid_still_401(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """自己 key 簽 + 真 kid 的偽造 token → 401：證明 email claim 真在簽章覆蓋
+    範圍內，攻擊者無法繞 JWKS 白名單用自己 key 偷渡任意 email。"""
+
+    rogue_priv = ec.generate_private_key(ec.SECP256R1())
+    rogue_pem = rogue_priv.private_bytes(
+        encoding=serialization.Encoding.PEM,
+        format=serialization.PrivateFormat.PKCS8,
+        encryption_algorithm=serialization.NoEncryption(),
+    )
+    monkeypatch.setattr(
+        admin_router,
+        "get_settings",
+        lambda: Settings(
+            environment="dev", admin_token="", admin_email="admin@example.com"
+        ),
+    )
+    payload = {
+        "sub": "rogue",
+        "aud": "authenticated",
+        "email": "admin@example.com",
+        "email_verified": True,
+        "app_metadata": {"provider": "google"},
+        "exp": 9999999999,
+    }
+    token = str(jose_jwt.encode(payload, rogue_pem, algorithm="ES256", headers={"kid": _KID}))
+    res = client.get("/admin/episodes", headers={"Authorization": f"Bearer {token}"})
+    assert res.status_code == 401
+
+
+def test_admin_jwt_no_email_claim_still_401(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """合法 JWT 沒 email claim → 401。"""
+    from tests._auth import auth_header
+
+    monkeypatch.setattr(
+        admin_router,
+        "get_settings",
+        lambda: Settings(
+            environment="dev", admin_token="", admin_email="admin@example.com"
+        ),
+    )
+    res = client.get("/admin/episodes", headers=auth_header("some-user-id"))
+    assert res.status_code == 401
+
+
+def test_admin_jwt_alg_none_still_401(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """alg=none 的偽造 token → 401：jwt.decode 的 algorithms 白名單會拒絕。"""
+    monkeypatch.setattr(
+        admin_router,
+        "get_settings",
+        lambda: Settings(
+            environment="dev", admin_token="", admin_email="admin@example.com"
+        ),
+    )
+    # 手刻 alg=none 的 JWT（jose 不讓你這樣 encode）
+    header = base64.urlsafe_b64encode(json.dumps({"alg": "none", "kid": "x"}).encode()).rstrip(
+        b"="
+    )
+    body = base64.urlsafe_b64encode(
+        json.dumps(
+            {
+                "sub": "rogue",
+                "aud": "authenticated",
+                "email": "admin@example.com",
+                "email_verified": True,
+                "app_metadata": {"provider": "google"},
+                "exp": 9999999999,
+            }
+        ).encode()
+    ).rstrip(b"=")
+    token = (header + b"." + body + b".").decode()
+    res = client.get("/admin/episodes", headers={"Authorization": f"Bearer {token}"})
+    assert res.status_code == 401
+
+
+def test_admin_jwt_random_kid_does_not_hammer_jwks(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """亂 kid 不該無限次強迫 JWKS 重抓——冷卻期間第二次直接 401，不打外網。
+
+    用 monkeypatch 計數 JWKS factory 被呼叫次數，斷言 N 個亂 kid 只觸發 1 次
+    外網 fetch。
+    """
+    # 保存原值，test 結束（即使斷言失敗）都要還原 _jwks_factory 與冷卻狀態，
+    # 否則同一個 process 內後續測試 decode JWT 會撞到計數 factory 或撞冷卻 401。
+    monkeypatch.setattr(deps_mod, "_jwks_last_forced_refetch", 0.0)
+    monkeypatch.setattr(deps_mod, "_jwks_cache", None)
+    monkeypatch.setattr(deps_mod, "_jwks_fetched_at", 0.0)
+    fetch_count = {"n": 0}
+
+    def counting_factory(_settings: object) -> dict[str, object]:
+        fetch_count["n"] += 1
+        # JWKS 故意是空集合：所有 kid 都 miss，模擬「bad kid」
+        return {"keys": []}
+
+    monkeypatch.setattr(deps_mod, "_jwks_factory", counting_factory)
+    deps_mod._invalidate_jwks_cache()
+
+    monkeypatch.setattr(
+        admin_router,
+        "get_settings",
+        lambda: Settings(
+            environment="dev", admin_token="", admin_email="admin@example.com"
+        ),
+    )
+
+    # 用 jose 直接造一支 ES256 token，kid 故意填 JWKS 沒有的值
+    rogue_priv = ec.generate_private_key(ec.SECP256R1())
+    rogue_pem = rogue_priv.private_bytes(
+        encoding=serialization.Encoding.PEM,
+        format=serialization.PrivateFormat.PKCS8,
+        encryption_algorithm=serialization.NoEncryption(),
+    )
+
+    for kid in ("bogus-1", "bogus-2", "bogus-3"):
+        payload = {
+            "sub": "u",
+            "aud": "authenticated",
+            "email": "admin@example.com",
+            "email_verified": True,
+            "app_metadata": {"provider": "google"},
+            "exp": 9999999999,
+        }
+        token = str(
+            jose_jwt.encode(payload, rogue_pem, algorithm="ES256", headers={"kid": kid})
+        )
+        res = client.get("/admin/episodes", headers={"Authorization": f"Bearer {token}"})
+        assert res.status_code == 401
+
+    # 冷卻前第一個請求 → invalidate + 重抓一次（fetch=1）
+    # 後續兩個 → 冷卻命中，不重抓（fetch 仍 =1）
+    assert fetch_count["n"] == 1, (
+        f"亂 kid 應該只觸發一次 JWKS 重抓，實際 {fetch_count['n']} 次"
+    )
 
 
 # ── /admin/eps/generate ────────────────────────────────────────────

@@ -85,6 +85,33 @@ def test_prod_rejects_admin_token_and_email_both_empty() -> None:
         ).assert_secure()
 
 
+def test_prod_rejects_hs256_short_secret() -> None:
+    """HS256 secret 太短 = 可猜，prod 啟動即拒。"""
+    with pytest.raises(ConfigError, match="HS256"):
+        Settings(
+            environment="prod",
+            supabase_jwks_url="",
+            supabase_jwt_alg="HS256",
+            supabase_jwt_secret="abc-too-short",
+            cors_allowed_origins=["https://dawncast.app"],
+            cors_allowed_origin_regex="",
+            admin_token="x",
+        ).assert_secure()
+
+
+def test_prod_accepts_hs256_long_secret() -> None:
+    """HS256 secret ≥32 chars 通過。prod 現值 36 char。"""
+    Settings(
+        environment="prod",
+        supabase_jwks_url="",
+        supabase_jwt_alg="HS256",
+        supabase_jwt_secret="a" * 32,  # 剛好 32，通過下限
+        cors_allowed_origins=["https://dawncast.app"],
+        cors_allowed_origin_regex="",
+        admin_token="x",
+    ).assert_secure()  # 不該 raise
+
+
 def test_prod_rejects_nonempty_cors_origin_regex() -> None:
     """prod 帶到 devtunnels regex = 放行任意子網域，視為 fail。"""
     with pytest.raises(ConfigError, match="CORS_ALLOWED_ORIGIN_REGEX"):
