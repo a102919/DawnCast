@@ -182,6 +182,10 @@ class ScriptOutline(BaseModel):
     結構性檢查：每段 vocab_words 必須是 target_vocab 裡的字（大小寫不敏感），
     避免大綱指派了根本不在字彙表裡的字給某一段——這跟 _target_vocab_appears_in_script
     互補（那個檢查「有沒有真的寫進對話」，這個檢查「大綱指派的字彙有沒有在總表裡」）。
+
+    對 LLM 偷塞的字（不在 target_vocab 內）採 drop-and-warn 而非 raise：
+    retry 整輪 outline 浪費 2m+ LLM token，prompt 硬性規則不一定每次生效，
+    validator 端把偷塞字拿掉保證下游契約是真的「子集」，改為只在 log 留觀察點。
     """
 
     topic: str = Field(min_length=1)
@@ -200,13 +204,22 @@ class ScriptOutline(BaseModel):
     @model_validator(mode="after")
     def _segment_vocab_subset_of_target_vocab(self) -> ScriptOutline:
         target_set = {v.word.casefold() for v in self.target_vocab}
-        bad: list[str] = []
+        dropped: list[str] = []
         for seg in self.segments:
+            kept: list[str] = []
             for w in seg.vocab_words:
-                if w.casefold() not in target_set:
-                    bad.append(w)
-        if bad:
-            raise ValueError(f"大綱 segments 有 vocab_words 不在 target_vocab 裡：{bad}")
+                if w.casefold() in target_set:
+                    kept.append(w)
+                else:
+                    dropped.append(w)
+            seg.vocab_words = kept
+        if dropped:
+            import logging
+
+            logging.getLogger(__name__).warning(
+                "ScriptOutline 過濾掉 LLM 偷塞的 vocab_words（不在 target_vocab 裡）：%s",
+                dropped,
+            )
         return self
 
 

@@ -21,6 +21,7 @@ from engine.pipeline import reuse_repo as db_repo
 from engine.sources.factory import make_source_provider
 from shared.config import Settings, get_settings
 from shared.db import pool as db_pool
+from shared.db import queue as db_queue
 from shared.errors import RateLimitError
 from shared.idempotency import compute_idempotency_key
 from shared.models import ClaimVerification
@@ -63,7 +64,11 @@ def _build_runtime_context(
     else:
         repo_obj = db_repo
         r2_obj = db_r2
-        queue_obj = None
+        # backfill_dict_node 期待 queue_obj.send(queue_name, body) 介面；shared.db.queue
+        # 模組本身的 send 函式簽名一致（差 self），模組就是「queue 物件」最簡實作。
+        # 之前塞 None 會走 fallback 從 engine.pipeline.post_process 呼叫 backfill_dict()，
+        # 那條在 graph 內同步跑會撞 connection pool 時序差（→ 雜訊 log）。
+        queue_obj = db_queue
         renderer_obj = None
         chat = make_langchain_chat(settings, engine=settings.generation_engine)
         chat_failover = (

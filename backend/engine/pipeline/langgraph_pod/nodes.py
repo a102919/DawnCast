@@ -2379,13 +2379,15 @@ async def backfill_dict_node(state: PodState, config: RunnableConfig) -> dict[st
                     {"word": v.word.casefold()},
                 )
         else:
+            # 跑測試 / demo 時 queue 沒注入 — 走 in-process 的 backfill_dict 函式。
             from engine.pipeline.post_process import backfill_dict  # noqa: PLC0415
 
             await backfill_dict(script.target_vocab)
     except Exception as exc:
         logger.warning(
-            "backfill_dict 失敗（不擋 generate）episode_id=%s: %s",
+            "backfill_dict 失敗（不擋 generate）episode_id=%s type=%s: %s",
             state.get("episode_id"),
+            type(exc).__name__,
             exc,
         )
 
