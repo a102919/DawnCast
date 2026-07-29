@@ -53,10 +53,31 @@ export function PlayerBottomBar({
         </span>
       </div>
 
-      {/* Row 2：播放控制 */}
+      {/* Row 2：工具在左、播放控制靠右（單手拇指可及） */}
       <div className="h-14 flex items-center px-3">
-        {/* 播放控制群組（置中） */}
-        <div className="flex items-center gap-1 flex-1 justify-center">
+        {/* 工具群組 */}
+        <div className="flex items-center gap-1">
+          <button
+            onClick={cycleRate}
+            aria-label={`播放速度 ${playbackRate} 倍，點擊切換`}
+            className="inline-flex items-center justify-center min-w-[44px] min-h-[44px] px-1 text-xs font-mono font-medium text-text-secondary hover:text-text-primary hover:bg-bg-secondary rounded-md transition-colors duration-fast ease-apple focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-1"
+          >
+            {playbackRate}x
+          </button>
+          <div className="w-px h-6 bg-border mx-1 shrink-0" />
+          <IconButton label="我的單字本" onClick={onVocabOpen}>
+            <BookMarked size={20} />
+          </IconButton>
+          <IconButton label="複製英文對話練習 Prompt" onClick={onCopyPrompt}>
+            <MessageCircle size={20} />
+          </IconButton>
+        </div>
+
+        {/* 分隔線 */}
+        <div className="w-px h-6 bg-border mx-2 shrink-0" />
+
+        {/* 播放控制群組（靠右） */}
+        <div className="flex items-center gap-1 flex-1 justify-end">
           <IconButton label="倒退 10 秒" onClick={handleRewind}>
             <RotateCcw size={18} />
           </IconButton>
@@ -87,27 +108,6 @@ export function PlayerBottomBar({
             disabled={activeCueIdx < 0 || activeCueIdx >= cues.length - 1}
           >
             <ChevronRight size={18} />
-          </IconButton>
-        </div>
-
-        {/* 分隔線 */}
-        <div className="w-px h-6 bg-border mx-2 shrink-0" />
-
-        {/* 工具群組 */}
-        <div className="flex items-center gap-1">
-          <button
-            onClick={cycleRate}
-            aria-label={`播放速度 ${playbackRate} 倍，點擊切換`}
-            className="inline-flex items-center justify-center min-w-[44px] min-h-[44px] px-1 text-xs font-mono font-medium text-text-secondary hover:text-text-primary hover:bg-bg-secondary rounded-md transition-colors duration-fast ease-apple focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-1"
-          >
-            {playbackRate}x
-          </button>
-          <div className="w-px h-6 bg-border mx-1 shrink-0" />
-          <IconButton label="我的單字本" onClick={onVocabOpen}>
-            <BookMarked size={20} />
-          </IconButton>
-          <IconButton label="複製英文對話練習 Prompt" onClick={onCopyPrompt}>
-            <MessageCircle size={20} />
           </IconButton>
         </div>
       </div>
