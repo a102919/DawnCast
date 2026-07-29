@@ -643,7 +643,15 @@ def _build_segment_messages(
             avoid_facts=avoid_facts,
         )
         + "\n\n"
-        + "# BILINGUAL\n"
+        + "# ENGLISH QUALITY（text 會直接進 TTS 唸出來，錯了聽眾聽得到）\n"
+        "- Proofread every `text` line: correct, natural native-speaker grammar "
+        '(e.g. "headquartered in Atlanta", never "headquarter in Atlanta").\n'
+        "- Spell out numbers the way a native speaker SAYS them: 38,900 is "
+        '"thirty-eight thousand nine hundred", never "thirty eight nine hundred".\n'
+        "- Use natural spoken contractions consistently (it's / that's / let's / "
+        "don't), never stiff uncontracted forms like \"let us\" or \"that is not\" "
+        "in casual dialogue — keep the SAME register across every segment.\n\n"
+        "# BILINGUAL\n"
         "- Every line MUST have `zh` in natural Taiwan Mandarin (台灣正體中文), "
         "translate the meaning naturally, NOT word-for-word.\n"
         "- `zh` 絕對不能出現簡體字（例如「两」「国」「时」寫成簡體），一律用台灣正體字，"
