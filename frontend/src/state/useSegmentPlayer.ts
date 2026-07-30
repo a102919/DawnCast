@@ -77,6 +77,15 @@ export function useSegmentPlayer(): SegmentPlayer {
   const startMain = useCallback((segIdx: number, offsetSec: number) => {
     const seg = episodeRef.current?.segments[segIdx]
     if (!seg) return
+    // 趁「現在」先把下一段丟進閒置元素 preload：等這段 onended 觸發時，next
+    // element 已經 canplay、buffer 滿，setTimeout(gapSec) 期間就是純 listener
+    // pause，不再有 network fetch 與 buffer buildup 的可聞空窗。如果使用者中途
+    // pause / seek / 換集，next element 不會被自動播放（pickMainEl 篩掉），但
+    // preload 仍會佔用頻寬；後續 onPlayRejected 不會被觸發，因為 promise 屬於
+    // 已丟棄的 background fetch。
+    const nextSeg = episodeRef.current?.segments[segIdx + 1]
+    if (nextSeg) engine.preload(nextSeg.audioUrl)
+
     const handle = engine.startPlayback(
       { url: seg.audioUrl, globalStartSec: seg.start, offsetSec, rate: rateRef.current },
       () => {
@@ -89,6 +98,11 @@ export function useSegmentPlayer(): SegmentPlayer {
           isPlayingRef.current = false
           dispatch({ type: 'PLAYBACK_STOPPED' })
           return
+        }
+        // 確保下一段一定 preload 過（在這之前使用者可能手動切了進度，預載已被
+        // 跳過的更後段；這裡補一次保險）。
+        if (!nextSeg || nextSeg.audioUrl !== ep.segments[next].audioUrl) {
+          engine.preload(ep.segments[next].audioUrl)
         }
         segIdxRef.current = next
         const gapSec = Math.max(0, ep.segments[next].start - ep.segments[cur].end)
