@@ -1,0 +1,15 @@
+name = "dawncast-audio-proxy"
+main = "src/index.ts"
+compatibility_date = "2026-07-29"
+
+# R2 binding：拿 R2 bucket "dawncast" 的唯讀權。Worker 不需 presign token，
+# 直接讀 audio object 後回 Safari。env.AUDIO 在 index.ts 是 R2Bucket 型別。
+[[r2_buckets]]
+binding = "AUDIO"
+bucket_name = "dawncast"
+
+# 允許的 origin。Safari <audio src> 從 https://dawncast.pages.dev 打過來，
+# Worker 回 Access-Control-Allow-Origin 對齊。多 origin 不在這次範圍（dev
+# 用 wrangler dev 本機 R2 mock 即可）。
+[vars]
+ALLOWED_ORIGIN = "https://dawncast.pages.dev"

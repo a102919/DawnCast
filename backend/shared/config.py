@@ -145,6 +145,11 @@ class Settings(BaseSettings):
     r2_endpoint: str = ""  # https://<account>.r2.cloudflarestorage.com
     r2_signed_url_ttl: int = 7200  # 2h，避免長音檔播一半過期
 
+    # Worker proxy URL（Safari audio Range/416 fix）。有設 → presigned_get_url(s)
+    # 改回 Worker host + key（不簽章）；沒設 → 維持 R2 presign 行為（dev/本機）。
+    # 設成完整 https URL（含 https://、worker.dev 子網域），尾端不加 /。
+    audio_proxy_base_url: str = ""
+
     # ── Piper TTS（詞卡發音喇叭）──────────────────────────────
     # 語音模型檔路徑；空字串 = 未設定，_resolve_model() fallback 到
     # ~/.local/share/piper/en_US-amy-medium.onnx（見 engine/media/dict_audio.py）。
