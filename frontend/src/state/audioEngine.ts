@@ -111,6 +111,8 @@ export function createAudioEngine(): AudioEngine {
    *  callback（loadedmetadata 補 seek、試聽定時停止）憑 token 判斷自己已過期。 */
   const tokens = new WeakMap<HTMLAudioElement, symbol>()
   const handleTokens = new WeakMap<PlaybackHandle, symbol>()
+  /** 哪些元素已完成 iOS 解鎖。解鎖過的不重複觸發，避免 race condition。 */
+  const unlockedSet = new WeakSet<HTMLAudioElement>()
 
   function pickMainEl(url: string): HTMLAudioElement {
     // 已經載入這 URL 的元素接著用（preload 過、避免重 fetch）。
@@ -123,21 +125,45 @@ export function createAudioEngine(): AudioEngine {
   }
 
   function unlock(targetUrl?: string): void {
-    // iOS Safari：play() promise 解鎖是「對當下 src」的授權。SILENT_WAV 解的鎖對
-    // 後來才 set 進去的真實 URL 不算數——iOS 17 嚴格模式：first real play 也必須
-    // 在 user gesture 內對該 URL 觸發過。targetUrl 帶入時，對目標 src 做一次
-    // 同步 play()（不 await，promise 拿來丟），跟著 pause()——這樣 play 與 pause
-    // 都在 gesture 同步 stack 內觸發，iOS 認得是 gesture 解鎖；其他元素跑
-    // SILENT_WAV 解鎖讓自動接播時換 element 不卡授權。
+    // iOS Safari 解鎖（per-element，flowy.fm 實戰文）：
+    //   1. 解鎖是 per-element：每個會被 play() 的元素都要各別解鎖一次，沒有 page-level 效果。
+    //   2. 必須在 user gesture 的 sync stack 內觸發 play()。
+    //   3. promise resolve 前**絕對不要** sync pause()——會把 element 標記為 paused，
+    //      iOS 認定這次解鎖無效。pause + currentTime=0 一律放 .then() 內。
+    //   4. silent WAV 16 bytes、play() promise 瞬間 resolve，不會真的出聲、不會播完。
+    //   5. 解鎖後 element 的 src 仍可換成真實 URL，後續 play() 終身不再被 reject。
+    //
+    // 解鎖目標：所有「未在播、尚未解鎖、src 為空」的元素。src 已有真實 URL 的元素跳過
+    // ——unlock 的副作用（清 src、設 SILENT_WAV）會被後續 startPlayback 的 src 設值覆蓋，
+    // 但 promise resolve 後跑的 src 還原動作若搶在 startPlayback 之後，會把 mainA 的
+    // src 洗回 SILENT_WAV 或空，跳過 src 已有內容的元素就不會踩到這個 race。
+    //
+    // targetUrl 暫保留在介面：若 iOS 未來放寬規則允許對真實 URL 預解鎖，這個參數就是入口。
+    void targetUrl
     for (const el of all) {
       if (!el.paused) continue
-      if (targetUrl && el.src.includes(targetUrl)) {
-        void el.play().catch(() => undefined)
-        el.pause()
-      } else if (!el.src) {
-        el.src = SILENT_WAV
-        void el.play().catch(() => undefined)
-        el.pause()
+      if (unlockedSet.has(el)) continue
+      if (el.src) continue
+      // 設 SILENT_WAV 觸發 16-byte 解鎖。promise resolve 後才 pause，避免 race。
+      el.src = SILENT_WAV
+      const p = el.play()
+      if (p && typeof p.then === 'function') {
+        p.then(() => {
+          el.pause()
+          el.currentTime = 0
+          // 清掉 SILENT_WAV 的 src——但只在 src 還停留 SILENT_WAV 時清。startPlayback
+          // 已 sync 把 src 換成真實 URL 的情況下，這裡不要再動（避免覆蓋掉真實播放）。
+          if (el.src === SILENT_WAV) {
+            try { el.removeAttribute('src') } catch { el.src = '' }
+          }
+          unlockedSet.add(el)
+        }).catch(() => {
+          // 解鎖失敗（page 還沒任何 gesture、play() 被 NotAllowedError reject）：
+          // 同樣只在 src 還停留 SILENT_WAV 時清。
+          if (el.src === SILENT_WAV) {
+            try { el.removeAttribute('src') } catch { el.src = '' }
+          }
+        })
       }
     }
   }

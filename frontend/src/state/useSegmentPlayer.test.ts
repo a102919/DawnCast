@@ -145,11 +145,14 @@ describe('useSegmentPlayer', () => {
     h.unmount()
   })
 
-  it('unlock 會在所有元素上 play+pause（iOS 同步授權）', () => {
+  it('unlock 會在所有元素上 play+pause（iOS 同步授權）', async () => {
     setupGlobalMock()
     const h = mountHook()
-    h.getPlayer().unlock()
+    await act(async () => { h.getPlayer().unlock() })
     expect(els.length).toBe(3)
+    // pause 在 play() promise 的 .then() 內才觸發（避免 sync pause race 撤銷授權），
+    // 等 microtask flush 後才能看到 pause 已被呼叫。
+    await act(async () => { await Promise.resolve() })
     for (const el of els) {
       expect(el.play).toHaveBeenCalled()
       expect(el.pause).toHaveBeenCalled()
