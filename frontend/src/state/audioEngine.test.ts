@@ -36,16 +36,25 @@ interface FakeAudioContext {
   createGain: () => FakeGainNode
   createMediaStreamDestination: ReturnType<typeof vi.fn>
   resume: ReturnType<typeof vi.fn>
+  suspend: ReturnType<typeof vi.fn>
+}
+
+interface FakeAudioEl {
+  srcObject: unknown
+  play: ReturnType<typeof vi.fn>
+  pause: ReturnType<typeof vi.fn>
 }
 
 const sources: FakeBufferSourceNode[] = []
 const gains: FakeGainNode[] = []
+const audioEls: FakeAudioEl[] = []
 let fakeCtx: FakeAudioContext
 let realFetch: typeof fetch
 
 function setupGlobalMocks() {
   sources.length = 0
   gains.length = 0
+  audioEls.length = 0
   fakeCtx = {
     state: 'running',
     currentTime: 0,
@@ -79,12 +88,14 @@ function setupGlobalMocks() {
     },
     createMediaStreamDestination: vi.fn(() => ({ stream: {}, connect: vi.fn() })),
     resume: vi.fn(async () => undefined),
+    suspend: vi.fn(async () => undefined),
   }
   ;(window as unknown as { AudioContext: unknown }).AudioContext = vi.fn(() => fakeCtx)
-  ;(window as unknown as { Audio: unknown }).Audio = vi.fn(() => ({
-    srcObject: null,
-    play: vi.fn(async () => undefined),
-  }))
+  ;(window as unknown as { Audio: unknown }).Audio = vi.fn(() => {
+    const el: FakeAudioEl = { srcObject: null, play: vi.fn(async () => undefined), pause: vi.fn() }
+    audioEls.push(el)
+    return el
+  })
   realFetch = global.fetch
   global.fetch = vi.fn(async () => ({
     ok: true,
@@ -252,6 +263,19 @@ describe('audioEngine', () => {
     mainGain.gain.linearRampToValueAtTime.mockClear()
     engine.restoreVolume(0.05)
     expect(mainGain.gain.linearRampToValueAtTime).toHaveBeenCalledWith(1, expect.any(Number))
+  })
+
+  // 迴歸：iOS 暫停後若讓 ctx 照跑、隱藏 <audio> 繼續播 live MediaStream，系統音訊
+  // session 保持開啟，殘留 buffer 可能被卡住無限重播（聽起來像一直發同一個音）。
+  it('suspend：暫停隱藏 <audio> 並 suspend AudioContext', () => {
+    engine.ensureContext()
+    engine.suspend()
+    expect(audioEls[0]?.pause).toHaveBeenCalled()
+    expect(fakeCtx.suspend).toHaveBeenCalled()
+  })
+
+  it('suspend：context 尚未建立時是 no-op 不炸', () => {
+    expect(() => engine.suspend()).not.toThrow()
   })
 
   it('setVolume：寫入 segmentGain（gains[1]）', () => {

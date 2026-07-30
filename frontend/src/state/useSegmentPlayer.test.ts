@@ -46,6 +46,7 @@ interface FakeAudioContext {
   createGain: () => FakeGainNode
   createMediaStreamDestination: ReturnType<typeof vi.fn>
   resume: ReturnType<typeof vi.fn>
+  suspend: ReturnType<typeof vi.fn>
 }
 
 const sources: FakeBufferSourceNode[] = []
@@ -102,11 +103,13 @@ function setupGlobalMocks() {
     },
     createMediaStreamDestination: vi.fn(() => ({ stream: {}, connect: vi.fn() })),
     resume: vi.fn(async () => undefined),
+    suspend: vi.fn(async () => undefined),
   }
   ;(window as unknown as { AudioContext: unknown }).AudioContext = vi.fn(() => fakeCtx)
   ;(window as unknown as { Audio: unknown }).Audio = vi.fn(() => ({
     srcObject: null,
     play: vi.fn(async () => undefined),
+    pause: vi.fn(),
   }))
   realFetch = global.fetch
   global.fetch = vi.fn(async () => ({
@@ -364,6 +367,8 @@ describe('useSegmentPlayer', () => {
     act(() => {
       h.getPlayer().pause()
     })
+    // iOS 迴歸：pause 必須真的 suspend 輸出鏈，不能留著活的音訊 session（見 audioEngine.suspend）
+    expect(fakeCtx.suspend).toHaveBeenCalled()
     await act(async () => {
       await h.getPlayer().play()
     })

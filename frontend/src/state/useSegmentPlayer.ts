@@ -194,6 +194,7 @@ export function useSegmentPlayer(): SegmentPlayer {
       if (!ep) return
       const next = segIdxRef.current + 1
       if (next >= ep.segments.length) {
+        engine.suspend() // 整集播完同樣收掉輸出鏈，理由同 pause()
         isPlayingRef.current = false
         dispatch({ type: 'PLAYBACK_STOPPED' })
         return
@@ -252,9 +253,13 @@ export function useSegmentPlayer(): SegmentPlayer {
     beginIntent()
     pendingRef.current = null
     stopActive()
+    // 停完 source 再收掉整條輸出鏈（順序不能反：suspend 後 ctx.currentTime 凍結，
+    // stopActive 算 pausedAt 位置會算錯）。少了這步，iOS 的音訊 session 在暫停後
+    // 仍維持「播放中」，殘留 buffer 可能被卡住無限重播。
+    engine.suspend()
     isPlayingRef.current = false
     dispatch({ type: 'PLAYBACK_STOPPED' })
-  }, [beginIntent, stopActive])
+  }, [beginIntent, engine, stopActive])
 
   const seekTo = useCallback((globalSec: number) => {
     const ep = episodeRef.current

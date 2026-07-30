@@ -45,6 +45,9 @@ export interface AudioEngine {
   startPlayback(args: StartPlaybackArgs): PlaybackHandle | null
   /** 回傳停止當下算出的全域播放位置（秒），呼叫端拿去存 pausedAt。 */
   stop(handle: PlaybackHandle, rate: number): number
+  /** 暫停時把整條輸出鏈真的靜下來（audioEl.pause + ctx.suspend）。resume 由
+   *  startPlayback/unlock 既有路徑負責，呼叫端不用配對。 */
+  suspend(): void
   setRate(handle: PlaybackHandle, rate: number): void
   currentPositionSec(handle: PlaybackHandle, rate: number): number
   setVolume(v: number): void
@@ -170,6 +173,15 @@ export function createAudioEngine(): AudioEngine {
     return pos
   }
 
+  function suspend(): void {
+    // iOS Safari：source 停了但 AudioContext 照跑、隱藏 <audio> 還掛著 live MediaStream
+    // 的話，系統音訊 session 會一直維持「播放中」，硬體管線殘留的最後一塊 buffer
+    // （剛好在唸的那個字）在這個殭屍狀態下可能被卡住無限重播（WebKit 對
+    // MediaStream/WebAudio 輸出的已知 glitch 病灶）。兩層都真的停掉，session 才會收。
+    audioElRef.current?.pause()
+    void ctxRef.current?.suspend().catch(() => undefined)
+  }
+
   function setRate(handle: PlaybackHandle, rate: number): void {
     handle.source.playbackRate.value = rate
   }
@@ -209,7 +221,7 @@ export function createAudioEngine(): AudioEngine {
   return {
     ensureContext, unlock, getBuffer,
     hasBuffer: cache.has, clearCache: cache.clear,
-    startPlayback, stop, setRate, currentPositionSec, setVolume, duckDown, restoreVolume,
+    startPlayback, stop, suspend, setRate, currentPositionSec, setVolume, duckDown, restoreVolume,
   }
 }
 
