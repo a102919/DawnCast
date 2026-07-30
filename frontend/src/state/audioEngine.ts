@@ -157,7 +157,9 @@ export function createAudioEngine(): AudioEngine {
             try { el.removeAttribute('src') } catch { el.src = '' }
           }
           unlockedSet.add(el)
-        }).catch(() => {
+          console.debug('[audioEngine] unlock ok', { el: el === mainA ? 'mainA' : el === mainB ? 'mainB' : 'preview' })
+        }).catch((err) => {
+          console.error('[audioEngine] unlock rejected', { err: String(err), name: err?.name })
           // 解鎖失敗（page 還沒任何 gesture、play() 被 NotAllowedError reject）：
           // 同樣只在 src 還停留 SILENT_WAV 時清。
           if (el.src === SILENT_WAV) {
@@ -224,7 +226,14 @@ export function createAudioEngine(): AudioEngine {
       el.addEventListener('pause', () => { if (timer !== null) window.clearTimeout(timer) }, { once: true })
     }
 
-    void el.play().catch(() => { if (live()) onPlayRejected() })
+    void el.play().catch((err) => {
+      // ponytail: 印出真實錯誤以便 iOS Safari 排查。正常 reject（NotAllowedError
+      // / AbortError / NotSupportedError）會被 onPlayRejected 處理，但 silent reject
+      // 沒訊息就找不到 root cause。上線後這個 console.error 可以保留：iOS 用戶量
+      // 少、debug window 小，正式環境看到 error 反而是 bug 訊號。
+      console.error('[audioEngine] play() rejected', { url: args.url, err: String(err), name: err?.name })
+      if (live()) onPlayRejected()
+    })
     const handle: PlaybackHandle = { el, globalStartSec: args.globalStartSec, offsetSec: args.offsetSec }
     handleTokens.set(handle, token)
     return handle
