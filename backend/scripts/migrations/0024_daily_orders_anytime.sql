@@ -11,7 +11,10 @@ update public.daily_orders set id = gen_random_uuid() where id is null;
 alter table public.daily_orders alter column id set default gen_random_uuid();
 alter table public.daily_orders alter column id set not null;
 
-alter table public.daily_orders drop constraint if exists daily_orders_pkey;
+-- CASCADE 必帶：deliveries_order_id_fkey、topic_requests_order_id_fkey 都 reference
+-- daily_orders(id)，沒 CASCADE 會 cannot drop constraint ... because other objects
+-- depend on it 整支 migration abort（fail-fast），後面 0025/0026 全沒跑。
+alter table public.daily_orders drop constraint if exists daily_orders_pkey cascade;
 alter table public.daily_orders add constraint daily_orders_pkey primary key (id);
 
 -- 舊複合鍵仍是熱門查詢路徑（history 列表、逾時 reconcile），補一般 index。
