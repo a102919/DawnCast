@@ -138,9 +138,11 @@ export function useSegmentPlayer(): SegmentPlayer {
   const play = useCallback(() => {
     const ep = episodeRef.current
     if (!ep) return
-    engine.unlock() // iOS 必備：在 click handler 同步路徑內
     const seg = ep.segments[segIdxRef.current]
     if (!seg) return
+    // iOS 必備：在 click handler 同步路徑內對「目標 URL」做 play/pause，
+    // 拿到對該 src 的授權。光 SILENT_WAV 解的鎖不算數（見 audioEngine.unlock 註解）。
+    engine.unlock(seg.audioUrl)
     const offsetSec = clampOffset(pausedAtRef.current, seg)
     startMain(segIdxRef.current, offsetSec)
   }, [engine, startMain])

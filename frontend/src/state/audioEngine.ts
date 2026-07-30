@@ -50,8 +50,9 @@ export interface PlaybackHandle {
 }
 
 export interface AudioEngine {
-  /** 必須在 user gesture 的同步呼叫堆疊內執行（見檔案頂端 iOS 說明）。 */
-  unlock(): void
+  /** 必須在 user gesture 的同步呼叫堆疊內執行（見檔案頂端 iOS 說明）。
+   *  帶 targetUrl 時會對該 URL 所在的 element 做 play/pause 同步解鎖（iOS 17 必要）。 */
+  unlock(targetUrl?: string): void
   /** 把 URL 丟進閒置元素開始載入；resolve true＝可播、false＝載入失敗。
    *  同一個 URL 已在某元素上就緒時直接 resolve，不重載。 */
   preload(url: string): Promise<boolean>
@@ -121,12 +122,23 @@ export function createAudioEngine(): AudioEngine {
     return activeMainEl === mainA ? mainB : mainA
   }
 
-  function unlock(): void {
+  function unlock(targetUrl?: string): void {
+    // iOS Safari：play() promise 解鎖是「對當下 src」的授權。SILENT_WAV 解的鎖對
+    // 後來才 set 進去的真實 URL 不算數——iOS 17 嚴格模式：first real play 也必須
+    // 在 user gesture 內對該 URL 觸發過。targetUrl 帶入時，對目標 src 做一次
+    // 同步 play()（不 await，promise 拿來丟），跟著 pause()——這樣 play 與 pause
+    // 都在 gesture 同步 stack 內觸發，iOS 認得是 gesture 解鎖；其他元素跑
+    // SILENT_WAV 解鎖讓自動接播時換 element 不卡授權。
     for (const el of all) {
-      if (!el.paused) continue // 正在播的元素已有授權，別打斷它
-      if (!el.src) el.src = SILENT_WAV
-      void el.play().catch(() => undefined)
-      el.pause()
+      if (!el.paused) continue
+      if (targetUrl && el.src.includes(targetUrl)) {
+        void el.play().catch(() => undefined)
+        el.pause()
+      } else if (!el.src) {
+        el.src = SILENT_WAV
+        void el.play().catch(() => undefined)
+        el.pause()
+      }
     }
   }
 
