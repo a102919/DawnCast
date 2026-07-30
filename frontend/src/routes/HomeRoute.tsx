@@ -213,17 +213,17 @@ export function HomeRoute() {
             <span>繼續學習</span>
           </button>
         </Link>
-        <Link to="/flashcards" className="relative">
+        <Link to="/vocab" className="relative">
           <button
             type="button"
             className="w-full h-14 rounded-lg bg-bg-secondary border border-border text-text-primary font-medium flex items-center justify-center gap-2 hover:bg-border active:scale-[0.98] transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-1"
           >
             <Brain size={16} />
-            <span>閃卡複習</span>
+            <span>單字本</span>
           </button>
           {dueCount > 0 && (
             <span
-              aria-label={`待複習 ${dueCount} 張`}
+              aria-label={`可複習 ${dueCount} 張`}
               className="absolute -top-1.5 -right-1.5 min-w-[20px] h-5 px-1.5 rounded-full bg-accent text-white text-[10px] font-semibold flex items-center justify-center ring-2 ring-bg-primary"
             >
               {dueCount}

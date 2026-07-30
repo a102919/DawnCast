@@ -23,3 +23,9 @@ export function buildCloze(sentence: string, word: string): ClozeParts | null {
 export function checkClozeAnswer(input: string, target: string): boolean {
   return input.trim().toLowerCase() === target.trim().toLowerCase()
 }
+
+/** 是否有可挖空的例句；VocabItem 必看 item.exampleEn（後端 JOIN dict_cache 帶出）。 */
+export function canBuildCloze(item: { readonly word: string; readonly exampleEn?: string | null }): boolean {
+  if (!item.exampleEn) return false
+  return buildCloze(item.exampleEn, item.word) !== null
+}

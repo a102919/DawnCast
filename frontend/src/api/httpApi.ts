@@ -176,7 +176,7 @@ const VocabItemSchema = z.object({
   exampleZh: z.string().nullable().optional(),
   mnemonic: z.string().nullable().optional(),
   // 過渡期容錯：後端欄位剛上線、rolling deploy 期間舊實例不會回 status，否則 zod
-  // schema_mismatch 直接讓整個 VocabRoute + FlashcardRoute 空白。default(1) 對齊
+  // schema_mismatch 直接讓整個 VocabRoute + SessionRoute 空白。default(1) 對齊
   // backend VocabItem.status 預設值。
   status: z.number().default(1),
   // 同上過渡期容錯：舊實例不回 quizPassStreak 時以 0 起算。

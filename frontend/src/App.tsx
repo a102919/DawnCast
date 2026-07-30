@@ -5,7 +5,7 @@ import { useEffect, type ReactNode } from 'react'
 import { AuthProvider, ActivityProvider, EpisodesProvider, PlayerProvider, VocabProvider, SettingsProvider, FavoritesProvider, ChannelSubscriptionsProvider, DailyOrderProvider, useAuth, usePlayer, useActivity } from './state'
 import { TopBar, BottomNav, isImmersivePath } from './components/layout'
 import { MiniPlayer } from './components/player'
-import { HomeRoute, PlayerRoute, VocabRoute, FavoritesRoute, SettingsRoute, ProgressRoute, FlashcardRoute, LearnRoute, QuizRoute, DailyRoute, ChannelsRoute, ChannelDetailRoute, LoginRoute, AdminLayout, AdminEpisodesPage, AdminChannelsPage } from './routes'
+import { HomeRoute, PlayerRoute, VocabRoute, FavoritesRoute, SettingsRoute, ProgressRoute, SessionRoute, DailyRoute, ChannelsRoute, ChannelDetailRoute, LoginRoute, AdminLayout, AdminEpisodesPage, AdminChannelsPage } from './routes'
 import { useSprings } from './lib/motion'
 import { UpdatePrompt } from './components/UpdatePrompt'
 import { PushPrompt } from './components/PushPrompt'
@@ -54,9 +54,7 @@ function AnimatedRoutes() {
           <Route path="/channels/:slug" element={<ChannelDetailRoute />} />
           <Route path="/settings" element={<SettingsRoute />} />
           <Route path="/progress" element={<ProgressRoute />} />
-          <Route path="/flashcards" element={<FlashcardRoute />} />
-          <Route path="/flashcards/learn" element={<LearnRoute />} />
-          <Route path="/flashcards/quiz" element={<QuizRoute />} />
+          <Route path="/session" element={<SessionRoute />} />
           <Route path="/login" element={<LoginRoute />} />
           <Route path="/admin" element={<AdminLayout />}>
             <Route index element={<Navigate to="episodes" replace />} />

@@ -24,23 +24,44 @@ function todayPlusDays(days: number): string {
 export function VocabProvider({ children }: { readonly children: ReactNode }) {
   const [items, setItems] = useState<VocabItem[]>([])
   const [isLoading, setIsLoading] = useState(true)
+  const [error, setError] = useState<string | null>(null)
 
-  useEffect(() => {
-    let cancelled = false
-    api.listVocab()
-      .then(list => {
-        if (cancelled) return
-        setItems(list)
-        setIsLoading(false)
-      })
-      .catch(err => {
-        // ponytail: 不吞錯也不閃退——把錯誤丟到 console 讓 dev 能看到，
-        // 但 isLoading 還是要 set false 才不會永遠轉圈、UI 顯示空狀態。
-        console.error('listVocab failed:', err)
-        if (!cancelled) setIsLoading(false)
-      })
-    return () => { cancelled = true }
+  // 抓單字但不直接 setState：caller 拿到 list 後才 set，避免 effect 內 set 觸發
+  // cascading render（react-hooks/set-state-in-effect）。
+  const fetchVocab = useCallback(async () => {
+    return api.listVocab()
   }, [])
+
+  // 第一次 mount：抓單字，期間依賴 useState(true)/useState(null) 的初始值，
+  // 整段 await 後才 set——plugin 不會把 async callback 算成同步 set。
+  useEffect(() => {
+    const signal = { cancelled: false }
+    fetchVocab()
+      .then(list => { if (!signal.cancelled) setItems(list) })
+      .catch((err: unknown) => {
+        if (signal.cancelled) return
+        console.error('listVocab failed:', err)
+        setError(err instanceof Error ? err.message : '載入單字本失敗')
+      })
+      .finally(() => {
+        if (!signal.cancelled) setIsLoading(false)
+      })
+    return () => { signal.cancelled = true }
+  }, [fetchVocab])
+
+  const reload = useCallback(async () => {
+    setIsLoading(true)
+    setError(null)
+    try {
+      const list = await fetchVocab()
+      setItems(list)
+    } catch (err) {
+      console.error('listVocab failed:', err)
+      setError(err instanceof Error ? err.message : '載入單字本失敗')
+    } finally {
+      setIsLoading(false)
+    }
+  }, [fetchVocab])
 
   const addVocab = useCallback(async (item: Omit<VocabItem, 'id' | 'createdAt'>) => {
     const newItem = await api.addVocab(item)
@@ -64,9 +85,21 @@ export function VocabProvider({ children }: { readonly children: ReactNode }) {
     return items.some(v => v.lemma === lemma)
   }, [items])
 
-  const updateCardReview = useCallback(async (id: string, quality: number) => {
+  const updateCardReview = useCallback(async (id: string, quality: number, opts?: { readonly mode?: 'review' | 'practice' }) => {
     const item = items.find(i => i.id === id)
-    if (!item) return
+    if (!item) {
+      console.warn(`updateCardReview: item ${id} 不存在，略過`)
+      return
+    }
+    const mode = opts?.mode ?? 'review'
+    // 練習模式：答對不寫 DB、保留既有排程；答錯把 nextReview 提前到明天當 lapse 訊號。
+    if (mode === 'practice') {
+      if (quality >= 3) return
+      const nextReview = todayPlusDays(1)
+      await api.updateVocab(id, { nextReview })
+      setItems(prev => prev.map(v => v.id === id ? { ...v, nextReview } : v))
+      return
+    }
     const { interval, ease } = sm2(quality, item.interval ?? 1, item.ease ?? 2.5)
     const nextReview = todayPlusDays(interval)
     await api.updateVocab(id, { nextReview, interval, ease })
@@ -83,7 +116,10 @@ export function VocabProvider({ children }: { readonly children: ReactNode }) {
   // 畢業測驗一輪結果：全對 streak+1（連 2 輪 → 精熟），有錯 streak 歸零回複習。
   const applyQuizRound = useCallback(async (id: string, passed: boolean) => {
     const item = items.find(i => i.id === id)
-    if (!item) return
+    if (!item) {
+      console.warn(`applyQuizRound: item ${id} 不存在，略過`)
+      return
+    }
     const patch = computeQuizRound(item, passed)
     await api.updateVocab(id, patch)
     setItems(prev => prev.map(v => v.id === id ? { ...v, ...patch } : v))
@@ -97,7 +133,8 @@ export function VocabProvider({ children }: { readonly children: ReactNode }) {
   }, [])
 
   const value: VocabContextValue = {
-    items, isLoading, addVocab, removeVocab, clearVocab, isInVocab,
+    items, isLoading, error, reload,
+    addVocab, removeVocab, clearVocab, isInVocab,
     updateCardReview, completeLearning, applyQuizRound, reviveVocab,
   }
 

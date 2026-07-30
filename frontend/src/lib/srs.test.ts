@@ -6,6 +6,10 @@ import {
   filterQuizDeck,
   filterPracticePool,
   countActionable,
+  buildSessionSteps,
+  pickReviewKind,
+  canClozeItem,
+  GRADUATION_INTERVAL,
   STATUS_NEW,
   STATUS_REVIEW,
   MASTERED_STATUS,
@@ -130,5 +134,104 @@ describe('countActionable', () => {
       makeItem({ id: 'done', status: MASTERED_STATUS }),
     ]
     expect(countActionable(items)).toBe(LEARN_SESSION_LIMIT + 2 + 2)
+  })
+})
+
+describe('canClozeItem / pickReviewKind', () => {
+  it('有 exampleEn 且挖得到空 → 可 cloze', () => {
+    expect(canClozeItem(makeItem({ word: 'test', exampleEn: 'this is a test' }))).toBe(true)
+  })
+
+  it('缺 exampleEn → 不可 cloze', () => {
+    expect(canClozeItem(makeItem({ word: 'test' }))).toBe(false)
+  })
+
+  it('exampleEn 沒有目標單字 → 不可 cloze', () => {
+    expect(canClozeItem(makeItem({ word: 'test', exampleEn: 'no match here' }))).toBe(false)
+  })
+
+  it('pickReviewKind 預設走 recognize，無例句時強制 recognize', () => {
+    expect(pickReviewKind(makeItem({ word: 'test' }))).toBe('recognize')
+  })
+
+  it('defaultMode=cloze 且可挖空才走 cloze', () => {
+    const withCloze = makeItem({ word: 'test', exampleEn: 'a test sentence' })
+    expect(pickReviewKind(withCloze, 'cloze')).toBe('cloze')
+    expect(pickReviewKind(withCloze, 'recognize')).toBe('recognize')
+    expect(pickReviewKind(makeItem({ word: 'test' }), 'cloze')).toBe('recognize')
+  })
+})
+
+describe('buildSessionSteps', () => {
+  const today = '2026-07-30'
+
+  it('items 為空 → 回空陣列', () => {
+    expect(buildSessionSteps([], today)).toEqual([])
+  })
+
+  it('純到期複習：升冪排序（null date 排最前；越早到期的越前）、走 recognize', () => {
+    const items = [
+      makeItem({ id: 'late', nextReview: daysFromNow(-5), interval: 6 }),
+      makeItem({ id: 'early', nextReview: daysFromNow(-1), interval: 6 }),
+      makeItem({ id: 'no-date', interval: 6 }),
+    ]
+    expect(buildSessionSteps(items, today).map(s => `${s.kind}:${s.item.id}`)).toEqual([
+      'recognize:no-date',
+      'recognize:late',
+      'recognize:early',
+    ])
+  })
+
+  it('到期且 interval >= GRADUATION_INTERVAL 走 quiz', () => {
+    const items = [
+      makeItem({ id: 'grad', nextReview: daysFromNow(-1), interval: GRADUATION_INTERVAL }),
+    ]
+    expect(buildSessionSteps(items, today)).toEqual([{ kind: 'quiz', item: items[0] }])
+  })
+
+  it('到期複習優先於新字', () => {
+    const items = [
+      makeItem({ id: 'new', status: STATUS_NEW, createdAt: '2026-01-01T00:00:00Z' }),
+      makeItem({ id: 'due', nextReview: daysFromNow(-1), interval: 6 }),
+    ]
+    expect(buildSessionSteps(items, today).map(s => s.item.id)).toEqual(['due', 'new'])
+  })
+
+  it('新字超過 SESSION_LIMIT 時截前 10', () => {
+    const items = Array.from({ length: LEARN_SESSION_LIMIT + 5 }, (_, i) =>
+      makeItem({ id: `n-${i}`, status: STATUS_NEW, createdAt: `2026-01-${String(i + 1).padStart(2, '0')}T00:00:00Z` }),
+    )
+    const steps = buildSessionSteps(items, today)
+    expect(steps).toHaveLength(LEARN_SESSION_LIMIT)
+    expect(steps.every(s => s.kind === 'learn')).toBe(true)
+  })
+
+  it('無到期無新字時填練習（status=2 非到期，ease 升冪）', () => {
+    const items = [
+      makeItem({ id: 'easy', nextReview: daysFromNow(10), ease: 2.5, interval: 6 }),
+      makeItem({ id: 'weak', nextReview: daysFromNow(10), ease: 1.5, interval: 6 }),
+    ]
+    const steps = buildSessionSteps(items, today)
+    expect(steps.map(s => s.item.id)).toEqual(['weak', 'easy'])
+    expect(steps.every(s => s.kind === 'recognize')).toBe(true)
+  })
+
+  it('非到期的 status=2 字填練習池（ease 升冪，最弱的排最前）', () => {
+    const items = [
+      makeItem({ id: 'easy', nextReview: daysFromNow(10), ease: 2.5, interval: 6 }),
+      makeItem({ id: 'weak', nextReview: daysFromNow(10), ease: 1.5, interval: 6 }),
+    ]
+    const steps = buildSessionSteps(items, today)
+    expect(steps.map(s => s.item.id)).toEqual(['weak', 'easy'])
+    expect(steps.every(s => s.kind === 'recognize')).toBe(true)
+  })
+
+  it('保底：所有字都進不了任何分支時不應回空陣列以外的東西（items 全空時回空）', () => {
+    expect(buildSessionSteps([], today)).toEqual([])
+  })
+
+  it('精熟（status=5）永不進佇列', () => {
+    const items = [makeItem({ id: 'mastered', status: MASTERED_STATUS })]
+    expect(buildSessionSteps(items, today)).toEqual([])
   })
 })

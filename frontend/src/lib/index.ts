@@ -9,8 +9,10 @@ export { getCoverArt, coverArtBackground, COVER_GRAIN_URL, type CoverArt } from 
 export { buildConversationPrompt } from './conversationPrompt'
 export {
   isDue, filterLearnDeck, filterReviewDeck, filterQuizDeck, filterPracticePool, countActionable,
+  buildSessionSteps, pickReviewKind, canClozeItem,
   STATUS_NEW, STATUS_REVIEW, MASTERED_STATUS, GRADUATION_INTERVAL, LEARN_SESSION_LIMIT,
 } from './srs'
+export type { SessionStep } from './srs'
 export { availableKinds, buildQuizRound, applyQuizRound, pickDistractors, QUESTIONS_PER_ROUND } from './quiz'
 export type { QuizKind, QuizQuestion, ChoiceOption } from './quiz'
 export { buildCloze, checkClozeAnswer, type ClozeParts } from './cloze'
