@@ -22,6 +22,8 @@ from shared.models import (
     ResearchQuestion,
     ScriptFormat,
     ScriptJSON,
+    ScriptLine,
+    ScriptOutline,
     SourceSnippet,
     VerifiedClaim,
 )
@@ -69,6 +71,10 @@ class PodState(TypedDict, total=False):
     claim_verification: ClaimVerification
 
     # ── LLM 輸出 ─────────────────────────────────────────────
+    # [opt-p1] 跨輪重用:rewrite pass 跳過 outline 重打時,從這裡讀上一輪的結果。
+    # P3 partial_rewrite 還會用 previous_segment_scripts 重用未失敗段的腳本。
+    outline: ScriptOutline
+    previous_segment_scripts: list[list[ScriptLine]]
     script: ScriptJSON
     engine_used: str
     judge_scores: dict[str, float]

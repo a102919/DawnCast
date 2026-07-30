@@ -197,13 +197,30 @@ async def test_insert_delivery_survives_push_failure(
 async def test_insert_deliveries_node_marks_order_ready(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """生成完成即解鎖下一筆訂單（migration 0025）：帶 order_id 就該呼叫 mark_order_ready。"""
+    """帶 order_id 的交付走 app_repo.deliver_and_mark_ready（transactional 合併）。
+
+    取代舊版「先 insert_delivery 再 mark_order_ready」——race + 翻牌缺失會把
+    前端 activeOrder 卡死在 queued。deliver_and_mark_ready 內部已包 transaction，
+    這裡只驗「有呼叫到、order_id 帶對」。
+    """
     repo = FakeRepo(reusable=None)
+    delivered: list[tuple[str, str, str, str]] = []
 
     async def _ok_notify(_user_id: str, _payload: dict[str, str]) -> int:
         return 1
 
+    async def _fake_deliver_and_mark_ready(
+        user_id: str, episode_id: str, deliver_date: str, *, order_id: str
+    ) -> bool:
+        delivered.append((user_id, episode_id, deliver_date, order_id))
+        # 同 transaction 內兩步都跑（這裡只是 fake，append 同 list 模擬）
+        repo.deliveries.append((user_id, episode_id, deliver_date))
+        repo.delivery_order_ids.append(order_id)
+        repo.ready_order_ids.append(order_id)
+        return True
+
     monkeypatch.setattr(nodes, "notify_user", _ok_notify)
+    monkeypatch.setattr(nodes.app_repo, "deliver_and_mark_ready", _fake_deliver_and_mark_ready)
 
     result = await nodes.insert_deliveries_node(
         {
@@ -216,6 +233,7 @@ async def test_insert_deliveries_node_marks_order_ready(
     )
 
     assert result == {}
+    assert delivered == [("u1", "ep-123", "2026-06-23", "order-1")]
     assert repo.ready_order_ids == ["order-1"]
 
 

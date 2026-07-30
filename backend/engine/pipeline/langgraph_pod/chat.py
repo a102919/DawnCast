@@ -30,14 +30,28 @@ from shared.config import Settings, get_settings
 from shared.errors import EngineError, RateLimitError
 
 
-def _lc_to_anthropic(messages: Sequence[BaseMessage]) -> tuple[str, list[dict[str, str]]]:
-    """LangChain messages → Anthropic Messages 格式（system 拆出）。"""
-    system_parts: list[str] = []
+def _lc_to_anthropic(
+    messages: Sequence[BaseMessage],
+) -> tuple[str | list[dict[str, Any]], list[dict[str, str]]]:
+    """LangChain messages → Anthropic Messages 格式（system 拆出）。
+
+    [opt-p2] system 可能是 list of content blocks（帶 cache_control 標記），
+    這種情況直接 list 形式回傳，Anthropic / MiniMax 都接受。string content
+    仍向後相容（單段 system prompt）。
+    """
+    system_blocks: list[dict[str, Any]] = []
     conversation: list[dict[str, str]] = []
     for m in messages:
         if isinstance(m, SystemMessage):
-            content = m.content if isinstance(m.content, str) else str(m.content)
-            system_parts.append(content)
+            if isinstance(m.content, list):
+                # 已結構化的 content blocks（_to_lc_messages 加了 cache_control）
+                for blk in m.content:
+                    if isinstance(blk, dict) and blk.get("type") == "text":
+                        system_blocks.append(blk)
+            else:
+                content = m.content if isinstance(m.content, str) else str(m.content)
+                if content:
+                    system_blocks.append({"type": "text", "text": content})
         elif isinstance(m, HumanMessage):
             content = m.content if isinstance(m.content, str) else str(m.content)
             conversation.append({"role": "user", "content": content})
@@ -45,11 +59,20 @@ def _lc_to_anthropic(messages: Sequence[BaseMessage]) -> tuple[str, list[dict[st
             # AIMessage / ToolMessage 等：當 user 訊息迴傳，避免 protocol 違規
             content = m.content if isinstance(m.content, str) else str(m.content)
             conversation.append({"role": "assistant", "content": content})
-    return "\n\n".join(system_parts), conversation
+
+    # 只在 1 個 block 時回 str（向後相容舊 mock 與測試）;
+    # ≥1 blocks 回 list 以保留 cache_control 標記
+    if len(system_blocks) == 1 and "cache_control" not in system_blocks[0]:
+        return system_blocks[0]["text"], conversation
+    return system_blocks, conversation
 
 
 def _to_usage_metadata(usage: dict[str, Any]) -> dict[str, int] | None:
-    """Anthropic usage dict → LangChain UsageMetadata 形狀。空 usage 回 None（無資料非零用量）。"""
+    """Anthropic usage dict → LangChain UsageMetadata 形狀。空 usage 回 None（無資料非零用量）。
+
+    [opt-p2] 帶上 cache_creation_input_tokens / cache_read_input_tokens。
+    MiniMax 若不支援,欄位不存在回 0,呼叫端靠 graceful degradation 處理。
+    """
     if not usage:
         return None
     input_tokens = int(usage.get("input_tokens") or 0)
@@ -58,6 +81,8 @@ def _to_usage_metadata(usage: dict[str, Any]) -> dict[str, int] | None:
         "input_tokens": input_tokens,
         "output_tokens": output_tokens,
         "total_tokens": input_tokens + output_tokens,
+        "cache_creation_input_tokens": int(usage.get("cache_creation_input_tokens") or 0),
+        "cache_read_input_tokens": int(usage.get("cache_read_input_tokens") or 0),
     }
 
 

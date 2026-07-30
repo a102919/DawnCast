@@ -172,33 +172,31 @@ async def test_order_reconcile_delivers_evergreen_fallback_for_stuck_queued(
         assert big_topic is None
         return "ep-99"
 
-    insert_calls: list[tuple[tuple[Any, ...], dict[str, Any]]] = []
+    # 兜底路徑走 deliver_and_mark_ready（transactional 合併 insert + mark_ready）。
+    deliver_calls: list[tuple[tuple[Any, ...], dict[str, Any]]] = []
 
-    async def fake_insert_delivery(*args: Any, **kwargs: Any) -> bool:
-        insert_calls.append((args, kwargs))
+    async def fake_deliver_and_mark_ready(
+        *args: Any, **kwargs: Any
+    ) -> bool:
+        deliver_calls.append((args, kwargs))
         return True
-
-    ready_calls: list[str] = []
-
-    async def fake_mark_ready(order_id: str) -> None:
-        ready_calls.append(order_id)
 
     monkeypatch.setattr(worker.app_repo, "list_stuck_pending_orders", fake_list_pending)
     monkeypatch.setattr(
         worker.app_repo, "list_stuck_queued_orders_without_delivery", fake_list_queued
     )
     monkeypatch.setattr(worker.repo, "pick_evergreen_episode", fake_pick_evergreen)
-    monkeypatch.setattr(worker.repo, "insert_delivery", fake_insert_delivery)
-    monkeypatch.setattr(worker.app_repo, "mark_order_ready", fake_mark_ready)
+    monkeypatch.setattr(
+        worker.app_repo, "deliver_and_mark_ready", fake_deliver_and_mark_ready
+    )
     monkeypatch.setattr(worker, "queue", _FakeQueue())
 
     await worker._order_reconcile()
 
-    assert len(insert_calls) == 1
-    args, kwargs = insert_calls[0]
+    assert len(deliver_calls) == 1
+    args, kwargs = deliver_calls[0]
     assert args == ("u2", "ep-99", "2026-07-19")
     assert kwargs == {"order_id": "o2"}
-    assert ready_calls == ["o2"]
 
 
 async def test_order_reconcile_missing_evergreen_episode_does_not_raise(
@@ -215,10 +213,12 @@ async def test_order_reconcile_missing_evergreen_episode_does_not_raise(
     async def fake_pick_evergreen(big_topic: str | None) -> str | None:
         return None
 
-    insert_calls: list[Any] = []
+    deliver_calls: list[Any] = []
 
-    async def fake_insert_delivery(*args: Any, **kwargs: Any) -> bool:
-        insert_calls.append((args, kwargs))
+    async def fake_deliver_and_mark_ready(
+        *args: Any, **kwargs: Any
+    ) -> bool:
+        deliver_calls.append((args, kwargs))
         return True
 
     monkeypatch.setattr(worker.app_repo, "list_stuck_pending_orders", fake_list_pending)
@@ -226,13 +226,15 @@ async def test_order_reconcile_missing_evergreen_episode_does_not_raise(
         worker.app_repo, "list_stuck_queued_orders_without_delivery", fake_list_queued
     )
     monkeypatch.setattr(worker.repo, "pick_evergreen_episode", fake_pick_evergreen)
-    monkeypatch.setattr(worker.repo, "insert_delivery", fake_insert_delivery)
+    monkeypatch.setattr(
+        worker.app_repo, "deliver_and_mark_ready", fake_deliver_and_mark_ready
+    )
     monkeypatch.setattr(worker, "queue", _FakeQueue())
 
-    # 不拋例外；找不到墊檔常青集就略過這筆，不呼叫 insert_delivery
+    # 不拋例外；找不到墊檔常青集就略過這筆，不呼叫 deliver_and_mark_ready
     await worker._order_reconcile()
 
-    assert insert_calls == []
+    assert deliver_calls == []
 
 
 async def test_order_reconcile_no_action_when_nothing_stuck(
@@ -261,6 +263,8 @@ async def test_order_reconcile_no_action_when_nothing_stuck(
     )
     monkeypatch.setattr(worker.repo, "pick_evergreen_episode", fail_if_called)
     monkeypatch.setattr(worker.repo, "insert_delivery", fail_if_called)
+    monkeypatch.setattr(worker.app_repo, "deliver_and_mark_ready", fail_if_called)
+    monkeypatch.setattr(worker.app_repo, "mark_order_ready", fail_if_called)
     monkeypatch.setattr(worker, "queue", q)
 
     await worker._order_reconcile()

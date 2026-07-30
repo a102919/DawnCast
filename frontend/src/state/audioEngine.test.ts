@@ -1,322 +1,235 @@
-// audioEngine 單元測試：框架無關，不需要 React/act/mountHook，直接呼叫 createAudioEngine()。
-// 涵蓋 useSegmentPlayer.test.ts 沒有精確驗證到的引擎內部細節：decode 去重、LRU eviction、
-// 跨 URL 不撞名（修掉舊版 idx-keyed cache 跨集數汙染的 bug）、AudioParam 排程順序。
+// audioEngine 單元測試：框架無關，直接呼叫 createAudioEngine()。
+// happy-dom 缺少 HTMLMediaElement 行為，Audio 全部以 vi.fn 取代並在測試內手動推事件。
 
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import { createAudioEngine, type AudioEngine } from './audioEngine'
 
-// happy-dom 沒有 AudioWorkletNode，SoundTouchNode 的 `class extends AudioWorkletNode`
-// 在 module eval 當下就會炸——整個套件用 vi.mock 換掉，跟其餘 Web Audio 節點一樣純假物件。
-const { stNodes } = vi.hoisted(() => ({
-  stNodes: [] as Array<{ playbackRate: { value: number }; connect: ReturnType<typeof vi.fn> }>,
-}))
-vi.mock('@soundtouchjs/audio-worklet/processor?url', () => ({ default: 'mock-processor-url' }))
-vi.mock('@soundtouchjs/audio-worklet', () => ({
-  SoundTouchNode: class {
-    playbackRate = { value: 1 }
-    connect = vi.fn()
-    static register = vi.fn(async () => undefined)
-    constructor() { stNodes.push(this) }
-  },
-}))
-
-interface FakeBufferSourceNode {
-  buffer: AudioBuffer | null
-  playbackRate: { value: number }
-  connect: ReturnType<typeof vi.fn>
-  start: ReturnType<typeof vi.fn>
-  stop: ReturnType<typeof vi.fn>
-  disconnect: ReturnType<typeof vi.fn>
-  onended: ((e: unknown) => void) | null
-}
-
-interface FakeGainParam {
-  value: number
-  cancelScheduledValues: ReturnType<typeof vi.fn>
-  setValueAtTime: ReturnType<typeof vi.fn>
-  linearRampToValueAtTime: ReturnType<typeof vi.fn>
-}
-
-interface FakeGainNode {
-  gain: FakeGainParam
-  connect: ReturnType<typeof vi.fn>
-}
-
-interface FakeAudioContext {
-  state: string
-  currentTime: number
-  destination: unknown
-  decodeAudioData: ReturnType<typeof vi.fn>
-  createBufferSource: () => FakeBufferSourceNode
-  createGain: () => FakeGainNode
-  createMediaStreamDestination: ReturnType<typeof vi.fn>
-  resume: ReturnType<typeof vi.fn>
-  suspend: ReturnType<typeof vi.fn>
-}
-
 interface FakeAudioEl {
-  srcObject: unknown
+  src: string
+  preload: string
+  defaultPlaybackRate: number
+  playbackRate: number
+  volume: number
+  muted: boolean
+  paused: boolean
+  readyState: number
+  currentTime: number
+  listeners: Map<string, Set<(e: Event) => void>>
+  onended: ((e: Event) => void) | null
   play: ReturnType<typeof vi.fn>
   pause: ReturnType<typeof vi.fn>
+  addEventListener: ReturnType<typeof vi.fn>
+  removeEventListener: ReturnType<typeof vi.fn>
+  dispatch(name: string, e?: Event): void
 }
 
-const sources: FakeBufferSourceNode[] = []
-const gains: FakeGainNode[] = []
-const audioEls: FakeAudioEl[] = []
-let fakeCtx: FakeAudioContext
-let realFetch: typeof fetch
-
-function setupGlobalMocks() {
-  sources.length = 0
-  gains.length = 0
-  audioEls.length = 0
-  fakeCtx = {
-    state: 'running',
+function makeFakeAudio(): FakeAudioEl {
+  const listeners = new Map<string, Set<(e: Event) => void>>()
+  const el: FakeAudioEl = {
+    src: '',
+    preload: '',
+    defaultPlaybackRate: 1,
+    playbackRate: 1,
+    volume: 1,
+    muted: false,
+    paused: true,
+    readyState: 0,
     currentTime: 0,
-    destination: {},
-    decodeAudioData: vi.fn(async () => ({ duration: 1.0, length: 44100 } as unknown as AudioBuffer)),
-    createBufferSource: () => {
-      const node: FakeBufferSourceNode = {
-        buffer: null,
-        playbackRate: { value: 1 },
-        connect: vi.fn(),
-        start: vi.fn(),
-        stop: vi.fn(),
-        disconnect: vi.fn(),
-        onended: null,
-      }
-      sources.push(node)
-      return node
+    listeners,
+    play: vi.fn(async () => {
+      el.paused = false
+      return undefined
+    }),
+    pause: vi.fn(() => { el.paused = true }),
+    onended: null,
+    addEventListener: vi.fn((name: string, cb: (e: Event) => void) => {
+      if (!listeners.has(name)) listeners.set(name, new Set())
+      listeners.get(name)!.add(cb)
+    }),
+    removeEventListener: vi.fn((name: string, cb: (e: Event) => void) => {
+      listeners.get(name)?.delete(cb)
+    }),
+    dispatch(name: string, e: Event = new Event(name)) {
+      listeners.get(name)?.forEach(cb => cb(e))
+      if (name === 'ended') this.onended?.(e)
     },
-    createGain: () => {
-      const g: FakeGainNode = {
-        gain: {
-          value: 1,
-          cancelScheduledValues: vi.fn(),
-          setValueAtTime: vi.fn(),
-          linearRampToValueAtTime: vi.fn(),
-        },
-        connect: vi.fn(),
-      }
-      gains.push(g)
-      return g
-    },
-    createMediaStreamDestination: vi.fn(() => ({ stream: {}, connect: vi.fn() })),
-    resume: vi.fn(async () => undefined),
-    suspend: vi.fn(async () => undefined),
   }
-  ;(window as unknown as { AudioContext: unknown }).AudioContext = vi.fn(() => fakeCtx)
-  ;(window as unknown as { Audio: unknown }).Audio = vi.fn(() => {
-    const el: FakeAudioEl = { srcObject: null, play: vi.fn(async () => undefined), pause: vi.fn() }
-    audioEls.push(el)
-    return el
+  // 模擬瀏覽器設 src 後觸發載入事件；「走 error 路徑」測試可以在設 src 之前
+  // 用 (e as { _autoComplete?: boolean })._autoComplete = false 關掉自動派送。
+  Object.defineProperty(el, 'src', {
+    set(v: string) {
+      ;(this as { _src: string; _autoComplete?: boolean })._src = v
+      if (this._autoComplete === false) return
+      this.readyState = 3
+      this.dispatch('loadedmetadata')
+      this.dispatch('loadeddata')
+      this.dispatch('canplay')
+    },
+    get() { return (this as { _src: string })._src ?? '' },
   })
-  realFetch = global.fetch
-  global.fetch = vi.fn(async () => ({
-    ok: true,
-    arrayBuffer: async () => new Uint8Array([0x00]).buffer,
-  })) as unknown as typeof fetch
+  return el
 }
 
-function teardownGlobalMocks() {
-  global.fetch = realFetch
-  vi.restoreAllMocks()
+function setupGlobalMock() {
+  const els: FakeAudioEl[] = []
+  const Audio = vi.fn(() => {
+    const e = makeFakeAudio()
+    els.push(e)
+    return e
+  })
+  ;(window as unknown as { Audio: unknown }).Audio = Audio
+  return { els, Audio }
 }
+
+const HAVE_FUTURE_DATA = 3
+const HAVE_METADATA = 1
 
 describe('audioEngine', () => {
-  let engine: AudioEngine
-
-  beforeEach(() => {
-    setupGlobalMocks()
-    stNodes.length = 0
-    engine = createAudioEngine()
-  })
-  afterEach(() => {
-    teardownGlobalMocks()
-  })
-
-  it('unlock：suspended 狀態才呼叫 ctx.resume', async () => {
-    fakeCtx.state = 'suspended'
-    await engine.unlock()
-    expect(fakeCtx.resume).toHaveBeenCalled()
-  })
-
-  it('getBuffer：fetch + decodeAudioData，並 cache 結果', async () => {
-    const buf = await engine.getBuffer('https://cdn/0.mp3')
-    expect(buf).not.toBeNull()
-    expect(global.fetch).toHaveBeenCalledWith('https://cdn/0.mp3')
-    expect(fakeCtx.decodeAudioData).toHaveBeenCalledTimes(1)
-    expect(engine.hasBuffer('https://cdn/0.mp3')).toBe(true)
-
-    // 第二次呼叫命中 cache，不重新 fetch
-    await engine.getBuffer('https://cdn/0.mp3')
-    expect(global.fetch).toHaveBeenCalledTimes(1)
-  })
-
-  it('getBuffer：同一個 URL 併發呼叫共用同一個 in-flight decode，只 fetch 一次', async () => {
-    const fetchMock = global.fetch as ReturnType<typeof vi.fn>
-    // 用物件持有 resolve callback（而非裸 let）：resolveFetch 的賦值發生在巢狀 Promise
-    // executor 內，緊接著同步呼叫 resolveFetch?.()（中間沒有 await）會被 TS 窄化成 never
-    // （見 tsc 2349）——裸 let 跨 closure 邊界的窄化分析沒辦法追蹤這種同步巢狀賦值，
-    // 物件屬性不受這個限制。
-    const holder: { resolve: (() => void) | null } = { resolve: null }
-    fetchMock.mockImplementation(async () => {
-      await new Promise<void>((resolve) => { holder.resolve = resolve })
-      return { ok: true, arrayBuffer: async () => new Uint8Array([0x00]).buffer }
-    })
-
-    const p1 = engine.getBuffer('https://cdn/x.mp3')
-    const p2 = engine.getBuffer('https://cdn/x.mp3')
-    holder.resolve?.()
-    const [b1, b2] = await Promise.all([p1, p2])
-
-    expect(fetchMock).toHaveBeenCalledTimes(1)
-    expect(b1).toBe(b2) // 同一個 AudioBuffer 物件參考
-  })
-
-  it('跨 URL 不撞名：一個 URL 的遲到 decode 不會汙染另一個 URL 的 cache（修掉舊版 idx-keyed 的跨集數汙染 bug）', async () => {
-    const fetchMock = global.fetch as ReturnType<typeof vi.fn>
-    const holder: { resolve: (() => void) | null } = { resolve: null }
-    fetchMock.mockImplementation(async (url: unknown) => {
-      if (String(url).includes('stale')) {
-        await new Promise<void>((resolve) => { holder.resolve = resolve })
-      }
-      return { ok: true, arrayBuffer: async () => new Uint8Array([0x00]).buffer }
-    })
-
-    // 模擬：上一集某個 idx 的 decode 卡住（stale），使用者已經換到新集數，
-    // 新集數同一個 idx 對應到不同的 audioUrl，正常解碼完成。
-    const stalePromise = engine.getBuffer('https://a/stale-2.mp3')
-    const freshBuf = await engine.getBuffer('https://b/fresh-2.mp3')
-    expect(freshBuf).not.toBeNull()
-
-    // 卡住的舊集數 decode 這時候才姍姍來遲完成
-    holder.resolve?.()
-    await stalePromise
-
-    // 兩個 URL 各自有各自的 cache entry，互不影響
-    expect(engine.hasBuffer('https://a/stale-2.mp3')).toBe(true)
-    expect(engine.hasBuffer('https://b/fresh-2.mp3')).toBe(true)
-    // 新集數的 buffer 沒有被舊集數的遲到結果覆蓋掉
-    const freshAgain = await engine.getBuffer('https://b/fresh-2.mp3')
-    expect(freshAgain).toBe(freshBuf)
-  })
-
-  it('LRU：超過 8 筆 evict 最舊的', async () => {
-    for (let i = 0; i < 9; i++) {
-      await engine.getBuffer(`https://cdn/${i}.mp3`)
+  it('unlock 在三個元素上各 play+pause 一次（iOS 同步授權）', () => {
+    const { els } = setupGlobalMock()
+    const engine = createAudioEngine()
+    engine.unlock()
+    expect(els).toHaveLength(3)
+    for (const el of els) {
+      expect(el.play).toHaveBeenCalled()
+      expect(el.pause).toHaveBeenCalled()
     }
-    expect(engine.hasBuffer('https://cdn/0.mp3')).toBe(false) // 最舊的被 evict
-    expect(engine.hasBuffer('https://cdn/8.mp3')).toBe(true)
   })
 
-  it('clearCache：清空後重新 getBuffer 會重新 fetch', async () => {
-    await engine.getBuffer('https://cdn/0.mp3')
-    engine.clearCache()
-    expect(engine.hasBuffer('https://cdn/0.mp3')).toBe(false)
-    await engine.getBuffer('https://cdn/0.mp3')
-    expect(global.fetch).toHaveBeenCalledTimes(2)
+  it('preload：src 設進元素並等 canplay 時 resolve true', async () => {
+    const { els } = setupGlobalMock()
+    const engine = createAudioEngine()
+    const p = engine.preload('https://cdn/0.mp3')
+    expect(els[0]!.src).toContain('https://cdn/0.mp3')
+    els[0]!.readyState = HAVE_FUTURE_DATA
+    els[0]!.dispatch('canplay')
+    await expect(p).resolves.toBe(true)
   })
 
-  it('startPlayback：buffer 未 cache 時回傳 null', () => {
-    engine.ensureContext()
-    const handle = engine.startPlayback({ url: 'https://cdn/never-fetched.mp3', globalStartSec: 0, offsetSec: 0, rate: 1 })
-    expect(handle).toBeNull()
+  it('preload：元素 error 時 resolve false', async () => {
+    const { els } = setupGlobalMock()
+    const engine = createAudioEngine()
+    ;(els[0] as { _autoComplete?: boolean })._autoComplete = false
+    const p = engine.preload('https://cdn/bad.mp3')
+    els[0]!.dispatch('error')
+    await expect(p).resolves.toBe(false)
   })
 
-  it('startPlayback：建立 source、connect、依 offset/duration 呼叫 start', async () => {
-    await engine.getBuffer('https://cdn/0.mp3')
-    const handle = engine.startPlayback({ url: 'https://cdn/0.mp3', globalStartSec: 5, offsetSec: 0.2, durationSec: 0.5, rate: 1.5 })
+  it('preload：已就緒元素直接 resolve，不重發事件', async () => {
+    const { els } = setupGlobalMock()
+    const engine = createAudioEngine()
+    const el = els[0]!
+    el.src = 'https://cdn/0.mp3'
+    el.readyState = HAVE_FUTURE_DATA
+    await expect(engine.preload('https://cdn/0.mp3')).resolves.toBe(true)
+  })
+
+  it('startPlayback：主播放設 src/currentTime/playbackRate 並 play', async () => {
+    const { els } = setupGlobalMock()
+    const engine = createAudioEngine()
+    await engine.preload('https://cdn/0.mp3')
+    const handle = engine.startPlayback({ url: 'https://cdn/0.mp3', globalStartSec: 5, offsetSec: 0.2, rate: 1.5 }, vi.fn(), vi.fn())
     expect(handle).not.toBeNull()
-    const source = sources.at(-1)!
-    expect(source.playbackRate.value).toBe(1.5)
-    expect(source.connect).toHaveBeenCalled()
-    expect(source.start).toHaveBeenCalledWith(0, 0.2, expect.any(Number))
+    const el = els[0]!
+    expect(el.currentTime).toBe(0.2)
+    expect(el.playbackRate).toBe(1.5)
+    expect(el.play).toHaveBeenCalled()
   })
 
-  // 迴歸：變速時人聲不能跟著變調。source.playbackRate 本身會變調，靠 stNode 鏡射同一個
-  // rate 讓 SoundTouch processor 抵消——source 接的對象也要是 stNode，不是 mainGain。
-  it('startPlayback：source 接到 stNode（不是直接接 mainGain），且 stNode.playbackRate 鏡射同一個 rate', async () => {
-    await engine.getBuffer('https://cdn/0.mp3')
-    engine.startPlayback({ url: 'https://cdn/0.mp3', globalStartSec: 0, offsetSec: 0, rate: 1.5 })
-    const source = sources.at(-1)!
-    const stNode = stNodes.at(-1)!
-    expect(stNode.playbackRate.value).toBe(1.5)
-    expect(source.connect).toHaveBeenCalledWith(stNode)
+  it('startPlayback：試聽走第三個專用元素，且不影響主播放 src', async () => {
+    const { els } = setupGlobalMock()
+    const engine = createAudioEngine()
+    await engine.preload('https://cdn/0.mp3')
+    const mainSrcBefore = els[0]!.src
+    const preview = engine.startPlayback(
+      { url: 'https://cdn/0.mp3', globalStartSec: 0, offsetSec: 0, durationSec: 0.5, rate: 1 },
+      vi.fn(), vi.fn(),
+    )
+    expect(preview.el).toBe(els[2])
+    expect(els[0]!.src).toBe(mainSrcBefore)
   })
 
-  it('setRate：同步更新 source 跟 stNode 的 playbackRate', async () => {
-    await engine.getBuffer('https://cdn/0.mp3')
-    const handle = engine.startPlayback({ url: 'https://cdn/0.mp3', globalStartSec: 0, offsetSec: 0, rate: 1 })!
-    engine.setRate(handle, 2)
-    expect(handle.source.playbackRate.value).toBe(2)
-    expect(stNodes.at(-1)!.playbackRate.value).toBe(2)
+  it('stop：回傳位置含 offset 並 pause 元素', async () => {
+    const { els } = setupGlobalMock()
+    const engine = createAudioEngine()
+    await engine.preload('https://cdn/0.mp3')
+    const handle = engine.startPlayback({ url: 'https://cdn/0.mp3', globalStartSec: 10, offsetSec: 0.7, rate: 1 }, vi.fn(), vi.fn())!
+    els[0]!.currentTime = 0.9
+    expect(engine.stop(handle)).toBeCloseTo(10.9)
+    expect(els[0]!.pause).toHaveBeenCalled()
   })
 
-  it('stop：回傳算出的全域位置，並呼叫 source.stop + disconnect', async () => {
-    await engine.getBuffer('https://cdn/0.mp3')
-    const handle = engine.startPlayback({ url: 'https://cdn/0.mp3', globalStartSec: 10, offsetSec: 0, rate: 1 })!
-    fakeCtx.currentTime = handle.ctxAnchorSec + 0.4
-    const pos = engine.stop(handle, 1)
-    expect(pos).toBeCloseTo(10.4)
-    expect(handle.source.stop).toHaveBeenCalled()
-    expect(handle.source.disconnect).toHaveBeenCalled()
+  it('currentPositionSec：metadata 未到時退回 offset，不會讓位置倒退', async () => {
+    const { els } = setupGlobalMock()
+    const engine = createAudioEngine()
+    await engine.preload('https://cdn/0.mp3')
+    const handle = engine.startPlayback({ url: 'https://cdn/0.mp3', globalStartSec: 100, offsetSec: 0.5, rate: 1 }, vi.fn(), vi.fn())!
+    // metadata 未到時 currentTime 在某些實作會被瀏覽器吞掉，這裡手動先回到 0 模擬
+    els[0]!.currentTime = 0
+    expect(engine.currentPositionSec(handle)).toBeCloseTo(100.5)
   })
 
-  it('currentPositionSec：錨點公式含 playbackRate', async () => {
-    await engine.getBuffer('https://cdn/0.mp3')
-    const handle = engine.startPlayback({ url: 'https://cdn/0.mp3', globalStartSec: 0, offsetSec: 0, rate: 1 })!
-    fakeCtx.currentTime = handle.ctxAnchorSec + 1
-    expect(engine.currentPositionSec(handle, 2)).toBeCloseTo(2)
+  it('setRate：同步更新 playbackRate', async () => {
+    const { els } = setupGlobalMock()
+    const engine = createAudioEngine()
+    await engine.preload('https://cdn/0.mp3')
+    const handle = engine.startPlayback({ url: 'https://cdn/0.mp3', globalStartSec: 0, offsetSec: 0, rate: 1 }, vi.fn(), vi.fn())!
+    engine.setRate(handle, 1.8)
+    expect(els[0]!.playbackRate).toBe(1.8)
   })
 
-  // 迴歸：offsetSec 曾經沒被算進錨點，位置一律少報 offsetSec（seek 完位置退回段頭）。
-  // 上面兩題 offsetSec 都是 0，兩種公式結果一樣，所以測不出來——這裡刻意用非 0 offset。
-  it('currentPositionSec：從段內 offset 起播時位置含 offset，不會退回段頭', async () => {
-    await engine.getBuffer('https://cdn/0.mp3')
-    const handle = engine.startPlayback({ url: 'https://cdn/0.mp3', globalStartSec: 100, offsetSec: 0.7, rate: 1 })!
-    expect(engine.currentPositionSec(handle, 1)).toBeCloseTo(100.7)
-    fakeCtx.currentTime = handle.ctxAnchorSec + 0.2
-    expect(engine.currentPositionSec(handle, 1)).toBeCloseTo(100.9)
+  it('setMuted：三個元素 muted 一起被設', async () => {
+    const { els } = setupGlobalMock()
+    const engine = createAudioEngine()
+    engine.setMuted(true)
+    for (const el of els) expect(el.muted).toBe(true)
+    engine.setMuted(false)
+    for (const el of els) expect(el.muted).toBe(false)
   })
 
-  it('stop：從段內 offset 起播時回傳位置含 offset（pausedAt 才不會倒退）', async () => {
-    await engine.getBuffer('https://cdn/0.mp3')
-    const handle = engine.startPlayback({ url: 'https://cdn/0.mp3', globalStartSec: 100, offsetSec: 0.7, rate: 1 })!
-    fakeCtx.currentTime = handle.ctxAnchorSec + 0.2
-    expect(engine.stop(handle, 1)).toBeCloseTo(100.9)
+  it('onended 觸發時呼叫 callback', async () => {
+    const { els } = setupGlobalMock()
+    const engine = createAudioEngine()
+    await engine.preload('https://cdn/0.mp3')
+    const onEnded = vi.fn()
+    engine.startPlayback({ url: 'https://cdn/0.mp3', globalStartSec: 0, offsetSec: 0, rate: 1 }, onEnded, vi.fn())
+    els[0]!.dispatch('ended')
+    expect(onEnded).toHaveBeenCalled()
   })
 
-  it('duckDown/restoreVolume：AudioParam 三連發順序（cancel → setValueAtTime → ramp）', () => {
-    engine.ensureContext()
-    const mainGain = gains[0]!
-    engine.duckDown(0.3, 0.05)
-    expect(mainGain.gain.cancelScheduledValues).toHaveBeenCalled()
-    expect(mainGain.gain.setValueAtTime).toHaveBeenCalled()
-    expect(mainGain.gain.linearRampToValueAtTime).toHaveBeenCalledWith(0.3, expect.any(Number))
-
-    mainGain.gain.linearRampToValueAtTime.mockClear()
-    engine.restoreVolume(0.05)
-    expect(mainGain.gain.linearRampToValueAtTime).toHaveBeenCalledWith(1, expect.any(Number))
+  it('元素被新播放接手後，舊 handle 的 onended 觸發不再導回 onEnded callback（token identity guard）', async () => {
+    const { els } = setupGlobalMock()
+    const engine = createAudioEngine()
+    await engine.preload('https://cdn/0.mp3')
+    const oldEnded = vi.fn()
+    engine.startPlayback({ url: 'https://cdn/0.mp3', globalStartSec: 0, offsetSec: 0, rate: 1 }, oldEnded, vi.fn())
+    // 同一個 element 第二次接播放會走「已經有這 URL」分支，主動覆寫 token。
+    engine.startPlayback({ url: 'https://cdn/0.mp3', globalStartSec: 0, offsetSec: 0, rate: 1 }, vi.fn(), vi.fn())
+    // 舊 onEnded 還掛在 mainA，但 token 已被新播放覆寫，晚到的 ended 不該呼叫 oldEnded。
+    els[0]!.dispatch('ended')
+    expect(oldEnded).not.toHaveBeenCalled()
   })
 
-  // 迴歸：iOS 暫停後若讓 ctx 照跑、隱藏 <audio> 繼續播 live MediaStream，系統音訊
-  // session 保持開啟，殘留 buffer 可能被卡住無限重播（聽起來像一直發同一個音）。
-  it('suspend：暫停隱藏 <audio> 並 suspend AudioContext', () => {
-    engine.ensureContext()
-    engine.suspend()
-    expect(audioEls[0]?.pause).toHaveBeenCalled()
-    expect(fakeCtx.suspend).toHaveBeenCalled()
+  it('metadata 未到時設 currentTime，loadedmetadata 後再補一次（防止部分瀏覽器吞掉）', () => {
+    const { els } = setupGlobalMock()
+    const engine = createAudioEngine()
+    ;(els[0] as { _autoComplete?: boolean })._autoComplete = false
+    engine.startPlayback({ url: 'https://cdn/0.mp3', globalStartSec: 0, offsetSec: 0.3, rate: 1 }, vi.fn(), vi.fn())
+    // 模擬 metadata 未到，currentTime 被瀏覽器吞掉
+    els[0]!.currentTime = 0
+    els[0]!.readyState = HAVE_METADATA
+    els[0]!.dispatch('loadedmetadata')
+    expect(els[0]!.currentTime).toBe(0.3)
   })
 
-  it('suspend：context 尚未建立時是 no-op 不炸', () => {
-    expect(() => engine.suspend()).not.toThrow()
-  })
-
-  it('setVolume：寫入 segmentGain（gains[1]）', () => {
-    engine.ensureContext()
-    const segmentGain = gains[1]!
-    engine.setVolume(0.5)
-    expect(segmentGain.gain.setValueAtTime).toHaveBeenCalledWith(0.5, expect.any(Number))
+  it('primary API surface: AudioEngine 出口型別一致', () => {
+    const engine: AudioEngine = createAudioEngine()
+    expect(typeof engine.unlock).toBe('function')
+    expect(typeof engine.preload).toBe('function')
+    expect(typeof engine.startPlayback).toBe('function')
+    expect(typeof engine.stop).toBe('function')
+    expect(typeof engine.setRate).toBe('function')
+    expect(typeof engine.currentPositionSec).toBe('function')
+    expect(typeof engine.setMuted).toBe('function')
   })
 })

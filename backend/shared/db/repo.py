@@ -136,6 +136,10 @@ async def mark_order_ready(order_id: str) -> None:
     拿掉「播放完才能點下一筆」的限制，改成「生成完成就能點下一筆」——
     one-active-per-user 的 partial unique index 只擋 pending/queued，
     ready 不在裡面，自動解鎖。status != 'queued' 時 no-op（冪等，重投安全）。
+
+    個人點餐交付請改用 deliver_and_mark_ready()：把 delivery 寫入跟 ready 翻牌
+    包進同一個 transaction，避免前端輪詢踩到「集數已交付但訂單仍 queued」
+    的不一致窗口。
     """
     async with connection() as conn, conn.cursor() as cur:
         await cur.execute(
@@ -143,6 +147,47 @@ async def mark_order_ready(order_id: str) -> None:
             "where id = %s and status = 'queued'",
             (order_id,),
         )
+
+
+async def deliver_and_mark_ready(
+    user_id: str, episode_id: str, deliver_date: str, *, order_id: str
+) -> bool:
+    """Atomic insert_delivery + mark_order_ready，個人點餐交付收尾專用。
+
+    兩個寫入必須同進同退——否則前端輪詢會踩到「deliveries 已寫但
+    daily_orders.status 還停在 queued」的不一致窗口，導致使用者卡在
+    「這集正在生成中」直到 DB 真的翻 ready 之前都救不回（重整也沒用）。
+    把兩段 SQL 包進同一個 conn.transaction() 讓 window 收斂成 0。
+
+    回傳 inserted 沿用 insert_delivery 語意（True=新寫入、False=ON CONFLICT
+    已存在）。order_id 必填——沒有 order_id 的頻道/evergreen 路徑請直接呼叫
+    reuse_repo.insert_delivery()，那條路徑本來就不需要 mark_order_ready。
+
+    FK violation（episode 已不存在）不吞，讓它自然往外冒：呼叫端既有的
+    ForeignKeyViolation 例外處理繼續生效，且 mark_order_ready 會跟著
+    rollback——比改動前的 partial-fail 行為更乾淨。
+    """
+    async with connection() as conn, conn.transaction():
+        async with conn.cursor(row_factory=dict_row) as cur:
+            await cur.execute(
+                """
+                insert into public.deliveries (user_id, episode_id, deliver_date, order_id)
+                values (%s, %s, %s, %s)
+                on conflict (user_id, episode_id, order_id) do nothing
+                returning id
+                """,
+                (user_id, episode_id, deliver_date, order_id),
+            )
+            row = await cur.fetchone()
+        inserted = row is not None
+        # mark_order_ready 內聯：條件 UPDATE，queued 才翻、冪等。
+        async with conn.cursor() as cur:
+            await cur.execute(
+                "update public.daily_orders set status = 'ready', updated_at = now() "
+                "where id = %s and status = 'queued'",
+                (order_id,),
+            )
+    return inserted
 
 
 async def list_stuck_pending_orders(older_than_sec: int) -> list[dict[str, Any]]:

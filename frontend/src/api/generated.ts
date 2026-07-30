@@ -1097,6 +1097,16 @@ export interface components {
              * @default 0
              */
             outputTokens: number;
+            /**
+             * Cachecreationtokens
+             * @default 0
+             */
+            cacheCreationTokens: number;
+            /**
+             * Cachereadtokens
+             * @default 0
+             */
+            cacheReadTokens: number;
         };
         /**
          * AdminJobQueue

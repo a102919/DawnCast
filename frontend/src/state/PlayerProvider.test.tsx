@@ -13,7 +13,7 @@ import type { PlayerContextValue } from './playerContextValue'
 import type { SegmentPlayer } from './useSegmentPlayer'
 import type { Episode } from '../types/episode'
 
-const loadEpisode = vi.fn(async () => undefined)
+const loadEpisode = vi.fn()
 
 vi.mock('./useSegmentPlayer', () => ({
   useSegmentPlayer: (): SegmentPlayer => ({
@@ -22,14 +22,14 @@ vi.mock('./useSegmentPlayer', () => ({
     currentTime: 0,
     duration: 0,
     playbackRate: 1,
-    volume: 1,
-    unlock: vi.fn(async () => undefined),
+    muted: false,
+    unlock: vi.fn(),
     loadEpisode,
-    play: vi.fn(async () => undefined),
+    play: vi.fn(),
     pause: vi.fn(),
     seekTo: vi.fn(),
     setPlaybackRate: vi.fn(),
-    setVolume: vi.fn(),
+    setMuted: vi.fn(),
     playSegment: vi.fn(),
   }),
 }))

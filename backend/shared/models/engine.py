@@ -313,6 +313,10 @@ class JudgeVerdict(BaseModel):
     chemistry: float = Field(ge=0.0, le=1.0)
     groundedness: float = Field(ge=0.0, le=1.0)
     feedback: list[str] = Field(default_factory=list, max_length=5)
+    # [opt-p3] per-segment 失敗定位：0-indexed segment 編號。
+    # LLM 指出哪幾段是這次 judge 失敗的元兇,讓 rewrite 只重打那些段。
+    # 留空 = 沒定位成功,fallback 整輪重打。
+    affected_segments: list[int] = Field(default_factory=list, max_length=10)
 
 
 class ResearchQuestion(BaseModel):

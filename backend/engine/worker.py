@@ -219,8 +219,9 @@ async def _order_reconcile() -> None:
         if episode_id is None:
             logger.warning("order_reconcile：找不到墊檔常青集，order_id=%s 仍卡住", o["id"])
             continue
-        await repo.insert_delivery(o["user_id"], episode_id, o["order_date"], order_id=o["id"])
-        await app_repo.mark_order_ready(o["id"])
+        await app_repo.deliver_and_mark_ready(
+            o["user_id"], episode_id, o["order_date"], order_id=o["id"],
+        )
         logger.warning("order_reconcile：訂單 %s 逾時，補墊檔常青集 %s", o["id"], episode_id)
 
 

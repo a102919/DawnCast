@@ -7,7 +7,7 @@ export interface UseMediaSessionParams {
   readonly episode: Episode | null
   readonly isPlaying: boolean
   getCurrentTime(): number
-  play(): Promise<void>
+  play(): void
   pause(): void
   seekTo(time: number): void
 }
@@ -38,7 +38,7 @@ export function useMediaSession({ episode, isPlaying, getCurrentTime, play, paus
   useEffect(() => {
     if (!('mediaSession' in navigator)) return
     const ms = navigator.mediaSession
-    ms.setActionHandler('play', () => { void play() })
+    ms.setActionHandler('play', () => { play() })
     ms.setActionHandler('pause', () => pause())
     ms.setActionHandler('seekto', details => {
       if (details.seekTime !== undefined) seekTo(details.seekTime)

@@ -344,6 +344,9 @@ class AdminGenerationTotals(CamelModel):
     llm_call_count: int = 0
     input_tokens: int = 0
     output_tokens: int = 0
+    # [opt-p2] prompt cache 命中量。MiniMax 端若不支援 cache_control,兩者皆 0。
+    cache_creation_tokens: int = 0
+    cache_read_tokens: int = 0
 
 
 class AdminGenerationError(CamelModel):

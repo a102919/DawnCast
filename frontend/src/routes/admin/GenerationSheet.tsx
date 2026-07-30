@@ -59,11 +59,24 @@ function Badge({
 }
 
 /** 摘要格：一格一個數字，維持表格密度（StatCard 對 sheet 內容來說太大）。 */
-function MiniStat({ label, value }: { readonly label: string; readonly value: string }) {
+function MiniStat({
+  label,
+  value,
+  subline,
+}: {
+  readonly label: string
+  readonly value: string
+  readonly subline?: string
+}) {
   return (
     <div className="rounded-lg bg-bg-secondary/70 px-3 py-2">
       <div className="text-[11px] text-text-tertiary">{label}</div>
       <div className="text-sm font-semibold text-text-primary tabular-nums">{value}</div>
+      {/* [opt-p2] subline 給附屬資訊用（例:cache 命中率）,用更小的字級 + 較弱
+          顏色排入同格,維持 4 欄視覺節奏,不為輔助資訊加新欄。 */}
+      {subline && (
+        <div className="text-[10px] text-text-tertiary tabular-nums mt-0.5">{subline}</div>
+      )}
     </div>
   )
 }
@@ -291,6 +304,13 @@ export function GenerationSheet({ item, onClose }: GenerationSheetProps) {
               <MiniStat
                 label={`LLM tokens（${detail.totals.llmCallCount} 次呼叫）`}
                 value={`入 ${detail.totals.inputTokens.toLocaleString()} / 出 ${detail.totals.outputTokens.toLocaleString()}`}
+                subline={
+                  detail.totals.cacheReadTokens > 0
+                    ? `cache 命中 ${detail.totals.cacheReadTokens.toLocaleString()}`
+                    : detail.totals.cacheCreationTokens > 0
+                      ? `cache 寫入 ${detail.totals.cacheCreationTokens.toLocaleString()}（首次）`
+                      : undefined
+                }
               />
               <MiniStat label="語音合成字元" value={detail.tts != null ? detail.tts.characters.toLocaleString() : '—'} />
             </div>

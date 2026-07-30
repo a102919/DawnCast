@@ -19,7 +19,7 @@ export interface UseCueLoopParams {
   readonly activeCueIdx: number
   readonly isPlaying: boolean
   seekTo(time: number): void
-  play(): Promise<void>
+  play(): void
   playWithUnlock(): void
 }
 
@@ -50,7 +50,7 @@ export function useCueLoop({ episode, currentTime, activeCueIdx, isPlaying, seek
     // 於是那句 cue（尤其是唸單字的短句）被無限重播，聽起來像卡住一直發同一個聲音。
     if (!isPlaying) return
     seekTo(cue.start)
-    void play()
+    play()
   }, [currentTime, episode, isPlaying, loopCueIdx, play, seekTo])
 
   const toggle = useCallback(() => {

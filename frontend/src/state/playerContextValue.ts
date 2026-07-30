@@ -8,14 +8,14 @@ export type PlayerContextValue = {
   readonly isPlaying: boolean
   readonly duration: number
   readonly playbackRate: number
-  readonly volume: number
+  readonly muted: boolean
   readonly loadState: SegmentLoadState
   readonly currentEpisode: Episode | null
   seekTo(time: number): void
-  play(): Promise<void>
+  play(): void
   pause(): void
   setPlaybackRate(rate: number): void
-  setVolume(v: number): void
+  setMuted(m: boolean): void
   loadProgress(episodeId: string): { readonly currentTime: number; readonly exists: boolean }
   setCurrentEpisode(episode: Episode | null): void
   /** 單字抽樣（給 PronounceButton / WordCardPanel / ReplayAudioButton 用）。 */

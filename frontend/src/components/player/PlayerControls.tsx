@@ -1,4 +1,4 @@
-import { useEffect, useCallback, useRef } from 'react'
+import { useEffect, useCallback } from 'react'
 import { Play, Pause, Repeat1, Volume2, VolumeX } from 'lucide-react'
 import { usePlayer } from '../../state'
 import { formatTime } from '../../lib'
@@ -13,22 +13,9 @@ interface PlayerControlsProps {
 }
 
 export function PlayerControls({ duration, isCueLooping, canLoopCue, onCueLoopToggle }: PlayerControlsProps) {
-  const { currentTime, isPlaying, seekTo, play, pause, playbackRate, setPlaybackRate, volume, setVolume } = usePlayer()
-  // mute 是「上次音量記憶」UI 概念：toggle 把 volume 在 0 ↔ prevVolume 間切換。
-  // hook 內 volume=0 等於 mute（segmentGain.gain=0），所以實際行為直接看 hook.volume。
-  const lastNonZeroVolumeRef = useRef(1)
-  const isMuted = volume === 0
+  const { currentTime, isPlaying, seekTo, play, pause, playbackRate, setPlaybackRate, muted, setMuted } = usePlayer()
 
-  const handleVolumeChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const val = Number(e.target.value)
-    if (val > 0) lastNonZeroVolumeRef.current = val
-    setVolume(val)
-  }
-
-  const toggleMute = useCallback(() => {
-    if (isMuted) setVolume(lastNonZeroVolumeRef.current || 0.7)
-    else { lastNonZeroVolumeRef.current = volume; setVolume(0) }
-  }, [isMuted, volume, setVolume])
+  const toggleMute = useCallback(() => { setMuted(!muted) }, [muted, setMuted])
 
   // 鍵盤快捷鍵
   useEffect(() => {
@@ -72,23 +59,9 @@ export function PlayerControls({ duration, isCueLooping, canLoopCue, onCueLoopTo
           >
             <Repeat1 size={18} />
           </IconButton>
-          <div className="flex items-center gap-1.5">
-            <IconButton label={isMuted ? '取消靜音' : '靜音'} onClick={toggleMute}>
-              {isMuted ? <VolumeX size={16} /> : <Volume2 size={16} />}
-            </IconButton>
-            <div className="hidden sm:flex items-center py-4 -my-4">
-              <input
-                type="range"
-                min={0}
-                max={1}
-                step={0.02}
-                value={isMuted ? 0 : volume}
-                onChange={handleVolumeChange}
-                className="w-20 h-1 accent-accent cursor-pointer"
-                aria-label="音量"
-              />
-            </div>
-          </div>
+          <IconButton label={muted ? '取消靜音' : '靜音'} onClick={toggleMute} aria-pressed={muted}>
+            {muted ? <VolumeX size={16} /> : <Volume2 size={16} />}
+          </IconButton>
         </div>
 
         <span className="text-xs text-text-secondary font-mono">

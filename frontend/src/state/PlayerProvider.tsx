@@ -54,12 +54,12 @@ export function PlayerProvider({ children, lastPlayedEpisodeId, lastPlayedPositi
   const setCurrentEpisode = useCallback((episode: Episode | null) => {
     // 同集重推（例：首頁→再點回同一集 / PlayerRoute 重 fetch 拿到新物件參考）：
     // 只認 id，不認物件參考。id 相同就是「同一集」，跳過 loadEpisode 避免打斷正在播放的音訊
-    // （loadEpisode 會清 buffer cache + 把 currentTime 砍回 0）；換到不同集才需要真的重載。
+    // （loadEpisode 會把 currentTime 砍回 0 並把 segIdx 重置）；換到不同集才需要真的重載。
     const isSameEpisode = episode !== null && episode.id === currentEpisodeIdRef.current
     setCurrentEpisodeState(prev => (prev && episode && prev.id === episode.id ? prev : episode))
     currentEpisodeIdRef.current = episode?.id ?? null
     if (isSameEpisode) return
-    void playerRef.current.loadEpisode(episode)
+    playerRef.current.loadEpisode(episode)
   }, [])
 
   // 進度節流寫 localStorage + activity（每 200ms）
@@ -108,7 +108,7 @@ export function PlayerProvider({ children, lastPlayedEpisodeId, lastPlayedPositi
     playerRef.current.seekTo(time)
   }, [])
 
-  const play = useCallback(() => playerRef.current.play(), [])
+  const play = useCallback(() => { playerRef.current.play() }, [])
   const pause = useCallback(() => { playerRef.current.pause() }, [])
   const getSegmentPlayer = useCallback(() => playerRef.current, [])
   const getCurrentTime = useCallback(() => playerRef.current.currentTime, [])
@@ -120,14 +120,14 @@ export function PlayerProvider({ children, lastPlayedEpisodeId, lastPlayedPositi
     isPlaying: player.isPlaying,
     duration: player.duration,
     playbackRate: player.playbackRate,
-    volume: player.volume,
+    muted: player.muted,
     loadState: player.loadState,
     currentEpisode,
     seekTo,
     play,
     pause,
     setPlaybackRate: player.setPlaybackRate,
-    setVolume: player.setVolume,
+    setMuted: player.setMuted,
     loadProgress,
     setCurrentEpisode,
     playSegment: player.playSegment,

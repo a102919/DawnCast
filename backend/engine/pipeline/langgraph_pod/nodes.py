@@ -40,6 +40,7 @@ from engine.pipeline.langgraph_pod.prompt import (
     _strip_code_fence,
 )
 from shared.config import Settings
+from shared.db import repo as app_repo
 from shared.errors import GenerationError, RateLimitError
 from shared.idempotency import compute_idempotency_key
 from shared.models import (
@@ -708,10 +709,23 @@ def _build_segment_messages(
 
 
 def _to_lc_messages(msgs: list[dict[str, str]]) -> list[Any]:
+    # [opt-p2] system 區塊掛 cache_control:ephemeral — 跨集跨呼叫命中時
+    # MiniMax / Anthropic 只算 cache_read(輸入計費 10%)；不通就 graceful 退化成
+    # 一般 text block,零影響(詳見 chat.py:_lc_to_anthropic)。
     out: list[Any] = []
     for m in msgs:
         if m["role"] == "system":
-            out.append(SystemMessage(content=m["content"]))
+            out.append(
+                SystemMessage(
+                    content=[
+                        {
+                            "type": "text",
+                            "text": m["content"],
+                            "cache_control": {"type": "ephemeral"},
+                        }
+                    ]
+                )
+            )
         elif m["role"] == "user":
             out.append(HumanMessage(content=m["content"]))
     return out
@@ -723,6 +737,8 @@ def _usage_from_ai_msg(ai_msg: Any) -> dict[str, object]:
     return {
         "input_tokens": int(meta.get("input_tokens", 0)),
         "output_tokens": int(meta.get("output_tokens", 0)),
+        "cache_creation_tokens": int(meta.get("cache_creation_input_tokens", 0)),
+        "cache_read_tokens": int(meta.get("cache_read_input_tokens", 0)),
     }
 
 
@@ -781,6 +797,8 @@ async def decompose_research_node(state: PodState, config: RunnableConfig) -> di
                 duration_ms=int((time.monotonic() - call_start) * 1000),
                 input_tokens=cast(int, usage.get("input_tokens", 0)),
                 output_tokens=cast(int, usage.get("output_tokens", 0)),
+                cache_creation_tokens=cast(int, usage.get("cache_creation_tokens", 0)),
+                cache_read_tokens=cast(int, usage.get("cache_read_tokens", 0)),
             )
         raw = msg.content
         if not isinstance(raw, str):
@@ -987,6 +1005,8 @@ async def cross_verify_node(state: PodState, config: RunnableConfig) -> dict[str
                 duration_ms=int((time.monotonic() - call_start) * 1000),
                 input_tokens=cast(int, usage.get("input_tokens", 0)),
                 output_tokens=cast(int, usage.get("output_tokens", 0)),
+                cache_creation_tokens=cast(int, usage.get("cache_creation_tokens", 0)),
+                cache_read_tokens=cast(int, usage.get("cache_read_tokens", 0)),
             )
         raw = msg.content
         if not isinstance(raw, str):
@@ -1203,6 +1223,8 @@ async def _generate_outline(
                 duration_ms=int((time.monotonic() - call_start) * 1000),
                 input_tokens=cast(int, usage.get("input_tokens", 0)),
                 output_tokens=cast(int, usage.get("output_tokens", 0)),
+                cache_creation_tokens=cast(int, usage.get("cache_creation_tokens", 0)),
+                cache_read_tokens=cast(int, usage.get("cache_read_tokens", 0)),
             )
 
         try:
@@ -1393,20 +1415,45 @@ async def _invoke_writer(
     best_result: ScriptJSON | None = None
     best_word_count = -1
 
-    # 第一階段：生大綱（純結構性 parse fix，重試極少）
+    # 第一階段：生大綱。
+    # [opt-p1] rewrite pass 時若上一輪 outline 還在 state、且 feedback 沒要求改大綱,
+    # 跳過重打直接重用——大綱規劃通常沒問題,rewrite 多半是段落內容不佳,重打 outline
+    # 純屬浪費 ~1.3K input + 25s。escape hatch: feedback 包含 "#OUTLINE" 字樣時
+    # 仍重打(LLM 明確指出大綱本身有問題,罕見但可能發生)。
     outline: ScriptOutline | None = None
-    try:
-        outline, _, outline_usage = await _generate_outline(
-            chat,
-            state,
-            usage_node=usage_node,
-            cefr=cefr,
-            length_tier=length_tier,
-            feedback=base_feedback or None,
-            collector=collector,
+    outline_usage: dict[str, int] = {"input_tokens": 0, "output_tokens": 0}
+    reuse_outline = (
+        state.get("rewrite_iterations", 0) > 0
+        and state.get("outline") is not None
+        and not any("#OUTLINE" in fb.upper() for fb in base_feedback)
+    )
+    if reuse_outline:
+        outline = state["outline"]  # type: ignore[assignment]
+        logger.info(
+            "%s rewrite 第 %d 輪重用上一輪 outline big_topic=%s, 跳過重打",
+            usage_node,
+            state.get("rewrite_iterations", 0),
+            state["big_topic"],
         )
-    except RateLimitError:
-        return {"rate_limited": True, "engine_used": engine_label}
+    else:
+        try:
+            outline, _, outline_usage = await _generate_outline(
+                chat,
+                state,
+                usage_node=usage_node,
+                cefr=cefr,
+                length_tier=length_tier,
+                feedback=base_feedback or None,
+                collector=collector,
+            )
+        except RateLimitError:
+            # outline 還沒生成成功;若 state 已有上一輪 outline,保留它給後續 retry
+            existing_outline = state.get("outline")
+            return {
+                "rate_limited": True,
+                "engine_used": engine_label,
+                **({"outline": existing_outline} if existing_outline is not None else {}),
+            }
     total_usage["input_tokens"] += outline_usage["input_tokens"]
     total_usage["output_tokens"] += outline_usage["output_tokens"]
     assert outline is not None
@@ -1447,10 +1494,30 @@ async def _invoke_writer(
             targets = list(zip(t_list, [b for _, b in targets], strict=True))
 
         segment_scripts: list[list[ScriptLine]] = []
+        # [opt-p3] partial_rewrite: 只重生 affected_segments 指定的段,其他段沿用上一輪
+        prev_segs_reuse = state.get("previous_segment_scripts") or []
+        target_segs = state.get("affected_segments") or []
+        is_partial = (
+            state.get("rewrite_iterations", 0) > 0
+            and bool(target_segs)
+            and len(prev_segs_reuse) == len(outline.segments)
+        )
+        if is_partial:
+            logger.info(
+                "%s partial_rewrite 第 %d 輪 big_topic=%s: 只重打段 %s,其餘沿用",
+                usage_node,
+                state.get("rewrite_iterations", 0),
+                state["big_topic"],
+                target_segs,
+            )
         try:
             for seg_idx, (outline_seg, (target_words, boundary)) in enumerate(
                 zip(outline.segments, targets, strict=True)
             ):
+                # [opt-p3] 非失敗段直接抄上一輪
+                if is_partial and seg_idx not in target_segs:
+                    segment_scripts.append(prev_segs_reuse[seg_idx])
+                    continue
                 prev_tail = segment_scripts[-1][-3:] if segment_scripts else []
                 lines, seg_usage = await _generate_segment(
                     chat,
@@ -1474,7 +1541,12 @@ async def _invoke_writer(
                 total_usage["output_tokens"] += seg_usage["output_tokens"]
                 segment_scripts.append(lines)
         except RateLimitError:
-            return {"rate_limited": True, "engine_used": engine_label}
+            # outline 已生成,後續 retry 可直接跳過重打
+            return {
+                "rate_limited": True,
+                "engine_used": engine_label,
+                "outline": outline,
+            }
         except GenerationError as exc:
             last_exc = exc
             logger.warning(
@@ -1511,6 +1583,8 @@ async def _invoke_writer(
         if word_count >= word_floor:
             return {
                 "script": full_script,
+                "outline": outline,
+                "previous_segment_scripts": segment_scripts,
                 "engine_used": engine_label,
                 "rate_limited": False,
                 "token_usage": [{"node": usage_node, **total_usage}],
@@ -1530,6 +1604,8 @@ async def _invoke_writer(
                 )
             return {
                 "script": best_result,
+                "outline": outline,
+                "previous_segment_scripts": segment_scripts,
                 "engine_used": engine_label,
                 "rate_limited": False,
                 "token_usage": [{"node": usage_node, **total_usage}],
@@ -1571,6 +1647,8 @@ async def _invoke_writer(
     )
     return {
         "script": best_result,
+        "outline": outline,
+        "previous_segment_scripts": segment_scripts,
         "engine_used": engine_label,
         "rate_limited": False,
         "token_usage": [{"node": usage_node, **total_usage}],
@@ -1671,6 +1749,8 @@ async def verify_script_claims_node(state: PodState, config: RunnableConfig) -> 
                 duration_ms=int((time.monotonic() - call_start) * 1000),
                 input_tokens=cast(int, usage.get("input_tokens") or 0),
                 output_tokens=cast(int, usage.get("output_tokens") or 0),
+                cache_creation_tokens=cast(int, usage.get("cache_creation_tokens") or 0),
+                cache_read_tokens=cast(int, usage.get("cache_read_tokens") or 0),
             )
         raw = msg.content
         if not isinstance(raw, str):
@@ -1849,6 +1929,8 @@ async def quality_judge_node(state: PodState, config: RunnableConfig) -> dict[st
                 duration_ms=int((time.monotonic() - call_start) * 1000),
                 input_tokens=cast(int, usage.get("input_tokens") or 0),
                 output_tokens=cast(int, usage.get("output_tokens") or 0),
+                cache_creation_tokens=cast(int, usage.get("cache_creation_tokens") or 0),
+                cache_read_tokens=cast(int, usage.get("cache_read_tokens") or 0),
             )
         # judge 也可能包 ```json fence（寫稿路徑早有同樣防護，這裡補齊）。
         verdict = JudgeVerdict.model_validate_json(_strip_code_fence(msg.content))
@@ -1885,7 +1967,109 @@ async def quality_judge_node(state: PodState, config: RunnableConfig) -> dict[st
     }
 
     result.update(_apply_best_draft_fallback(state, ctx, scores, script))
+
+    # [opt-p3] 整集 judge 沒過 → 額外打 per-segment judge 定位失敗段。
+    # 只有 affected_segments 非空時 judge_decision 才會走 partial_rewrite;
+    # 失敗或 LLM 亂答都 fallback 整輪（不設 affected_segments）。
+    threshold = float(ctx.get("quality_threshold", 0.6))
+    if not _judge_passed(scores, threshold) and judge_chat is not None:
+        try:
+            affected = await _identify_affected_segments(
+                chat=judge_chat,
+                script=script,
+                feedback=verdict.feedback,
+                scores=scores,
+                collector=collector,
+            )
+            if affected:
+                result["affected_segments"] = affected
+                logger.info(
+                    "per-segment judge 定位失敗段 big_topic=%s: %s",
+                    state.get("big_topic"),
+                    affected,
+                )
+        except Exception as exc:
+            logger.warning(
+                "per-segment judge 失敗 fallback 整輪 big_topic=%s: %s",
+                state.get("big_topic"),
+                exc,
+            )
+
     return result
+
+
+async def _identify_affected_segments(
+    *,
+    chat: Any,
+    script: ScriptJSON,
+    feedback: list[str],
+    scores: dict[str, float],
+    collector: MetricsCollector | None = None,
+) -> list[int]:
+    """[opt-p3] 給 LLM 看整集腳本,問「哪些段是這次 judge 失敗的元兇」。
+
+    回傳 0-indexed segment index list；失敗或 LLM 回空就回空 list
+    (caller 走整輪 rewrite 邏輯)。
+    """
+    n_segments = len(script.script)  # 簡化:用 script 行數當段數代理
+    if n_segments <= 1:
+        return []  # 單段沒 partial 意義
+
+    feedback_text = "\n".join(f"- {f}" for f in feedback[:5]) or "(no specific feedback)"
+    user = (
+        f"This podcast script scored these overall axes: {scores}\n"
+        f"Overall feedback:\n{feedback_text}\n\n"
+        f"Script (single flat list, but it's structured as ~{n_segments} segments):\n"
+        f"{script.model_dump_json(indent=2)}\n\n"
+        f"Identify which segment indices (0-indexed, in [0, {n_segments - 1}]) "
+        f"are the main cause of the low scores.\n"
+        f"Return ONLY JSON: {{\"affected_segments\": [int, ...]}}"
+    )
+
+    call_start = time.monotonic()
+    try:
+        msg = await chat.ainvoke(
+            [
+                SystemMessage(
+                    content="You are a podcast script quality judge. "
+                    "Identify which segment(s) of the script caused the overall low scores. "
+                    "Be conservative — only mark segments that genuinely need rewriting, "
+                    "not segments that are merely 'could be slightly better'."
+                ),
+                HumanMessage(content=user),
+            ]
+        )
+    except Exception as exc:
+        logger.warning("per-segment judge ainvoke 失敗: %s", exc)
+        return []
+
+    usage = _usage_from_ai_msg(msg)
+    if collector is not None:
+        collector.record_llm_call(
+            node="judge",
+            call="per_segment_judge",
+            duration_ms=int((time.monotonic() - call_start) * 1000),
+            input_tokens=cast(int, usage.get("input_tokens") or 0),
+            output_tokens=cast(int, usage.get("output_tokens") or 0),
+            cache_creation_tokens=cast(int, usage.get("cache_creation_tokens") or 0),
+            cache_read_tokens=cast(int, usage.get("cache_read_tokens") or 0),
+        )
+
+    try:
+        payload = json.loads(_strip_code_fence(msg.content))
+        if not isinstance(payload, dict):
+            return []
+        affected_raw = payload.get("affected_segments", [])
+        if not isinstance(affected_raw, list):
+            return []
+        return [
+            int(i)
+            for i in affected_raw
+            if isinstance(i, (int, float)) and 0 <= int(i) < n_segments
+        ]
+    except Exception as exc:
+        logger.warning("per-segment judge 解析失敗: %s", exc)
+        return []
 
 
 def _apply_best_draft_fallback(
@@ -1914,11 +2098,12 @@ def _judge_passed(scores: dict[str, float], threshold: float) -> bool:
     return all(v >= threshold for v in scores.values())
 
 
-def judge_decision(state: PodState, config: RunnableConfig) -> Literal["upsert", "rewrite"]:
+def judge_decision(state: PodState, config: RunnableConfig) -> Literal["upsert", "rewrite", "partial_rewrite"]:
     """quality_judge 出來後的 conditional edge。
 
     五軸都過門檻 OR 已達 max iterations → 進 upsert；
     否則 → 回 write_script（會讀 judge_feedback 自動改寫）。
+    [opt-p3] affected_segments 非空且非全部段時 → partial_rewrite（只重打失敗段）。
     """
     settings = _ctx(config)
     threshold = float(settings.get("quality_threshold", 0.6))
@@ -1938,11 +2123,19 @@ def judge_decision(state: PodState, config: RunnableConfig) -> Literal["upsert",
         statuses = []
     has_unverified_claim = any(status != "supported" for status in statuses)
 
-    verdict: Literal["upsert", "rewrite"]
+    affected = state.get("affected_segments") or []
+
+    verdict: Literal["upsert", "rewrite", "partial_rewrite"]
     if iterations >= max_iter:
         verdict = "upsert"
     elif has_unverified_claim or not _judge_passed(scores, threshold):
-        verdict = "rewrite"
+        # [opt-p3] affected_segments 1 ≤ len < 全部段數 → partial;
+        # 空（per-segment judge 沒定位到）或全段（沒 partial 意義）→ 整輪
+        prev_segs = state.get("previous_segment_scripts") or []
+        if affected and 1 <= len(affected) < max(len(prev_segs), 1):
+            verdict = "partial_rewrite"
+        else:
+            verdict = "rewrite"
     else:
         verdict = "upsert"
 
@@ -2334,7 +2527,21 @@ async def insert_deliveries_node(state: PodState, config: RunnableConfig) -> dic
             # pipeline 重投時 ON CONFLICT DO NOTHING 回 False，不會重複通知。
             # order_id：個人點餐路徑才有值（user_ids 恆為單一使用者）；
             # 頻道批次路徑 order_id 是 None，行為與改動前一致。
-            inserted = await repo.insert_delivery(uid, episode_id, deliver_date, order_id=order_id)
+            #
+            # 個人點餐路徑走 app_repo.deliver_and_mark_ready：把 delivery 寫入
+            # 跟 queued→ready 翻牌收進同一個 transaction，避免前端輪詢踩到
+            # 「集數已交付但訂單仍 queued」的不一致窗口（race + 翻牌缺失會把
+            # activeOrder 卡死直到 DB 真翻 ready 前都救不回）。原本的
+            # `repo.mark_order_ready(order_id)` 改放在這條路徑後只能對齊部分
+            # race，根本解是 transactional 合併。
+            if order_id is not None:
+                inserted = await app_repo.deliver_and_mark_ready(
+                    uid, episode_id, deliver_date, order_id=order_id,
+                )
+            else:
+                inserted = await repo.insert_delivery(
+                    uid, episode_id, deliver_date, order_id=order_id,
+                )
         except ForeignKeyViolation:
             # 上游補償（update_episode_keys_node 的 DELETE-on-failure 或 worker
             # _compensate_generate_failure）已把這筆 episode row 刪掉 —
@@ -2347,11 +2554,6 @@ async def insert_deliveries_node(state: PodState, config: RunnableConfig) -> dic
                 uid,
             )
             continue
-
-        if order_id is not None:
-            # 生成完成即解鎖下一筆訂單，不用等使用者實際播放完——冪等
-            # （status='queued' 才會翻，重投/deliveries 已存在時是 no-op）。
-            await repo.mark_order_ready(order_id)
 
         if not inserted:
             continue

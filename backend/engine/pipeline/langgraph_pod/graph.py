@@ -156,13 +156,16 @@ def build_pod(*, checkpointer: MemorySaver | None = None) -> Any:
 
     builder.add_edge("verify_script_claims", "quality_judge")
 
-    # quality_judge 出來分：upsert / rewrite
+    # quality_judge 出來分：upsert / rewrite / partial_rewrite
+    # [opt-p3] partial_rewrite 跟 rewrite 一樣走 rewrite_iter_bump,
+    # 差別在 _invoke_writer 內部讀 affected_segments 只重生指定段
     builder.add_conditional_edges(
         "quality_judge",
         judge_decision,
         {
             "upsert": "upsert_episode",
             "rewrite": "rewrite_iter_bump",
+            "partial_rewrite": "rewrite_iter_bump",
         },
     )
 

@@ -74,8 +74,16 @@ class MetricsCollector:
         output_tokens: int = 0,
         attempt: int = 1,
         segment_index: int | None = None,
+        cache_creation_tokens: int = 0,
+        cache_read_tokens: int = 0,
     ) -> None:
-        """每次 chat.ainvoke 記一筆；_invoke_writer 既有的合計 token_usage 不受影響。"""
+        """每次 chat.ainvoke 記一筆；_invoke_writer 既有的合計 token_usage 不受影響。
+
+        [opt-p2] cache_creation / cache_read 是 MiniMax / Anthropic prompt cache
+        機制專用欄位:cache_creation 是這次新寫進 cache 的 token 數(計費 1.25x),
+        cache_read 是這次命中 cache 的 token 數(計費 0.1x)。MiniMax 端若不支援
+        兩者皆為 0,call 計費仍按 input_tokens 正常算。
+        """
         entry: dict[str, Any] = {
             "node": node,
             "call": call,
@@ -84,6 +92,9 @@ class MetricsCollector:
             "input_tokens": input_tokens,
             "output_tokens": output_tokens,
         }
+        if cache_creation_tokens or cache_read_tokens:
+            entry["cache_creation_tokens"] = cache_creation_tokens
+            entry["cache_read_tokens"] = cache_read_tokens
         if segment_index is not None:
             entry["segment_index"] = segment_index
         self.llm_calls.append(entry)
@@ -109,6 +120,10 @@ class MetricsCollector:
             queue_wait_ms = int((self.started_at - self.enqueued_at).total_seconds() * 1000)
         total_in = sum(int(c.get("input_tokens", 0)) for c in self.llm_calls)
         total_out = sum(int(c.get("output_tokens", 0)) for c in self.llm_calls)
+        # [opt-p2] cache hit 量單獨彙總,讓 admin UI 可以計算「這集節省多少」。
+        # 注意:MiniMax 端若無 cache 機制,兩者皆 0,total_in 仍按原價計費的 input 計算。
+        total_cache_creation = sum(int(c.get("cache_creation_tokens", 0)) for c in self.llm_calls)
+        total_cache_read = sum(int(c.get("cache_read_tokens", 0)) for c in self.llm_calls)
         return {
             "schema_version": _SCHEMA_VERSION,
             "status": self.status,
@@ -124,6 +139,8 @@ class MetricsCollector:
                 "llm_call_count": len(self.llm_calls),
                 "input_tokens": total_in,
                 "output_tokens": total_out,
+                "cache_creation_tokens": total_cache_creation,
+                "cache_read_tokens": total_cache_read,
             },
             "error": self.error,
         }

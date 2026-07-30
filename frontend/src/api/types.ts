@@ -186,6 +186,8 @@ export type AdminGenerationTotals = {
   readonly llmCallCount: number
   readonly inputTokens: number
   readonly outputTokens: number
+  readonly cacheCreationTokens: number
+  readonly cacheReadTokens: number
 }
 
 export type AdminGenerationError = {

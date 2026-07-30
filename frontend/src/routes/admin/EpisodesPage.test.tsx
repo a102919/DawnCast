@@ -40,7 +40,7 @@ const { getAdminEpisodeStats, getAdminEpisodeGeneration, MockAppError } = vi.hoi
     enqueuedAt: '2026-07-01T00:00:00Z', startedAt: '2026-07-01T00:00:01Z', finishedAt: '2026-07-01T00:05:01Z',
     queueWaitMs: 1200, wallMs: 300000,
     tts: { provider: 'minimax', characters: 5400 },
-    totals: { llmCallCount: 2, inputTokens: 100, outputTokens: 50 },
+    totals: { llmCallCount: 2, inputTokens: 100, outputTokens: 50, cacheCreationTokens: 0, cacheReadTokens: 0 },
     stages: [{ node: 'write_script', durationMs: 2000, status: 'ok', attempt: 1 }],
     llmCalls: [
       { node: 'write_script', call: 'segment', attempt: 1, durationMs: 1500, inputTokens: 80, outputTokens: 40, segmentIndex: 0 },

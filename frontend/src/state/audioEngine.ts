@@ -1,253 +1,196 @@
-/** Web Audio 引擎：AudioContext 生命週期、LRU buffer cache、decode、排程播放、ducking。
+/** 原生 <audio> 引擎：三個常駐 HTMLAudioElement（主播放輪替 A/B + 試聽專用）。
  *
- * 框架無關（不 import React），不知道 episode/播放意圖這些概念——cache/decode 去重 key
- * 是 audioUrl 字串（不是 segment idx，跨集數天生不會撞名：舊集數某個 idx 的 decode 卡住
- * 遲到完成，只會寫回它自己那個 URL 的 cache entry，不會汙染新集數同一個 idx 的內容）。
- * 「同一時刻只播一個」是呼叫端的政策，引擎本身允許同時存在多個 PlaybackHandle。
+ * 取代舊 Web Audio 鏈（AudioBufferSourceNode → SoundTouch worklet → gain →
+ * MediaStreamAudioDestinationNode → 隱藏 <audio>）。那條鏈的每一環都有不可控延遲：
+ * SoundTouch 要吃滿處理窗才出聲（句首被吃）、輸入結束殘留 tail 不保證 flush（句尾被吃）、
+ * source.onended 代表「餵料完」不是「喇叭播完」——句子邊界切字是結構性的，修不完。
+ * 原生 <audio> 的 ended 事件＝檔案真正播完，邊界切字物理上不可能發生；而舊鏈存在的
+ * 兩個理由——變速不變調、iOS 背景 session——瀏覽器都原生提供：
+ * playbackRate + preservesPitch（現代瀏覽器預設保留音高），真實 <audio> 元素本身
+ * 就是合法的 media session（鎖屏/動態島直接認得）。
  *
- * decode 本身不接受呼叫端的 AbortSignal——ctx.decodeAudioData 沒有原生 abort 支援，且
- * 同一個 URL 的 in-flight decode 可能被多個呼叫者共用（cache miss 時大家排隊等同一個
- * Promise），中止會連坐波及還沒過期的其他等待者。要不要對 decode 結果採取行動，交給
- * 呼叫端自己在拿到結果後判斷。
+ * 主播放用 A/B 兩個元素輪替：播第 i 段時把第 i+1 段的 URL 丟進閒置元素 preload，
+ * 句間 0.3s/0.7s 的既有停頓足夠遮住切換。試聽（單字/整句抽樣）走第三個專用元素，
+ * 音量固定 DUCK_LEVEL，不碰主播放元素的 src/position——「試聽不干擾主播放游標」
+ * 由元素隔離保證，不靠旗標。
  *
- * iOS Safari：純 Web Audio API 輸出不會被系統認成合法的背景播放 session，因此輸出改接
- * 一個真的在播放的隱藏 <audio> 元素（透過 MediaStreamAudioDestinationNode）。
+ * iOS Safari：媒體元素的播放授權是「每個元素」在 user gesture 內呼叫過 play() 才拿到。
+ * 自動接播下一段（gap timer 觸發的 play()）不在 gesture 內，所以 unlock() 要在使用者
+ * 點播放的同步呼叫堆疊內，把三個元素都 play()+pause() 一輪拿授權（沒 src 的先塞
+ * 無聲 WAV）。授權拿到後終身有效。
  *
- * 變速不變調：source.playbackRate 加速取樣（本身會變調）之後，接一顆 SoundTouchNode
- * （AudioWorklet）把 pitch 補償回來——只要把同一個 rate 鏡射到 stNode.playbackRate，
- * processor 內部就會自動用 pitch / rate 抵消變調，不用自己算比例。stNode 是跟 mainGain
- * 一樣的常駐節點（source 才是每次播放新建），registration 是 async，靠 getBuffer() 的
- * await 序列保證第一次 startPlayback() 執行前一定 ready（見 workletReady）。
+ * iOS 上 el.volume 唯讀（靜默忽略）：音量交給硬體鍵，程式面只保留 muted（iOS 可設）。
+ * 試聽的 DUCK_LEVEL 在 iOS 上會降級成原音量，可接受。
  */
 
-import { SoundTouchNode } from '@soundtouchjs/audio-worklet'
-import soundTouchProcessorUrl from '@soundtouchjs/audio-worklet/processor?url'
+export const DUCK_LEVEL = 0.3
 
-const MAX_BUFFER_CACHE = 8
-const DUCK_RAMP_SEC = 0.05
-
-export interface PlaybackHandle {
-  readonly source: AudioBufferSourceNode
-  readonly ctxAnchorSec: number
-  /** ctxAnchorSec 那一瞬間對應的**全域**播放秒數，已含段內 offset（＝globalStartSec + offsetSec）。
-   *  currentPositionSec = anchorPositionSec + (ctx.currentTime - ctxAnchorSec) * rate。
-   *  刻意不叫 globalStartSec：那個名字會讓人以為填 seg.start 就好，漏掉 offset 後
-   *  seek 過的位置一律少報 offsetSec，連鎖弄壞進度條、pausedAt 與單句循環。 */
-  readonly anchorPositionSec: number
-}
+/** iOS 解鎖用最短無聲 WAV（8 samples @ 8kHz）。 */
+const SILENT_WAV =
+  'data:audio/wav;base64,UklGRiwAAABXQVZFZm10IBAAAAABAAEAQB8AAEAfAAABAAgAZGF0YQgAAACAgICAgICAgA=='
 
 export interface StartPlaybackArgs {
   readonly url: string
   readonly globalStartSec: number
   readonly offsetSec: number
+  /** 有值＝試聽（走試聽專用元素、限定播放長度）；無值＝主播放（播到檔尾）。 */
   readonly durationSec?: number
   readonly rate: number
 }
 
-export interface AudioEngine {
-  ensureContext(): AudioContext
-  unlock(): Promise<void>
-  getBuffer(url: string): Promise<AudioBuffer | null>
-  hasBuffer(url: string): boolean
-  clearCache(): void
-  /** buffer 未 cache（尚未 getBuffer 完成）時回傳 null，呼叫端自行決定要不要重試。 */
-  startPlayback(args: StartPlaybackArgs): PlaybackHandle | null
-  /** 回傳停止當下算出的全域播放位置（秒），呼叫端拿去存 pausedAt。 */
-  stop(handle: PlaybackHandle, rate: number): number
-  /** 暫停時把整條輸出鏈真的靜下來（audioEl.pause + ctx.suspend）。resume 由
-   *  startPlayback/unlock 既有路徑負責，呼叫端不用配對。 */
-  suspend(): void
-  setRate(handle: PlaybackHandle, rate: number): void
-  currentPositionSec(handle: PlaybackHandle, rate: number): number
-  setVolume(v: number): void
-  duckDown(toLevel: number, rampSec: number): void
-  restoreVolume(rampSec: number): void
+export interface PlaybackHandle {
+  readonly el: HTMLAudioElement
+  readonly globalStartSec: number
+  readonly offsetSec: number
 }
 
-/** LRU AudioBuffer cache，超過上限 evict 最舊。Map 保留 insertion order，touch = delete+set。 */
-function createBufferCache() {
-  const map = new Map<string, AudioBuffer>()
-  const get = (url: string): AudioBuffer | undefined => {
-    const b = map.get(url)
-    if (b) { map.delete(url); map.set(url, b) }
-    return b
-  }
-  const set = (url: string, b: AudioBuffer): void => {
-    if (map.has(url)) map.delete(url)
-    map.set(url, b)
-    while (map.size > MAX_BUFFER_CACHE) {
-      const oldest = map.keys().next().value
-      if (oldest === undefined) break
-      map.delete(oldest)
-    }
-  }
-  const has = (url: string): boolean => map.has(url)
-  const clear = (): void => map.clear()
-  return { get, set, has, clear }
+export interface AudioEngine {
+  /** 必須在 user gesture 的同步呼叫堆疊內執行（見檔案頂端 iOS 說明）。 */
+  unlock(): void
+  /** 把 URL 丟進閒置元素開始載入；resolve true＝可播、false＝載入失敗。
+   *  同一個 URL 已在某元素上就緒時直接 resolve，不重載。 */
+  preload(url: string): Promise<boolean>
+  startPlayback(args: StartPlaybackArgs, onEnded: () => void, onPlayRejected: () => void): PlaybackHandle
+  /** 回傳停止當下的全域播放位置（秒），呼叫端拿去存 pausedAt。 */
+  stop(handle: PlaybackHandle): number
+  setRate(handle: PlaybackHandle, rate: number): void
+  currentPositionSec(handle: PlaybackHandle): number
+  setMuted(m: boolean): void
+}
+
+/** preservesPitch 未進所有 TS lib/瀏覽器版本，連同 webkit 前綴一起設。 */
+function setPreservesPitch(el: HTMLAudioElement): void {
+  const anyEl = el as HTMLAudioElement & { preservesPitch?: boolean; webkitPreservesPitch?: boolean }
+  anyEl.preservesPitch = true
+  anyEl.webkitPreservesPitch = true
 }
 
 export function createAudioEngine(): AudioEngine {
-  const ctxRef: { current: AudioContext | null } = { current: null }
-  const mainGainRef: { current: GainNode | null } = { current: null }
-  const segmentGainRef: { current: GainNode | null } = { current: null }
-  const audioElRef: { current: HTMLAudioElement | null } = { current: null }
-  const stNodeRef: { current: SoundTouchNode | null } = { current: null }
-  let workletReady: Promise<void> | null = null
-  const cache = createBufferCache()
-  /** in-flight decode 用共用 Promise 去重，key 是 audioUrl；一個呼叫者放棄不影響其他
-   *  還在等同一個 URL 的呼叫者（見檔案頂端說明）。 */
-  const inflight = new Map<string, Promise<AudioBuffer | null>>()
+  const makeEl = (volume: number): HTMLAudioElement => {
+    const el = new Audio()
+    el.preload = 'auto'
+    el.volume = volume
+    setPreservesPitch(el)
+    return el
+  }
+  const mainA = makeEl(1)
+  const mainB = makeEl(1)
+  const previewEl = makeEl(DUCK_LEVEL)
+  const all = [mainA, mainB, previewEl] as const
 
-  function ensureContext(): AudioContext {
-    if (ctxRef.current) return ctxRef.current
-    const Ctor = window.AudioContext
-      ?? (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext
-    const ctx = new Ctor()
-    const mainGain = ctx.createGain()
-    const segGain = ctx.createGain()
-    segGain.gain.value = 1
-    mainGain.connect(segGain)
-    ctxRef.current = ctx
-    mainGainRef.current = mainGain
-    segmentGainRef.current = segGain
+  let activeMainEl: HTMLAudioElement | null = null
+  let muted = false
+  /** 每次 startPlayback 換一個 token；元素被新播放接手後，舊 handle 掛的延遲
+   *  callback（loadedmetadata 補 seek、試聽定時停止）憑 token 判斷自己已過期。 */
+  const tokens = new WeakMap<HTMLAudioElement, symbol>()
+  const handleTokens = new WeakMap<PlaybackHandle, symbol>()
 
-    // 輸出不接 ctx.destination，改接一個真的在播放的隱藏 <audio> 元素（透過
-    // MediaStreamAudioDestinationNode）。iOS Safari 對純 Web Audio API 輸出不會
-    // 認成合法的背景播放 session：光設 mediaSession metadata 沒用，沒有實際在播的
-    // <audio>/<video> 元素，動態島/鎖屏不會顯示，背景切走也會被系統直接掛起 AudioContext。
-    const streamDest = ctx.createMediaStreamDestination()
-    segGain.connect(streamDest)
-    const audioEl = new Audio()
-    audioEl.srcObject = streamDest.stream
-    audioEl.play().catch(() => undefined)
-    audioElRef.current = audioEl
-
-    workletReady = (async () => {
-      await SoundTouchNode.register(ctx, soundTouchProcessorUrl)
-      const stNode = new SoundTouchNode({ context: ctx })
-      stNode.connect(mainGain)
-      stNodeRef.current = stNode
-    })()
-
-    return ctx
+  function pickMainEl(url: string): HTMLAudioElement {
+    // 已經載入這 URL 的元素接著用（preload 過、避免重 fetch）。
+    if (mainA.src && mainA.src.includes(url)) return mainA
+    if (mainB.src && mainB.src.includes(url)) return mainB
+    // 接播必須換另一個元素，否則同一段 ended 接下一段時 src 蓋上去、記憶體
+    // 仍指向「剛播完」的元素，play() 從新 src 啟動仍會在同一個 hardware path
+    // —— 不同元素讓兩個 src 在背景同時存在，瀏覽器切換更流暢。
+    return activeMainEl === mainA ? mainB : mainA
   }
 
-  async function unlock(): Promise<void> {
-    const ctx = ensureContext()
-    void audioElRef.current?.play().catch(() => undefined)
-    if (ctx.state === 'suspended') await ctx.resume()
-  }
-
-  async function getBuffer(url: string): Promise<AudioBuffer | null> {
-    const cached = cache.get(url)
-    if (cached) return cached
-    let p = inflight.get(url)
-    if (!p) {
-      p = (async () => {
-        try {
-          const ctx = ensureContext()
-          const res = await fetch(url)
-          if (!res.ok) return null
-          const buf = await ctx.decodeAudioData(await res.arrayBuffer())
-          // 保證 startPlayback() 執行前 stNode 已就緒（見檔案頂端說明）；擺在 decode
-          // 之後而非之前，才不會延後 fetch() 真正發出的時機。
-          await workletReady
-          cache.set(url, buf)
-          return buf
-        } catch (e) {
-          console.error('[audioEngine] decode failed', e)
-          return null
-        } finally {
-          inflight.delete(url)
-        }
-      })()
-      inflight.set(url, p)
+  function unlock(): void {
+    for (const el of all) {
+      if (!el.paused) continue // 正在播的元素已有授權，別打斷它
+      if (!el.src) el.src = SILENT_WAV
+      void el.play().catch(() => undefined)
+      el.pause()
     }
-    return p
   }
 
-  function startPlayback(args: StartPlaybackArgs): PlaybackHandle | null {
-    const ctx = ctxRef.current
-    const mainGain = mainGainRef.current
-    const stNode = stNodeRef.current
-    const buf = cache.get(args.url)
-    if (!ctx || !mainGain || !stNode || !buf) return null
-
-    const source = ctx.createBufferSource()
-    source.buffer = buf
-    source.playbackRate.value = args.rate
-    stNode.playbackRate.value = args.rate
-    source.connect(stNode)
-    void ctx.resume()
-    // 背景切回來/鎖屏按播放時，隱藏 <audio> 可能已被系統暫停，這裡跟著重啟。
-    void audioElRef.current?.play().catch(() => undefined)
-    const remaining = args.durationSec !== undefined ? Math.min(args.durationSec, buf.duration - args.offsetSec) : undefined
-    source.start(0, args.offsetSec, remaining)
-    // 錨點位置＝段起點 + 段內 offset：source 是從 buffer 的 offsetSec 處開始播的，
-    // 少加這一項就等於宣稱「不管從哪裡起播，位置都從段頭開始算」。
-    return { source, ctxAnchorSec: ctx.currentTime, anchorPositionSec: args.globalStartSec + args.offsetSec }
+  function preload(url: string): Promise<boolean> {
+    const el = pickMainEl(url)
+    if (el.src.includes(url) && el.readyState >= 3) return Promise.resolve(true)
+    return new Promise((resolve) => {
+      const ok = () => { cleanup(); resolve(true) }
+      const bad = () => { cleanup(); resolve(false) }
+      const cleanup = () => {
+        el.removeEventListener('canplay', ok)
+        el.removeEventListener('error', bad)
+      }
+      el.addEventListener('canplay', ok)
+      el.addEventListener('error', bad)
+      el.src = url
+    })
   }
 
-  function stop(handle: PlaybackHandle, rate: number): number {
-    const ctx = ctxRef.current
-    const pos = ctx ? handle.anchorPositionSec + (ctx.currentTime - handle.ctxAnchorSec) * rate : handle.anchorPositionSec
-    try { handle.source.stop() } catch { /* already stopped */ }
-    handle.source.disconnect()
+  function startPlayback(args: StartPlaybackArgs, onEnded: () => void, onPlayRejected: () => void): PlaybackHandle {
+    const isPreview = args.durationSec !== undefined
+    const el = isPreview ? previewEl : pickMainEl(args.url)
+    // 記下「目前 active 是誰」給下次接播用，pickMainEl 看到 mainA 已經在播
+    // 就走 mainB，避免同一段 src 蓋上去讓播放路徑競爭。
+    if (!isPreview) activeMainEl = el
+
+    const token = Symbol('playback')
+    tokens.set(el, token)
+    const live = () => tokens.get(el) === token
+
+    if (!el.src.includes(args.url)) el.src = args.url
+    el.defaultPlaybackRate = args.rate
+    el.playbackRate = args.rate
+    el.muted = muted
+
+    // metadata 還沒到之前設 currentTime，部分瀏覽器會吞掉——metadata 到了再補一次。
+    el.currentTime = args.offsetSec
+    // happy-dom 沒給 HTMLMediaElement.HAVE_METADATA 常數，hard-code 1（HTML 標準）：
+    // HAVE_NOTHING=0, HAVE_METADATA=1, HAVE_CURRENT_DATA=2, HAVE_FUTURE_DATA=3, HAVE_ENOUGH_DATA=4
+    if (el.readyState < 1) {
+      el.addEventListener('loadedmetadata', () => { if (live()) el.currentTime = args.offsetSec }, { once: true })
+    }
+
+    el.onended = () => { if (live()) onEnded() }
+    if (args.durationSec !== undefined) {
+      // 試聽限長：真的出聲（playing）後才起算，才不會把載入等待時間吃進試聽長度。
+      const stopAt = args.offsetSec + args.durationSec
+      let timer: number | null = null
+      el.addEventListener('playing', () => {
+        if (!live()) return
+        timer = window.setTimeout(() => {
+          if (!live()) return
+          el.pause()
+          onEnded()
+        }, Math.max(0, ((stopAt - el.currentTime) / args.rate) * 1000))
+      }, { once: true })
+      el.addEventListener('pause', () => { if (timer !== null) window.clearTimeout(timer) }, { once: true })
+    }
+
+    void el.play().catch(() => { if (live()) onPlayRejected() })
+    const handle: PlaybackHandle = { el, globalStartSec: args.globalStartSec, offsetSec: args.offsetSec }
+    handleTokens.set(handle, token)
+    return handle
+  }
+
+  function positionOf(handle: PlaybackHandle): number {
+    // metadata 未到時 currentTime 可能還是 0，位置不能倒退到 offset 之前。
+    return handle.globalStartSec + Math.max(handle.el.currentTime, handle.offsetSec)
+  }
+
+  function stop(handle: PlaybackHandle): number {
+    const pos = positionOf(handle)
+    // 元素已被更新的 startPlayback 接手：這個 handle 過期了，不能動元素（會誤殺新播放）。
+    if (tokens.get(handle.el) !== handleTokens.get(handle)) return pos
+    tokens.set(handle.el, Symbol('stopped'))
+    handle.el.onended = null
+    handle.el.pause()
+    if (handle.el === activeMainEl) activeMainEl = null
     return pos
   }
 
-  function suspend(): void {
-    // iOS Safari：source 停了但 AudioContext 照跑、隱藏 <audio> 還掛著 live MediaStream
-    // 的話，系統音訊 session 會一直維持「播放中」，硬體管線殘留的最後一塊 buffer
-    // （剛好在唸的那個字）在這個殭屍狀態下可能被卡住無限重播（WebKit 對
-    // MediaStream/WebAudio 輸出的已知 glitch 病灶）。兩層都真的停掉，session 才會收。
-    audioElRef.current?.pause()
-    void ctxRef.current?.suspend().catch(() => undefined)
-  }
-
   function setRate(handle: PlaybackHandle, rate: number): void {
-    handle.source.playbackRate.value = rate
-    const stNode = stNodeRef.current
-    if (stNode) stNode.playbackRate.value = rate
+    handle.el.defaultPlaybackRate = rate
+    handle.el.playbackRate = rate
   }
 
-  function currentPositionSec(handle: PlaybackHandle, rate: number): number {
-    const ctx = ctxRef.current
-    if (!ctx) return handle.anchorPositionSec
-    return handle.anchorPositionSec + (ctx.currentTime - handle.ctxAnchorSec) * rate
+  function setMuted(m: boolean): void {
+    muted = m
+    for (const el of all) el.muted = m
   }
 
-  function setVolume(v: number): void {
-    const sg = segmentGainRef.current
-    const ctx = ctxRef.current
-    if (sg && ctx) sg.gain.setValueAtTime(v, ctx.currentTime)
-  }
-
-  function duckDown(toLevel: number, rampSec: number): void {
-    const ctx = ctxRef.current
-    const mainGain = mainGainRef.current
-    if (!ctx || !mainGain) return
-    const now = ctx.currentTime
-    mainGain.gain.cancelScheduledValues(now)
-    mainGain.gain.setValueAtTime(mainGain.gain.value, now)
-    mainGain.gain.linearRampToValueAtTime(toLevel, now + rampSec)
-  }
-
-  function restoreVolume(rampSec: number): void {
-    const ctx = ctxRef.current
-    const mainGain = mainGainRef.current
-    if (!ctx || !mainGain) return
-    const t = ctx.currentTime
-    mainGain.gain.cancelScheduledValues(t)
-    mainGain.gain.setValueAtTime(mainGain.gain.value, t)
-    mainGain.gain.linearRampToValueAtTime(1, t + rampSec)
-  }
-
-  return {
-    ensureContext, unlock, getBuffer,
-    hasBuffer: cache.has, clearCache: cache.clear,
-    startPlayback, stop, suspend, setRate, currentPositionSec, setVolume, duckDown, restoreVolume,
-  }
+  return { unlock, preload, startPlayback, stop, setRate, currentPositionSec: positionOf, setMuted }
 }
-
-export { DUCK_RAMP_SEC }

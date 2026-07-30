@@ -351,6 +351,8 @@ const AdminGenerationTotalsSchema = z.object({
   llmCallCount: z.number(),
   inputTokens: z.number(),
   outputTokens: z.number(),
+  cacheCreationTokens: z.number(),
+  cacheReadTokens: z.number(),
 }) satisfies z.ZodType<components['schemas']['AdminGenerationTotals']>
 
 const AdminGenerationErrorSchema = z.object({
