@@ -335,3 +335,15 @@ curl 直接打 8000 帶 `/api/episodes` 是 200（用 prefix 加完的版本）�
 2. 寫一個 **「只有 top-level 欄位」的反向測試**（`email_verified=True` 在 top-level + `user_metadata.email_verified` 沒設），確認 401
 3. 寫一個 **「nested 欄位為 False」** 的負向測試，確認 401
 4. **真實 curl 帶 Supabase JWT 打 prod/staging**，不用 mock — 任何 mock 結構對齊測試綠但 prod 401 都會在這一步暴露
+
+## 2026-07-30：重聽這句播錯句（float4 時間戳捨入）
+
+**症狀**：單字本「重聽這句」播的是前一句，跟顯示句完全對不上；但我自己的瀏覽器驗證全過。
+
+**根因**：`user_vocab.source_timestamp` 欄位是 `real`（float4），存回讀出後大多比原 cue.start 小一點點（123.754 → 123.75399…），`findActiveCueIndex` 二分搜尋掉到前一句。
+
+**驗證盲點**：
+1. dev bypass 帳號的測試資料（ts=0）剛好無精度問題；**使用者帳號的真實資料**（ts=123.754）才會踩中。驗證要查 DB 看真實使用者的資料形態，不能只用自己種的資料。
+2. 「call args 正確」不等於「內容正確」——這次補了 whisper 轉錄音檔比對句子，才把資料層排除、鎖定 runtime。
+
+**規則**：跨 DB 往返的浮點值永遠不可拿來做等值/邊界比對；有精確整數索引（sourceLineNo）就用索引，時間戳只當顯示用 metadata。

@@ -740,7 +740,8 @@ _DECOMPOSE_RESEARCH_SYSTEM = """You decompose a podcast topic into focused resea
 Return ONLY JSON with this exact shape:
 {"questions": [{"question": str, "kind": "academic"|"statistics"|"claim_check"|"history"|"general",
 "requires_sources": bool}]}
-Give 1-6 non-overlapping questions. Prefer questions that can be checked against cited sources."""
+Give 1-6 non-overlapping questions. Prefer questions that can be checked against cited sources.
+Write all questions in Traditional Chinese (Taiwan)."""
 
 
 async def decompose_research_node(state: PodState, config: RunnableConfig) -> dict[str, Any]:

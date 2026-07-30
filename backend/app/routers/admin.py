@@ -34,6 +34,7 @@ from shared.db import queue
 from shared.db.pool import connection
 from shared.errors import AuthError, NotFoundError, PayloadTooLargeError, ValidationError
 from shared.models import (
+    AdminEpisodeGeneration,
     AdminEpisodeStats,
     AdminEpisodeStatsResponse,
     AdminEpsGenerateResponse,
@@ -175,6 +176,35 @@ async def get_admin_episode_stats() -> ApiResponse[AdminEpisodeStatsResponse]:
         items=items,
     )
     return ok(response)
+
+
+# 生成過程明細獨立端點：llm_calls 一集可能數十筆，塞進 list 會撐爆 100 列 payload。
+_EPISODE_GENERATION_SQL = """
+  select coalesce(e.gen_metrics, '{}'::jsonb) as gen,
+         coalesce(e.research_metrics, '{}'::jsonb) as research
+  from public.episodes e
+  where e.slug = %s
+"""
+
+
+@router.get(
+    "/episodes/{episode_id}/generation",
+    response_model=ApiResponse[AdminEpisodeGeneration],
+)
+async def get_admin_episode_generation(episode_id: str) -> ApiResponse[AdminEpisodeGeneration]:
+    """單集生成過程：stages / llm_calls / tts 供應商 / 研究摘要 / 錯誤。
+
+    gen_metrics 是演進中的 jsonb（schema_version），model 欄位全 optional，
+    舊集數缺欄位照樣回傳（前端顯示「—」），不因歷史資料炸 500。
+    """
+    async with connection() as conn, conn.cursor(row_factory=dict_row) as cur:
+        await cur.execute(_EPISODE_GENERATION_SQL, (episode_id,))
+        row = await cur.fetchone()
+    if row is None:
+        raise NotFoundError("查無此集數")
+    gen = row["gen"] if isinstance(row["gen"], dict) else {}
+    research = row["research"] if isinstance(row["research"], dict) else {}
+    return ok(AdminEpisodeGeneration.model_validate({**gen, "research": research}))
 
 
 @router.get("/jobs", response_model=ApiResponse[list[AdminJobQueue]])

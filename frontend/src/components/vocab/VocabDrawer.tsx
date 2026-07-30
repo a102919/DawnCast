@@ -1,7 +1,8 @@
 import { useState, useMemo } from 'react'
 import { AnimatePresence } from 'framer-motion'
 import { X, Search, BookOpen, SearchX } from 'lucide-react'
-import { useVocab, usePlayer } from '../../state'
+import { useNavigate } from 'react-router-dom'
+import { useVocab } from '../../state'
 import { IconButton, Chip, Sheet, EmptyState } from '../primitives'
 import { VocabEntryCard } from './VocabEntryCard'
 import type { VocabItem } from '../../api/types'
@@ -22,7 +23,7 @@ const POS_LABELS: Record<PosFilter, string> = {
 
 export function VocabDrawer({ isOpen, onClose }: VocabDrawerProps) {
   const { items, removeVocab } = useVocab()
-  const { seekTo } = usePlayer()
+  const navigate = useNavigate()
   const [query, setQuery] = useState('')
   const [posFilter, setPosFilter] = useState<PosFilter>('all')
 
@@ -40,8 +41,11 @@ export function VocabDrawer({ isOpen, onClose }: VocabDrawerProps) {
     return result
   }, [items, query, posFilter])
 
+  // 見 VocabRoute.tsx 同名函式註解：seekTo 要交給 PlayerRoute 等目標集數載入完成再做。
   const handleSeek = (item: VocabItem) => {
-    seekTo(item.sourceTimestamp)
+    navigate(`/player/${item.sourceEpisodeId}`, {
+      state: { seekTo: item.sourceTimestamp, seekLineNo: item.sourceLineNo },
+    })
     onClose()
   }
 

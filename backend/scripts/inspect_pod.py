@@ -59,6 +59,12 @@ def build_argparser() -> argparse.ArgumentParser:
         choices=["定義", "人物故事", "常見誤解", "應用場景", "歷史", "對比"],
     )
     p.add_argument(
+        "--topic-type",
+        default="skill",
+        choices=["news", "product", "evergreen", "skill"],
+        help="skill 會跳過 decompose_research LLM；要測研究鏈用 evergreen",
+    )
+    p.add_argument(
         "--length",
         default="medium",
         choices=["short", "medium", "long"],
@@ -183,7 +189,7 @@ async def _run_with_events(args: argparse.Namespace) -> int:
         "big_topic": args.topic,
         "canonical_topic": args.topic,
         "angle": args.angle,
-        "topic_type": "skill",  # 'skill' topic_type 是 tech 入口常見
+        "topic_type": args.topic_type,
         "deliver_date": date.today().isoformat(),
         "user_ids": [args.user_id],
         "length_tier": args.length,
@@ -256,8 +262,22 @@ async def _run_with_events(args: argparse.Namespace) -> int:
         # 幫 inspect 開 override：failover_mode=degrade（預設）→ 撞限流就 graceful END，
         # 不用切 failover chat。failover_mode 可從 CLI 開但先不加，保持簡單。
         from engine.pipeline.langgraph_pod import _build_runtime_context
+        from engine.pipeline.langgraph_pod.metrics import MetricsCollector
+        from shared.idempotency import compute_idempotency_key
 
         runtime = _build_runtime_context(cfg, use_mock=False, reset_mocks=False)
+        # 掛 collector：不掛的話 upsert 不寫 gen_metrics / research_metrics，
+        # admin 後台的生成過程 dialog 會整片空白。
+        idem_key = compute_idempotency_key(
+            cluster_id=None,
+            deliver_date=body["deliver_date"],
+            big_topic=body["big_topic"],
+            angle=body["angle"],
+            length_tier=body["length_tier"],
+            topic_type=body["topic_type"],
+        )
+        collector = MetricsCollector(idempotency_key=idem_key, enqueued_at=None)
+        runtime["metrics_collector"] = collector
         config["configurable"] = {  # type: ignore[assignment]
             **config["configurable"],  # type: ignore[operator]
             **runtime,

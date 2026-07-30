@@ -51,8 +51,10 @@ async def lookup_dict(
     # ── 主路徑：以 lemma 候選清單查 cache，命中優先取最像 lemma 者 ──
     # （解決「點複數、查完整釋義」：lemma 條目存在時壓過原 word 命中）
     async with connection() as conn, conn.cursor(row_factory=dict_row) as cur:
+        # audio_url 一律回 null：/media static mount 已移除（方案 B），
+        # dict_cache 存的舊 URL 全是死連結，回給前端只會 404；發音由前端 TTS 負責
         await cur.execute(
-            """select word, ipa, pos, translation, exchange, audio_url,
+            """select word, ipa, pos, translation, exchange, null as audio_url,
                       example_en, example_zh, mnemonic
                from public.dict_cache
                where word = any(%s::text[])
@@ -91,9 +93,9 @@ async def lookup_dict(
                     payload.get("mnemonic"),
                 ),
             )
-            # 讀回（拿到 audio_url 等其它欄位的潛在值）
+            # 讀回（拿 exchange 等其它欄位；audio_url 同上一律 null）
             await cur.execute(
-                """select word, ipa, pos, translation, exchange, audio_url,
+                """select word, ipa, pos, translation, exchange, null as audio_url,
                           example_en, example_zh, mnemonic
                    from public.dict_cache where word = %s""",
                 (word,),

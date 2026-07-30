@@ -1,12 +1,12 @@
 import { useState, useMemo } from 'react'
 import { AnimatePresence } from 'framer-motion'
-import { Search, BookOpen, SearchX, Sparkles } from 'lucide-react'
+import { Search, BookOpen, SearchX, Sparkles, GraduationCap, Trophy, type LucideIcon } from 'lucide-react'
 import { useNavigate, Link } from 'react-router-dom'
-import { useVocab, usePlayer } from '../state'
+import { useVocab } from '../state'
 import { Chip } from '../components/primitives/Chip'
 import { EmptyState } from '../components/primitives/EmptyState'
 import { VocabEntryCard } from '../components/vocab/VocabEntryCard'
-import { MASTERED_STATUS } from '../lib/srs'
+import { MASTERED_STATUS, filterLearnDeck, filterReviewDeck, filterQuizDeck } from '../lib/srs'
 import type { VocabItem } from '../api/types'
 
 type PosFilter = 'all' | 'v' | 'n' | 'a'
@@ -25,8 +25,7 @@ const MASTERY_LABELS: Record<MasteryFilter, string> = {
 } as const
 
 export function VocabRoute() {
-  const { items, isLoading, removeVocab } = useVocab()
-  const { seekTo } = usePlayer()
+  const { items, isLoading, removeVocab, reviveVocab } = useVocab()
   const navigate = useNavigate()
   const [query, setQuery] = useState('')
   const [posFilter, setPosFilter] = useState<PosFilter>('all')
@@ -50,10 +49,23 @@ export function VocabRoute() {
     return result
   }, [items, query, posFilter, masteryFilter])
 
+  // 帶正確集數 id 導頁（單字可能來自不同集），跳轉目標交給 PlayerRoute 等該集
+  // segments 真的載入完成再 seek——不能在這裡直接 seekTo，那是對「目前已載入的集數」
+  // 操作，跟這個單字的來源集數多半對不上。
   const handleSeek = (item: VocabItem) => {
-    seekTo(item.sourceTimestamp)
-    navigate('/player')
+    navigate(`/player/${item.sourceEpisodeId}`, {
+      state: { seekTo: item.sourceTimestamp, seekLineNo: item.sourceLineNo },
+    })
   }
+
+  const sessionEntries = useMemo(() => {
+    const entries: { to: string; label: string; count: number; Icon: LucideIcon }[] = [
+      { to: '/flashcards/learn', label: '學習新字', count: filterLearnDeck(items).length, Icon: GraduationCap },
+      { to: '/flashcards', label: '閃卡複習', count: filterReviewDeck(items).length, Icon: Sparkles },
+      { to: '/flashcards/quiz', label: '畢業測驗', count: filterQuizDeck(items).length, Icon: Trophy },
+    ]
+    return entries
+  }, [items])
 
   return (
     <div className="max-w-2xl mx-auto px-4 py-6">
@@ -68,20 +80,23 @@ export function VocabRoute() {
         </div>
       </div>
 
-      {/* 閃卡複習入口 */}
-      {items.length > 0 && (
-        <Link
-          to="/flashcards"
-          className="mb-4 flex items-center justify-between gap-2 p-3 rounded-lg bg-accent/10 border border-accent/30 hover:bg-accent/15 transition-colors duration-fast group"
-        >
-          <div className="flex items-center gap-2 min-w-0">
-            <Sparkles size={16} className="text-accent shrink-0" />
-            <span className="text-sm font-medium text-text-primary">開始閃卡複習</span>
-            <span className="text-xs text-text-tertiary">（{items.length} 張）</span>
-          </div>
-          <span className="text-xs text-accent font-medium shrink-0 group-hover:underline">前往 →</span>
-        </Link>
-      )}
+      {/* 學習／複習／畢業測驗三入口：常駐顯示，數量 0 時進頁面會看到對應空狀態 */}
+      <div className="mb-4 space-y-2">
+        {sessionEntries.map(entry => (
+          <Link
+            key={entry.to}
+            to={entry.to}
+            className="flex items-center justify-between gap-2 p-3 rounded-lg bg-accent/10 border border-accent/30 hover:bg-accent/15 transition-colors duration-fast group"
+          >
+            <div className="flex items-center gap-2 min-w-0">
+              <entry.Icon size={16} className="text-accent shrink-0" />
+              <span className="text-sm font-medium text-text-primary">{entry.label}</span>
+              <span className="text-xs text-text-tertiary">（{entry.count} 個）</span>
+            </div>
+            <span className="text-xs text-accent font-medium shrink-0 group-hover:underline">前往 →</span>
+          </Link>
+        ))}
+      </div>
 
       {/* 搜尋 */}
       <div className="relative mb-3">
@@ -126,7 +141,7 @@ export function VocabRoute() {
         items.length === 0 ? (
           <EmptyState icon={BookOpen} title="單字本是空的" description="在播放頁點擊字幕中的單字即可收錄" />
         ) : masteryFilter === 'mastered' ? (
-          <EmptyState icon={Sparkles} title="還沒有已精熟的單字" description="持續複習，間隔拉長到 90 天以上就會出現在這裡" />
+          <EmptyState icon={Sparkles} title="還沒有已精熟的單字" description="持續複習到解鎖畢業測驗，連續兩輪通過就會出現在這裡" />
         ) : (
           <EmptyState icon={SearchX} title="找不到符合的單字" />
         )
@@ -139,6 +154,13 @@ export function VocabRoute() {
                 item={item}
                 onSeek={handleSeek}
                 onRemove={removeVocab}
+                onRevive={id => {
+                  void reviveVocab(id).catch((err: unknown) => {
+                    window.alert(
+                      `重新加入複習失敗（${err instanceof Error ? err.message : '未知錯誤'}），請重試`,
+                    )
+                  })
+                }}
                 variant="page"
               />
             ))}

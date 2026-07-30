@@ -11,6 +11,9 @@ interface SheetProps {
   readonly maxHeight?: string
   readonly widthClassName?: string
   readonly dismissible?: boolean
+  /** bottom variant 預設停在 BottomNav 上方；在沒有 BottomNav 的頁面（如 /admin）
+   *  設 false 讓 sheet 貼齊螢幕底部，否則會空出一條 nav 高度的縫。 */
+  readonly aboveBottomNav?: boolean
 }
 
 export function Sheet({
@@ -22,6 +25,7 @@ export function Sheet({
   maxHeight = '90vh',
   widthClassName = 'w-96 max-w-full',
   dismissible = true,
+  aboveBottomNav = true,
 }: SheetProps) {
   const [exitVelocity, setExitVelocity] = useState(0)
   const axis = variant === 'side' ? 'x' : 'y'
@@ -66,7 +70,7 @@ export function Sheet({
             aria-labelledby={ariaLabelledBy}
             className={
               variant === 'bottom'
-                ? 'fixed bottom-nav-sheet left-0 right-0 z-50 material-regular rounded-t-xl border-t border-border shadow-lg flex flex-col'
+                ? `fixed ${aboveBottomNav ? 'bottom-nav-sheet' : 'bottom-0'} left-0 right-0 z-50 material-regular rounded-t-xl border-t border-border shadow-lg flex flex-col`
                 : variant === 'top'
                   ? 'fixed top-0 left-0 right-0 lg:left-auto lg:right-4 lg:w-[min(32rem,calc(100vw-2rem))] z-50 material-regular rounded-b-xl border-b border-border shadow-lg flex flex-col pt-[env(safe-area-inset-top,0px)]'
                   : `fixed top-0 right-0 h-full z-50 material-regular shadow-lg flex flex-col ${widthClassName}`

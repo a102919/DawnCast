@@ -55,10 +55,12 @@ class VocabItem(CamelModel):
     example_zh: str | None = None
     # 諧音/關鍵字記憶提示：同上，來自 dict_cache JOIN
     mnemonic: str | None = None
-    # 1=new..5=ignored（已精熟）；門檻判斷在前端算，見 VocabProvider.updateCardReview
-    # ge=1/le=5 對齊 migration 0001 註解與 UpdateVocabBody 邊界驗證，避免 LLM/測試
-    # 寫出 0/-1/999 等垃圾值污染 API 回應。
+    # 1=新字(待學習) 2=複習中(SRS) 5=精熟封存（見 migration 0026）；門檻判斷在
+    # 前端算，見 VocabProvider。ge=1/le=5 對齊 UpdateVocabBody 邊界驗證，避免
+    # LLM/測試寫出 0/-1/999 等垃圾值污染 API 回應。
     status: int = Field(default=1, ge=1, le=5)
+    # 畢業測驗連續通過輪數；連 2 輪即精熟（status=5）。
+    quiz_pass_streak: int = Field(default=0, ge=0)
 
 
 class Settings(CamelModel):
@@ -311,6 +313,93 @@ class AdminEpisodeStatsResponse(CamelModel):
     total_output_tokens: int = 0
     total_play_count: int = 0
     items: list[AdminEpisodeStats] = Field(default_factory=list)
+
+
+class AdminLlmCall(CamelModel):
+    """單次 LLM 呼叫；來自 episodes.gen_metrics->'llm_calls'。
+
+    欄位全給預設值：gen_metrics 是 schema_version 演進中的 jsonb，舊集數
+    可能缺欄位，讀取端容錯不炸。
+    """
+
+    node: str = ""
+    call: str = ""
+    attempt: int = 1
+    duration_ms: int = 0
+    input_tokens: int = 0
+    output_tokens: int = 0
+    segment_index: int | None = None
+
+
+class AdminTtsUsage(CamelModel):
+    """TTS 用量；provider="edge" 表示 MiniMax 失敗整份 fallback（該集 TTS 免費）。"""
+
+    provider: str = ""
+    characters: int = 0
+
+
+class AdminGenerationTotals(CamelModel):
+    """gen_metrics->'totals'：LLM 呼叫次數與 token 合計。"""
+
+    llm_call_count: int = 0
+    input_tokens: int = 0
+    output_tokens: int = 0
+
+
+class AdminGenerationError(CamelModel):
+    """gen_metrics->'error'：失敗時的節點與訊息（成功集數為 null）。"""
+
+    node: str = ""
+    type: str = ""
+    message: str = ""
+
+
+class AdminResearchSummary(CamelModel):
+    """episodes.research_metrics 的已知欄位；全部 optional，缺省容錯。
+
+    來源：MetricsCollector.set_research_summary 的各節點呼叫
+    （decompose / gather / cross_verify / verify_claims / judge）。
+    """
+
+    questions_count: int | None = None
+    subtopics: list[str] = Field(default_factory=list)
+    source_count: int | None = None
+    evidence_card_count: int | None = None
+    grounded: bool | None = None
+    provider_counts: dict[str, int] = Field(default_factory=dict)
+    verified_claim_count: int | None = None
+    usable_claim_count: int | None = None
+    conflict_count: int | None = None
+    claim_check_total: int | None = None
+    claim_check_supported: int | None = None
+    claim_check_unsupported: int | None = None
+    claim_check_unsupported_ratio: float | None = None
+    judge_scores: dict[str, float] = Field(default_factory=dict)
+    judge_verdict: str | None = None
+    rewrite_iterations: int | None = None
+    engine_used: str | None = None
+    errors: list[str] = Field(default_factory=list)
+
+
+class AdminEpisodeGeneration(CamelModel):
+    """單集生成過程完整視圖：gen_metrics + research_metrics 合併。
+
+    只在 GET /admin/episodes/{id}/generation 回傳，list 端點刻意不帶——
+    llm_calls 一集可能數十筆，100 列的 list payload 會被撐爆。
+    """
+
+    status: str = ""
+    enqueued_at: str | None = None
+    started_at: str | None = None
+    finished_at: str | None = None
+    queue_wait_ms: int | None = None
+    wall_ms: int | None = None
+    tts: AdminTtsUsage | None = None
+    totals: AdminGenerationTotals = Field(default_factory=AdminGenerationTotals)
+    stages: list[StageMetric] = Field(default_factory=list)
+    llm_calls: list[AdminLlmCall] = Field(default_factory=list)
+    research: AdminResearchSummary = Field(default_factory=AdminResearchSummary)
+    error: AdminGenerationError | None = None
 
 
 class AdminEpsGenerateResponse(CamelModel):

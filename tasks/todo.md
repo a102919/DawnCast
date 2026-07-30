@@ -221,3 +221,19 @@ SMTP/SendGrid/Resend/SES 欄位），也沒有排程觸發機制可掛實際 dis
 - [x] 播放中點單字立即暫停，關閉詞卡時依原狀態恢復
 - [x] 手機與桌機播放列加入單句循環 toggle
 - [x] 補回歸測試並通過 frontend lint / typecheck / test
+
+---
+
+## 單字本學習系統 2.0（2026-07-30）
+
+計畫詳見 ~/.claude/plans/eager-crafting-balloon.md
+
+- [x] 批次 1：契約層（migration 0026 + VocabItem/UpdateVocabBody/vocab.py + 契約重生 + types.ts）
+- [x] 批次 2：前端純邏輯（srs.ts 重整 + quiz.ts + VocabProvider 三 callback + 使用點）
+- [x] 批次 3：滑卡複習（SwipeCard + SessionHeader/Summary + FlashcardRoute 改造）
+- [x] 批次 4：學習模式（LearnRoute + VocabRoute 三入口卡）
+- [x] 批次 5：畢業測驗（quiz UI + QuizRoute + 復活鈕 + 路由註冊）
+- [x] 最終驗證：前端 lint/typecheck/test 全綠（214 tests）+ 後端 lint/type-check/test 全綠（432 passed）
+- [x] Playwright mock 模式端對端實測：三入口卡、學習左右滑、真實拖曳評分（6→15 天）、
+      測驗兩輪（streak 1 → +7 天；streak 2 → 精熟封存）、精熟分頁復活
+- [ ] prod：db-pran 跑 0026 migration（quiz_pass_streak + status backfill）後才部署新前後端

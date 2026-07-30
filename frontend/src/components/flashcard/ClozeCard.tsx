@@ -95,7 +95,7 @@ export function ClozeCard({ item, sentence, onGraded }: ClozeCardProps) {
             <PronounceButton audioUrl={null} text={cloze.blank} size={14} label="播放單字發音" />
           </p>
           {item.sourceEpisodeId && (
-            <ReplayAudioButton episodeSlug={item.sourceEpisodeId} timestamp={item.sourceTimestamp} />
+            <ReplayAudioButton episodeSlug={item.sourceEpisodeId} timestamp={item.sourceTimestamp} lineNo={item.sourceLineNo} />
           )}
           {item.mnemonic && <MnemonicHint text={item.mnemonic} />}
           <Button variant="secondary" onClick={() => onGraded(isCorrect ? 5 : 1)} className="w-full justify-center">

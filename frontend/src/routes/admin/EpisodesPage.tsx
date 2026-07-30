@@ -5,45 +5,16 @@
 // 兩個數字不會一致，是預期行為。
 
 import { useEffect, useState } from 'react'
-import { BarChart3, ChevronDown, ChevronRight, Cpu, Headphones, Heart, Play, RefreshCw } from 'lucide-react'
+import { BarChart3, ChevronRight, Cpu, Headphones, Heart, Play, RefreshCw } from 'lucide-react'
 import { api, AppError } from '../../api'
 import type { AdminEpisodeStats, AdminEpisodeStatsResponse } from '../../api'
 import { Button, Card, Chip, EmptyState, ErrorBanner, SectionLabel, StatCard } from '../../components/primitives'
+import { GenerationSheet } from './GenerationSheet'
+import { formatDuration } from './pipelineLabels'
 
 function errorMessage(err: unknown): string {
   if (err instanceof AppError) return err.message
   return err instanceof Error ? err.message : '未知錯誤'
-}
-
-function formatDuration(ms: number): string {
-  if (ms < 1000) return `${ms}ms`
-  const totalSec = Math.round(ms / 1000)
-  const min = Math.floor(totalSec / 60)
-  const sec = totalSec % 60
-  return min > 0 ? `${min}分${sec}秒` : `${sec}秒`
-}
-
-// LangGraph node 名稱 → 繁體中文 label。
-// 來源：backend/engine/pipeline/langgraph_pod/graph.py:add_node() 的 16 個字串字面值。
-// 未列在 map 裡的 node（未來新增）會 fallback 回原 snake_case，符合 CLAUDE.md
-// 技術識別碼不受翻譯規則限制的條款；同時方便工程師對回 backend metric。
-const PIPELINE_NODE_LABELS: Readonly<Record<string, string>> = {
-  decompose_research: '研究拆解',
-  gather_evidence: '蒐集證據',
-  cross_verify: '交叉驗證',
-  tone_selector: '語氣選角',
-  write_script: '撰寫腳本',
-  failover_write_script: '改寫腳本',
-  verify_script_claims: '查證內容',
-  quality_judge: '品質評分',
-  rewrite_iter_bump: '重寫進位',
-  upsert_episode: '寫入集數',
-  render_episode: '合成音檔',
-  upload_artifacts: '上傳產出',
-  dead_letter: '死信終止',
-  update_episode_keys: '更新金鑰',
-  insert_deliveries: '寫入推播',
-  backfill_dict: '回填詞庫',
 }
 
 type SortKey = 'recent' | 'plays' | 'listeners' | 'cost'
@@ -56,6 +27,11 @@ const SORT_OPTIONS: ReadonlyArray<{ key: SortKey; label: string }> = [
 ]
 
 // 後端已經是 createdAt desc；'recent' 不重排，其餘複製一份陣列再排序（不 mutate 原陣列）。
+// 手機三欄卡片塞不下全長數字（如 1,096,043），用緊湊單位顯示量級即可
+function formatCompact(n: number): string {
+  return new Intl.NumberFormat('zh-TW', { notation: 'compact', maximumFractionDigits: 1 }).format(n)
+}
+
 function sortItems(items: readonly AdminEpisodeStats[], sort: SortKey): readonly AdminEpisodeStats[] {
   switch (sort) {
     case 'plays':
@@ -77,6 +53,8 @@ export function EpisodesPage() {
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [reloadKey, setReloadKey] = useState(0)
+  // 生成過程 dialog：存整列（sheet header 要標題/頻道資訊），null = 關閉。
+  const [detailItem, setDetailItem] = useState<AdminEpisodeStats | null>(null)
 
   useEffect(() => {
     let cancelled = false
@@ -114,7 +92,7 @@ export function EpisodesPage() {
       <div className="grid grid-cols-3 gap-3">
         <StatCard icon={BarChart3} label="集數" value={stats?.episodeCount ?? 0} />
         <StatCard icon={Play} label="總播放" value={stats?.totalPlayCount ?? 0} />
-        <StatCard icon={Cpu} label="總 tokens" value={totalTokens.toLocaleString()} />
+        <StatCard icon={Cpu} label="總 tokens" value={formatCompact(totalTokens)} />
       </div>
 
       {error && <ErrorBanner message={error} variant="inline" />}
@@ -134,36 +112,26 @@ export function EpisodesPage() {
 
         <div className="space-y-2">
           {sorted.map(item => (
-            <EpisodeStatsRow key={item.id} item={item} />
+            <EpisodeStatsRow key={item.id} item={item} onOpen={() => setDetailItem(item)} />
           ))}
         </div>
       </Card>
+
+      <GenerationSheet item={detailItem} onClose={() => setDetailItem(null)} />
     </div>
   )
 }
 
-function EpisodeStatsRow({ item }: { readonly item: AdminEpisodeStats }) {
-  const [expanded, setExpanded] = useState(false)
-  const hasStages = item.stages.length > 0
-
+function EpisodeStatsRow({ item, onOpen }: { readonly item: AdminEpisodeStats; readonly onOpen: () => void }) {
   return (
     <div className="border border-border rounded-lg overflow-hidden">
       <button
         type="button"
-        onClick={() => setExpanded(v => !v)}
-        disabled={!hasStages}
-        className="w-full flex flex-wrap items-center gap-x-4 gap-y-2 px-3 py-2.5 text-left transition-colors duration-fast ease-apple hover:bg-bg-secondary disabled:cursor-default disabled:hover:bg-transparent"
+        onClick={onOpen}
+        className="w-full flex flex-wrap items-center gap-x-4 gap-y-2 px-3 py-2.5 text-left transition-colors duration-fast ease-apple hover:bg-bg-secondary"
       >
         <div className="flex items-center gap-2 min-w-0">
-          {hasStages ? (
-            expanded ? (
-              <ChevronDown size={14} className="shrink-0 text-text-secondary" />
-            ) : (
-              <ChevronRight size={14} className="shrink-0 text-text-secondary" />
-            )
-          ) : (
-            <span className="w-3.5 shrink-0" />
-          )}
+          <ChevronRight size={14} className="shrink-0 text-text-secondary" />
           <div className="min-w-0">
             <p className="text-sm text-text-primary truncate">{item.title}</p>
             <p className="text-[11px] text-text-secondary truncate">
@@ -200,20 +168,6 @@ function EpisodeStatsRow({ item }: { readonly item: AdminEpisodeStats }) {
           </span>
         </div>
       </button>
-
-      {expanded && hasStages && (
-        <div className="border-t border-border px-3 py-2 space-y-1 bg-bg-secondary/50">
-          {item.stages.map((stage, i) => (
-            <div key={`${stage.node}-${stage.attempt}-${i}`} className="flex items-center justify-between text-[11px]">
-              <span className={stage.status === 'failed' ? 'text-danger' : 'text-text-primary'}>
-                {PIPELINE_NODE_LABELS[stage.node] ?? stage.node}
-                {stage.attempt > 1 && <span className="text-text-secondary"> (第 {stage.attempt} 次)</span>}
-              </span>
-              <span className="text-text-secondary font-mono">{formatDuration(stage.durationMs)}</span>
-            </div>
-          ))}
-        </div>
-      )}
     </div>
   )
 }

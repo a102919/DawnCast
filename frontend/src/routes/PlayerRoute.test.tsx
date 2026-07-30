@@ -31,7 +31,7 @@ function mockEpisodeFor(id: string): Episode {
     id,
     title: `Episode ${id}`,
     audioUrl: null,
-    segments: [],
+    segments: [{ index: 0, audioUrl: 'https://example.test/000.mp3', duration: 1, start: 0, end: 1 }],
     cues: [{ index: 0, speaker: 'Alex', text: 'Hello', zh: '你好', start: 0, end: 1 }],
   }
 }
@@ -72,6 +72,8 @@ let popupEnabled = false
 const seekTo = vi.fn()
 const play = vi.fn()
 const pause = vi.fn()
+const playSegment = vi.fn()
+const loadProgress = vi.fn(() => ({ currentTime: 0, exists: false }))
 
 // PlayerRoute 直接呼叫的 state hooks 全部換成靜態假值：這個測試只關心「URL 的
 // id 有沒有正確傳進 api.getEpisode」，不需要真的掛整棵 Provider tree。
@@ -89,9 +91,9 @@ vi.mock('../state', () => ({
     pause,
     setPlaybackRate: vi.fn(),
     setVolume: vi.fn(),
-    loadProgress: () => ({ currentTime: 0, exists: false }),
+    loadProgress,
     setCurrentEpisode: vi.fn(),
-    playSegment: vi.fn(),
+    playSegment,
     getSegmentPlayer: () => ({
       unlock: vi.fn(async () => undefined),
       playSegment: vi.fn(),
@@ -140,7 +142,9 @@ vi.mock('../state', () => ({
   }),
 }))
 
-function Wrapper({ initialPath, children }: { readonly initialPath: string; readonly children: ReactNode }) {
+type RouteEntry = string | { readonly pathname: string; readonly state?: unknown }
+
+function Wrapper({ initialPath, children }: { readonly initialPath: RouteEntry; readonly children: ReactNode }) {
   return (
     <MemoryRouter initialEntries={[initialPath]}>
       <Routes>
@@ -151,7 +155,7 @@ function Wrapper({ initialPath, children }: { readonly initialPath: string; read
   )
 }
 
-async function renderAt(initialPath: string): Promise<{ root: Root; container: HTMLDivElement }> {
+async function renderAt(initialPath: RouteEntry): Promise<{ root: Root; container: HTMLDivElement }> {
   const container = document.createElement('div')
   document.body.appendChild(container)
   const root = createRoot(container)
@@ -205,6 +209,8 @@ beforeEach(() => {
   seekTo.mockClear()
   play.mockClear()
   pause.mockClear()
+  playSegment.mockClear()
+  loadProgress.mockClear()
   playerCurrentTime = 0
   playerIsPlaying = false
   popupEnabled = false
@@ -312,7 +318,7 @@ describe('PlayerRoute：點單字時的播放控制', () => {
     expect(play).toHaveBeenCalledTimes(1)
   })
 
-  it('重聽這句：seek 正確且只 play 一次（不重複觸發）', async () => {
+  it('重聽這句：就地 playSegment 播該句，不 seek、不關詞卡、不動主播放', async () => {
     popupEnabled = true
     playerIsPlaying = true
     lookupDict.mockResolvedValueOnce(MOCK_DICT_ENTRY)
@@ -324,8 +330,12 @@ describe('PlayerRoute：點單字時的播放控制', () => {
     expect(pause).toHaveBeenCalledTimes(1)
 
     await click(getButton(container, '重聽這句'))
-    expect(seekTo).toHaveBeenLastCalledWith(0)
-    expect(play).toHaveBeenCalledTimes(1)
+    // mock cue：index 0、start 0、end 1 → 從段內 0 秒播 1 秒
+    expect(playSegment).toHaveBeenCalledWith(0, 0, 1)
+    expect(seekTo).not.toHaveBeenCalled()
+    expect(play).not.toHaveBeenCalled()
+    // 詞卡沒被關（按鈕仍在畫面上）
+    expect(getButton(container, '重聽這句')).toBeTruthy()
   })
 })
 
@@ -480,5 +490,49 @@ describe('PlayerRoute：參考資料（Task #67）', () => {
     pendingRoots.push(root)
 
     expect(container.querySelector('details')).not.toBeNull()
+  })
+})
+
+describe('PlayerRoute：單字本「跳到」／「前往該集」的 router state seek', () => {
+  // cue[1].start=1.2 模擬 DB float4 捨入後讀回變 1.19999……：若拿它去二分搜尋
+  // 會掉到 cue[0]（跟原 bug 同個症狀），必須靠 seekLineNo 精確索引繞開。
+  function twoCueEpisode(id: string): Episode {
+    return {
+      ...mockEpisodeFor(id),
+      segments: [
+        { index: 0, audioUrl: 'https://example.test/000.mp3', duration: 1, start: 0, end: 1 },
+        { index: 1, audioUrl: 'https://example.test/001.mp3', duration: 1, start: 1.2, end: 2.2 },
+      ],
+      cues: [
+        { index: 0, speaker: 'Alex', text: 'Hello', zh: '你好', start: 0, end: 1 },
+        { index: 1, speaker: 'Sam', text: 'World', zh: '世界', start: 1.2, end: 2.2 },
+      ],
+    }
+  }
+
+  it('seekLineNo 優先於 timestamp：即使 timestamp 因捨入落到前一句邊界前，仍 seek 到正確 cue.start', async () => {
+    getEpisode.mockResolvedValueOnce(twoCueEpisode('ep-2'))
+    const { root } = await renderAt({ pathname: '/player/ep-2', state: { seekTo: 1.19999, seekLineNo: 1 } })
+    pendingRoots.push(root)
+
+    expect(seekTo).toHaveBeenCalledWith(1.2)
+  })
+
+  it('缺 seekLineNo（舊資料）才退回時間戳二分搜尋', async () => {
+    getEpisode.mockResolvedValueOnce(twoCueEpisode('ep-2'))
+    const { root } = await renderAt({ pathname: '/player/ep-2', state: { seekTo: 0.5 } })
+    pendingRoots.push(root)
+
+    expect(seekTo).toHaveBeenCalledWith(0)
+  })
+
+  it('帶 pendingSeek 時跳過續播定位，不會被舊進度的 seekTo 蓋過', async () => {
+    loadProgress.mockReturnValueOnce({ currentTime: 0.7, exists: true })
+    getEpisode.mockResolvedValueOnce(twoCueEpisode('ep-2'))
+    const { root } = await renderAt({ pathname: '/player/ep-2', state: { seekTo: 1.19999, seekLineNo: 1 } })
+    pendingRoots.push(root)
+
+    expect(seekTo).toHaveBeenCalledTimes(1)
+    expect(seekTo).toHaveBeenCalledWith(1.2)
   })
 })

@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from 'react'
 import { motion } from 'framer-motion'
-import { Play, Trash2, ExternalLink } from 'lucide-react'
-import { formatTimestamp, formatPos, formatMultiline } from '../../lib'
+import { Play, Trash2, ExternalLink, RotateCcw } from 'lucide-react'
+import { formatTimestamp, formatPos, formatMultiline, MASTERED_STATUS } from '../../lib'
 import { api } from '../../api'
 import type { DictEntry, VocabItem } from '../../api/types'
 import type { Cue } from '../../types/episode'
@@ -12,6 +12,8 @@ export interface VocabEntryCardProps {
   readonly item: VocabItem
   readonly onSeek: (item: VocabItem) => void
   readonly onRemove: (id: string) => void
+  /** 已精熟的字提供時顯示「重新複習」鈕（一鍵復活回 SRS 佇列） */
+  readonly onRevive?: (id: string) => void
   /** 'page'：單字本頁面（較寬鬆版面）；'drawer'：側邊抽屜（緊湊版面） */
   readonly variant?: 'page' | 'drawer'
 }
@@ -22,7 +24,7 @@ const cardVariants = {
   exit: { opacity: 0, height: 0, marginTop: 0, transition: { duration: 0.2, ease: [0.2, 0.8, 0.2, 1] } },
 } as const
 
-export function VocabEntryCard({ item, onSeek, onRemove, variant = 'page' }: VocabEntryCardProps) {
+export function VocabEntryCard({ item, onSeek, onRemove, onRevive, variant = 'page' }: VocabEntryCardProps) {
   const isDrawer = variant === 'drawer'
   // ponytail: 來源集數的 titleZh 暫不在 VocabItem 上，目前顯示 slug 短碼讓使用者知道來源是哪一集；
   // 等 VocabItem 加 sourceEpisodeTitle 欄位後再換成中文標題。
@@ -133,6 +135,16 @@ export function VocabEntryCard({ item, onSeek, onRemove, variant = 'page' }: Voc
             </div>
 
             <div className={`flex items-start shrink-0 ${isDrawer ? 'flex-col gap-1' : 'gap-0'}`}>
+              {onRevive && item.status === MASTERED_STATUS && (
+                <button
+                  aria-label="重新加入複習"
+                  onClick={e => { e.stopPropagation(); onRevive(item.id) }}
+                  className="inline-flex items-center justify-center gap-1 px-2 py-1.5 min-h-[44px] text-xs text-accent hover:bg-accent/10 transition-colors duration-fast focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent rounded-md"
+                >
+                  <RotateCcw size={11} />
+                  重新複習
+                </button>
+              )}
               {isDrawer && (
                 <button
                   onClick={e => { e.stopPropagation(); onSeek(item) }}
@@ -165,7 +177,7 @@ export function VocabEntryCard({ item, onSeek, onRemove, variant = 'page' }: Voc
         episodeId={item.sourceEpisodeId}
         activeCueIdx={item.sourceLineNo}
         onClose={() => setIsPanelOpen(false)}
-        onReplayCue={() => { onSeek(item); setIsPanelOpen(false) }}
+        onGoToSource={() => { onSeek(item); setIsPanelOpen(false) }}
       />
     </>
   )

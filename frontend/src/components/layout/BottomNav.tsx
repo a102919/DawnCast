@@ -3,13 +3,13 @@ import { motion } from 'framer-motion'
 import { NAV_TABS, isImmersivePath } from './navTabs'
 import { useSprings } from '../../lib/motion'
 import { useVocab } from '../../state'
-import { filterDueDeck } from '../../lib'
+import { countActionable } from '../../lib'
 
 export function BottomNav() {
   const { pathname } = useLocation()
   const { snappy } = useSprings()
   const { items } = useVocab()
-  const dueCount = filterDueDeck(items).length
+  const dueCount = countActionable(items)
 
   if (pathname.startsWith('/player') || isImmersivePath(pathname)) return null
 

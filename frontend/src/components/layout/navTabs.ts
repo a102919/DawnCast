@@ -10,7 +10,9 @@ export const NAV_TABS = [
 ] as const
 
 /** 沉浸式頁面：不套使用者端 chrome（TopBar／BottomNav／MiniPlayer）。
- *  /login 是既有案例；/admin 自帶側邊導覽，兩套導覽疊在一起沒有意義。 */
+ *  /login 是既有案例；/admin 自帶側邊導覽，兩套導覽疊在一起沒有意義；
+ *  /flashcards 三個 session 頁要單屏塞滿（卡片＋按鈕不捲動），chrome 會吃掉高度
+ *  又讓學習中分心，SessionHeader 自帶返回鈕。 */
 export function isImmersivePath(pathname: string): boolean {
-  return pathname === '/login' || pathname.startsWith('/admin')
+  return pathname === '/login' || pathname.startsWith('/admin') || pathname.startsWith('/flashcards')
 }

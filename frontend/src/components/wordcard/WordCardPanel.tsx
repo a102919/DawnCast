@@ -1,11 +1,12 @@
 import { useState, type ReactNode } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
-import { X, BookmarkPlus, Check, Loader2, AlertCircle, RotateCcw, Play } from 'lucide-react'
+import { X, BookmarkPlus, Check, Loader2, AlertCircle, RotateCcw, Play, ExternalLink } from 'lucide-react'
 import { toast } from 'sonner'
+import { api } from '../../api'
 import type { DictEntry } from '../../api/types'
 import type { Cue } from '../../types/episode'
-import { useVocab } from '../../state'
-import { formatPos, formatExchange, formatTimestamp, formatMultiline } from '../../lib'
+import { usePlayer, useVocab } from '../../state'
+import { formatPos, formatExchange, formatTimestamp, formatMultiline, findActiveCueIndex } from '../../lib'
 import { useSprings } from '../../lib/motion'
 import { IconButton, Sheet } from '../primitives'
 import { MnemonicHint } from './MnemonicHint'
@@ -26,16 +27,6 @@ function highlightWord(sentence: string, word: string): ReactNode {
   )
 }
 
-/** 字在 cue 文字內的「段內秒偏移」：(charOffset/text.length) * (cue.end - cue.start)。
- *  player.playSegment 第二參數是該段 mp3 內的 offset，從 segment 起點算。 */
-function wordOffsetInCue(sentence: string, word: string, cue: Cue): number {
-  if (!sentence || !word) return 0
-  const idx = sentence.toLowerCase().indexOf(word.toLowerCase())
-  if (idx < 0) return 0
-  const dur = Math.max(0, cue.end - cue.start)
-  return (idx / sentence.length) * dur
-}
-
 /** 加入單字本按鈕的視覺狀態：依 isPending/inVocab 查表決定 icon 與文案 */
 interface AddVocabButtonState {
   readonly key: string
@@ -54,10 +45,12 @@ interface WordCardPanelProps {
   readonly episodeId: string
   readonly activeCueIdx: number
   readonly onClose: () => void
-  readonly onReplayCue: () => void
+  /** 提供時顯示「前往該集」按鈕（單字本情境：跳到來源集數的播放頁） */
+  readonly onGoToSource?: () => void
 }
 
-export function WordCardPanel({ isOpen, word, entry, lookupError, onRetry, activeCue, episodeId, activeCueIdx, onClose, onReplayCue }: WordCardPanelProps) {
+export function WordCardPanel({ isOpen, word, entry, lookupError, onRetry, activeCue, episodeId, activeCueIdx, onClose, onGoToSource }: WordCardPanelProps) {
+  const player = usePlayer()
   const { addVocab, isInVocab } = useVocab()
   const { snappy } = useSprings()
   const inVocab = entry ? isInVocab(entry.word) : false
@@ -70,6 +63,35 @@ export function WordCardPanel({ isOpen, word, entry, lookupError, onRetry, activ
   ]
   const addVocabButtonState =
     addVocabButtonStates.find((state) => state.when) ?? addVocabButtonStates[addVocabButtonStates.length - 1]
+
+  // 就地重播該句原音：player 沒載該集就補抓（單字本情境），再從該句 segment
+  // 的 AudioBuffer 播整句（duckAndPlaySegment 路徑）。詞卡不關、主播放進度不動。
+  const handleReplayCue = async () => {
+    if (!activeCue) return
+    try {
+      let ep = player.currentEpisode
+      if (!ep || ep.id !== episodeId) {
+        ep = await api.getEpisode(episodeId)
+        player.setCurrentEpisode(ep)
+      }
+      // 舊集可能沒有 per-segment 音檔（segments 空），靜默不播體感像壞掉，給明確回饋
+      if (ep.segments.length === 0) {
+        toast('這集沒有原音檔，無法重聽')
+        return
+      }
+      // 單字本的 sourceTimestamp 經 DB float4 捨入常比 cue.start 小一點點，用時間戳
+      // 反查會二分搜尋掉到前一句（播出來跟顯示句對不上）。activeCueIdx 是收錄當下的
+      // cue 陣列索引（精確整數），優先用它；越界（舊資料）才退回時間戳查找。
+      const idx = activeCueIdx >= 0 && activeCueIdx < ep.cues.length
+        ? activeCueIdx
+        : Math.max(0, findActiveCueIndex(ep.cues, activeCue.start))
+      const cue = ep.cues[idx]
+      if (!cue) return
+      player.playSegment(idx, 0, cue.end - cue.start)
+    } catch {
+      toast.error('載入原音失敗，請重試')
+    }
+  }
 
   const handleAddVocab = async () => {
     if (!word || !entry || !activeCue) return
@@ -95,30 +117,30 @@ export function WordCardPanel({ isOpen, word, entry, lookupError, onRetry, activ
     }
   }
 
+  // 關閉詞卡：「重聽這句」的段落預覽不算進全域 isPlaying（見 useSegmentPlayer 內
+  // duckAndPlaySegment 的註解），沒人主動叫停就會留在背景播完整句。pause() 對
+  // stopActive 是 idempotent（沒東西在播時安全 no-op），一律先停用它再交還 onClose，
+  // 呼叫端（useWordLookup.close）之後照舊決定要不要恢復原本被蓋掉的主播放。
+  const handleClose = () => {
+    player.pause()
+    onClose()
+  }
+
   return (
-    <Sheet isOpen={isOpen} onClose={onClose} variant="bottom" ariaLabelledBy="word-card-panel-title" maxHeight="90vh">
+    <Sheet isOpen={isOpen} onClose={handleClose} variant="bottom" ariaLabelledBy="word-card-panel-title" maxHeight="90vh">
       <div className="px-5 pb-6 overflow-y-auto max-h-[calc(90vh-40px)]">
         {/* 標題列 */}
         <div className="flex items-start justify-between mb-3">
           <div>
-            <h3 id="word-card-panel-title" className="text-2xl font-semibold text-text-primary">
-              {word ?? '—'}
-            </h3>
+            <div className="flex items-center gap-2">
+              <h3 id="word-card-panel-title" className="text-2xl font-semibold text-text-primary">
+                {word ?? '—'}
+              </h3>
+              {/* 單字發音走字典音檔／TTS；從節目 mp3 猜偏移抽樣不準（無逐字時間戳），已棄用 */}
+              {entry && <PronounceButton audioUrl={entry.audioUrl} text={word} size={20} />}
+            </div>
             {entry && (
               <div className="flex items-center gap-2 mt-0.5">
-                <PronounceButton
-                  audioUrl={entry.audioUrl}
-                  text={word}
-                  {...(activeCue && activeCueIdx >= 0 && word
-                    ? {
-                        playSegmentRequest: {
-                          cueIdx: activeCueIdx,
-                          offsetSec: wordOffsetInCue(activeCue.text, word, activeCue),
-                          durationSec: 0.6,
-                        },
-                      }
-                    : {})}
-                />
                 {entry.ipa && (
                   <span className="text-xs text-text-tertiary font-mono">{entry.ipa}</span>
                 )}
@@ -161,7 +183,7 @@ export function WordCardPanel({ isOpen, word, entry, lookupError, onRetry, activ
                 </motion.span>
               </AnimatePresence>
             </motion.button>
-            <IconButton label="關閉詞卡" onClick={onClose}>
+            <IconButton label="關閉詞卡" onClick={handleClose}>
               <X size={18} />
             </IconButton>
           </div>
@@ -207,7 +229,7 @@ export function WordCardPanel({ isOpen, word, entry, lookupError, onRetry, activ
                 {entry.exampleEn && (
                   <p className="text-sm leading-relaxed text-text-primary flex items-start gap-1.5">
                     <span>{entry.exampleEn}</span>
-                    <PronounceButton audioUrl={null} text={entry.exampleEn} size={12} label="播放例句發音" />
+                    <PronounceButton audioUrl={null} text={entry.exampleEn} size={16} label="播放例句發音" />
                   </p>
                 )}
                 {entry.exampleZh && (
@@ -226,14 +248,26 @@ export function WordCardPanel({ isOpen, word, entry, lookupError, onRetry, activ
                     {highlightWord(activeCue.text, word ?? '')}
                   </p>
                 </div>
-                <button
-                  type="button"
-                  onClick={onReplayCue}
-                  className="inline-flex items-center gap-1.5 text-xs font-medium text-accent hover:text-accent-hover transition-colors duration-fast focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent rounded"
-                >
-                  <Play size={12} fill="currentColor" />
-                  重聽這句
-                </button>
+                <div className="flex items-center gap-4">
+                  <button
+                    type="button"
+                    onClick={() => void handleReplayCue()}
+                    className="inline-flex items-center gap-1.5 text-xs font-medium text-accent hover:text-accent-hover transition-colors duration-fast focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent rounded"
+                  >
+                    <Play size={12} fill="currentColor" />
+                    重聽這句
+                  </button>
+                  {onGoToSource && (
+                    <button
+                      type="button"
+                      onClick={onGoToSource}
+                      className="inline-flex items-center gap-1.5 text-xs font-medium text-text-tertiary hover:text-accent transition-colors duration-fast focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent rounded"
+                    >
+                      <ExternalLink size={12} />
+                      前往該集
+                    </button>
+                  )}
+                </div>
                 <p className="text-xs text-text-tertiary">
                   來自 {formatTimestamp(activeCue.start)} · {activeCue.speaker}
                 </p>

@@ -61,7 +61,7 @@ export interface paths {
         head?: never;
         /**
          * Update Vocab
-         * @description 更新 SM-2 欄位（nextReview/interval/ease/status）。只動本人列。
+         * @description 更新 SM-2 欄位（nextReview/interval/ease/status/quizPassStreak）。只動本人列。
          */
         patch: operations["update_vocab_vocab__vocab_id__patch"];
         trace?: never;
@@ -492,6 +492,29 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/admin/episodes/{episode_id}/generation": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Admin Episode Generation
+         * @description 單集生成過程：stages / llm_calls / tts 供應商 / 研究摘要 / 錯誤。
+         *
+         *     gen_metrics 是演進中的 jsonb（schema_version），model 欄位全 optional，
+         *     舊集數缺欄位照樣回傳（前端顯示「—」），不因歷史資料炸 500。
+         */
+        get: operations["get_admin_episode_generation_admin_episodes__episode_id__generation_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/admin/jobs": {
         parameters: {
             query?: never;
@@ -849,6 +872,38 @@ export interface components {
             sourceSentenceZh?: string | null;
         };
         /**
+         * AdminEpisodeGeneration
+         * @description 單集生成過程完整視圖：gen_metrics + research_metrics 合併。
+         *
+         *     只在 GET /admin/episodes/{id}/generation 回傳，list 端點刻意不帶——
+         *     llm_calls 一集可能數十筆，100 列的 list payload 會被撐爆。
+         */
+        AdminEpisodeGeneration: {
+            /**
+             * Status
+             * @default
+             */
+            status: string;
+            /** Enqueuedat */
+            enqueuedAt?: string | null;
+            /** Startedat */
+            startedAt?: string | null;
+            /** Finishedat */
+            finishedAt?: string | null;
+            /** Queuewaitms */
+            queueWaitMs?: number | null;
+            /** Wallms */
+            wallMs?: number | null;
+            tts?: components["schemas"]["AdminTtsUsage"] | null;
+            totals?: components["schemas"]["AdminGenerationTotals"];
+            /** Stages */
+            stages?: components["schemas"]["StageMetric"][];
+            /** Llmcalls */
+            llmCalls?: components["schemas"]["AdminLlmCall"][];
+            research?: components["schemas"]["AdminResearchSummary"];
+            error?: components["schemas"]["AdminGenerationError"] | null;
+        };
+        /**
          * AdminEpisodeStats
          * @description 單集數據頁一列：內容身分 + 播放／聽完／收藏 + 生成成本與耗時。
          *
@@ -1002,6 +1057,48 @@ export interface components {
             status: "queued";
         };
         /**
+         * AdminGenerationError
+         * @description gen_metrics->'error'：失敗時的節點與訊息（成功集數為 null）。
+         */
+        AdminGenerationError: {
+            /**
+             * Node
+             * @default
+             */
+            node: string;
+            /**
+             * Type
+             * @default
+             */
+            type: string;
+            /**
+             * Message
+             * @default
+             */
+            message: string;
+        };
+        /**
+         * AdminGenerationTotals
+         * @description gen_metrics->'totals'：LLM 呼叫次數與 token 合計。
+         */
+        AdminGenerationTotals: {
+            /**
+             * Llmcallcount
+             * @default 0
+             */
+            llmCallCount: number;
+            /**
+             * Inputtokens
+             * @default 0
+             */
+            inputTokens: number;
+            /**
+             * Outputtokens
+             * @default 0
+             */
+            outputTokens: number;
+        };
+        /**
          * AdminJobQueue
          * @description 單一 pgmq 佇列的度量（pgmq.metrics_all() 逐列對映）。
          *
@@ -1019,6 +1116,112 @@ export interface components {
             /** Totalmessages */
             totalMessages?: number | null;
         };
+        /**
+         * AdminLlmCall
+         * @description 單次 LLM 呼叫；來自 episodes.gen_metrics->'llm_calls'。
+         *
+         *     欄位全給預設值：gen_metrics 是 schema_version 演進中的 jsonb，舊集數
+         *     可能缺欄位，讀取端容錯不炸。
+         */
+        AdminLlmCall: {
+            /**
+             * Node
+             * @default
+             */
+            node: string;
+            /**
+             * Call
+             * @default
+             */
+            call: string;
+            /**
+             * Attempt
+             * @default 1
+             */
+            attempt: number;
+            /**
+             * Durationms
+             * @default 0
+             */
+            durationMs: number;
+            /**
+             * Inputtokens
+             * @default 0
+             */
+            inputTokens: number;
+            /**
+             * Outputtokens
+             * @default 0
+             */
+            outputTokens: number;
+            /** Segmentindex */
+            segmentIndex?: number | null;
+        };
+        /**
+         * AdminResearchSummary
+         * @description episodes.research_metrics 的已知欄位；全部 optional，缺省容錯。
+         *
+         *     來源：MetricsCollector.set_research_summary 的各節點呼叫
+         *     （decompose / gather / cross_verify / verify_claims / judge）。
+         */
+        AdminResearchSummary: {
+            /** Questionscount */
+            questionsCount?: number | null;
+            /** Subtopics */
+            subtopics?: string[];
+            /** Sourcecount */
+            sourceCount?: number | null;
+            /** Evidencecardcount */
+            evidenceCardCount?: number | null;
+            /** Grounded */
+            grounded?: boolean | null;
+            /** Providercounts */
+            providerCounts?: {
+                [key: string]: number;
+            };
+            /** Verifiedclaimcount */
+            verifiedClaimCount?: number | null;
+            /** Usableclaimcount */
+            usableClaimCount?: number | null;
+            /** Conflictcount */
+            conflictCount?: number | null;
+            /** Claimchecktotal */
+            claimCheckTotal?: number | null;
+            /** Claimchecksupported */
+            claimCheckSupported?: number | null;
+            /** Claimcheckunsupported */
+            claimCheckUnsupported?: number | null;
+            /** Claimcheckunsupportedratio */
+            claimCheckUnsupportedRatio?: number | null;
+            /** Judgescores */
+            judgeScores?: {
+                [key: string]: number;
+            };
+            /** Judgeverdict */
+            judgeVerdict?: string | null;
+            /** Rewriteiterations */
+            rewriteIterations?: number | null;
+            /** Engineused */
+            engineUsed?: string | null;
+            /** Errors */
+            errors?: string[];
+        };
+        /**
+         * AdminTtsUsage
+         * @description TTS 用量；provider="edge" 表示 MiniMax 失敗整份 fallback（該集 TTS 免費）。
+         */
+        AdminTtsUsage: {
+            /**
+             * Provider
+             * @default
+             */
+            provider: string;
+            /**
+             * Characters
+             * @default 0
+             */
+            characters: number;
+        };
         /** ApiResponse[AccountInfo] */
         ApiResponse_AccountInfo_: {
             /** Ok */
@@ -1031,6 +1234,13 @@ export interface components {
             /** Ok */
             ok: boolean;
             data?: components["schemas"]["Activity"] | null;
+            error?: components["schemas"]["ErrorBody"] | null;
+        };
+        /** ApiResponse[AdminEpisodeGeneration] */
+        ApiResponse_AdminEpisodeGeneration_: {
+            /** Ok */
+            ok: boolean;
+            data?: components["schemas"]["AdminEpisodeGeneration"] | null;
             error?: components["schemas"]["ErrorBody"] | null;
         };
         /** ApiResponse[AdminEpisodeStatsResponse] */
@@ -1885,7 +2095,7 @@ export interface components {
         };
         /**
          * UpdateVocabBody
-         * @description updateVocab(id, patch{nextReview,interval,ease,status})。皆 optional。
+         * @description updateVocab(id, patch{nextReview,interval,ease,status,quizPassStreak})。皆 optional。
          */
         UpdateVocabBody: {
             /** Nextreview */
@@ -1896,6 +2106,8 @@ export interface components {
             ease?: number | null;
             /** Status */
             status?: number | null;
+            /** Quizpassstreak */
+            quizPassStreak?: number | null;
         };
         /** ValidationError */
         ValidationError: {
@@ -1958,6 +2170,11 @@ export interface components {
              * @default 1
              */
             status: number;
+            /**
+             * Quizpassstreak
+             * @default 0
+             */
+            quizPassStreak: number;
         };
     };
     responses: never;
@@ -3024,6 +3241,39 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ApiResponse_AdminEpisodeStatsResponse_"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_admin_episode_generation_admin_episodes__episode_id__generation_get: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path: {
+                episode_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiResponse_AdminEpisodeGeneration_"];
                 };
             };
             /** @description Validation Error */

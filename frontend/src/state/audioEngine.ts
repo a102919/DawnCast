@@ -12,7 +12,16 @@
  *
  * iOS Safari：純 Web Audio API 輸出不會被系統認成合法的背景播放 session，因此輸出改接
  * 一個真的在播放的隱藏 <audio> 元素（透過 MediaStreamAudioDestinationNode）。
+ *
+ * 變速不變調：source.playbackRate 加速取樣（本身會變調）之後，接一顆 SoundTouchNode
+ * （AudioWorklet）把 pitch 補償回來——只要把同一個 rate 鏡射到 stNode.playbackRate，
+ * processor 內部就會自動用 pitch / rate 抵消變調，不用自己算比例。stNode 是跟 mainGain
+ * 一樣的常駐節點（source 才是每次播放新建），registration 是 async，靠 getBuffer() 的
+ * await 序列保證第一次 startPlayback() 執行前一定 ready（見 workletReady）。
  */
+
+import { SoundTouchNode } from '@soundtouchjs/audio-worklet'
+import soundTouchProcessorUrl from '@soundtouchjs/audio-worklet/processor?url'
 
 const MAX_BUFFER_CACHE = 8
 const DUCK_RAMP_SEC = 0.05
@@ -82,6 +91,8 @@ export function createAudioEngine(): AudioEngine {
   const mainGainRef: { current: GainNode | null } = { current: null }
   const segmentGainRef: { current: GainNode | null } = { current: null }
   const audioElRef: { current: HTMLAudioElement | null } = { current: null }
+  const stNodeRef: { current: SoundTouchNode | null } = { current: null }
+  let workletReady: Promise<void> | null = null
   const cache = createBufferCache()
   /** in-flight decode 用共用 Promise 去重，key 是 audioUrl；一個呼叫者放棄不影響其他
    *  還在等同一個 URL 的呼叫者（見檔案頂端說明）。 */
@@ -111,6 +122,13 @@ export function createAudioEngine(): AudioEngine {
     audioEl.play().catch(() => undefined)
     audioElRef.current = audioEl
 
+    workletReady = (async () => {
+      await SoundTouchNode.register(ctx, soundTouchProcessorUrl)
+      const stNode = new SoundTouchNode({ context: ctx })
+      stNode.connect(mainGain)
+      stNodeRef.current = stNode
+    })()
+
     return ctx
   }
 
@@ -131,6 +149,9 @@ export function createAudioEngine(): AudioEngine {
           const res = await fetch(url)
           if (!res.ok) return null
           const buf = await ctx.decodeAudioData(await res.arrayBuffer())
+          // 保證 startPlayback() 執行前 stNode 已就緒（見檔案頂端說明）；擺在 decode
+          // 之後而非之前，才不會延後 fetch() 真正發出的時機。
+          await workletReady
           cache.set(url, buf)
           return buf
         } catch (e) {
@@ -148,13 +169,15 @@ export function createAudioEngine(): AudioEngine {
   function startPlayback(args: StartPlaybackArgs): PlaybackHandle | null {
     const ctx = ctxRef.current
     const mainGain = mainGainRef.current
+    const stNode = stNodeRef.current
     const buf = cache.get(args.url)
-    if (!ctx || !mainGain || !buf) return null
+    if (!ctx || !mainGain || !stNode || !buf) return null
 
     const source = ctx.createBufferSource()
     source.buffer = buf
     source.playbackRate.value = args.rate
-    source.connect(mainGain)
+    stNode.playbackRate.value = args.rate
+    source.connect(stNode)
     void ctx.resume()
     // 背景切回來/鎖屏按播放時，隱藏 <audio> 可能已被系統暫停，這裡跟著重啟。
     void audioElRef.current?.play().catch(() => undefined)
@@ -184,6 +207,8 @@ export function createAudioEngine(): AudioEngine {
 
   function setRate(handle: PlaybackHandle, rate: number): void {
     handle.source.playbackRate.value = rate
+    const stNode = stNodeRef.current
+    if (stNode) stNode.playbackRate.value = rate
   }
 
   function currentPositionSec(handle: PlaybackHandle, rate: number): number {

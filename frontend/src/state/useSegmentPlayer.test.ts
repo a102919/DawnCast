@@ -15,6 +15,16 @@ import { createRoot, type Root } from 'react-dom/client'
 import { useSegmentPlayer } from './useSegmentPlayer'
 import type { Episode, Segment } from '../types/episode'
 
+// happy-dom 沒有 AudioWorkletNode，見 audioEngine.test.ts 同一段註解。
+vi.mock('@soundtouchjs/audio-worklet/processor?url', () => ({ default: 'mock-processor-url' }))
+vi.mock('@soundtouchjs/audio-worklet', () => ({
+  SoundTouchNode: class {
+    playbackRate = { value: 1 }
+    connect = vi.fn()
+    static register = vi.fn(async () => undefined)
+  },
+}))
+
 interface FakeBufferSourceNode {
   buffer: AudioBuffer | null
   playbackRate: { value: number }
@@ -416,6 +426,29 @@ describe('useSegmentPlayer', () => {
     })
 
     // 過期的自動接播不能再疊一個 segment 1 的 source 上去，蓋掉使用者 seek 後正在播的 segment 0
+    expect(sources.length).toBe(2)
+    h.unmount()
+  })
+
+  it('自動接播段落之間有停頓：buffer 已就緒也不會馬上接播，等 gap 時間到才接（見 makeEpisode 的 0.1s 間隔）', async () => {
+    const h = mountHook()
+    await act(async () => {
+      await h.getPlayer().loadEpisode(makeEpisode(3))
+    })
+    await act(async () => {
+      await h.getPlayer().play()
+    })
+    expect(sources.length).toBe(1)
+
+    await act(async () => {
+      sources[0]!.onended!(null)
+      await new Promise((r) => setTimeout(r, 0)) // 讓 ensureBuffer(next) 的 fetch/decode resolve
+    })
+    expect(sources.length).toBe(1) // gap 還沒到，不能馬上接播
+
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 150)) // 蓋過 100ms gap
+    })
     expect(sources.length).toBe(2)
     h.unmount()
   })

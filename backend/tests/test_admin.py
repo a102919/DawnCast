@@ -110,9 +110,51 @@ _EPISODE_STATS_ROWS: list[dict[str, Any]] = [
 ]
 
 
+# 生成過程明細：鏡像 MetricsCollector.gen_metrics() / research_metrics() 落庫的 jsonb。
+# tts.provider 給 "minimax"（非預設空字串）才能抓出欄位漏接。
+_EPISODE_GENERATION_ROW: dict[str, Any] = {
+    "gen": {
+        "schema_version": 3,
+        "status": "succeeded",
+        "queue_wait_ms": 1200,
+        "wall_ms": 362000,
+        "stages": [
+            {"node": "write_script", "duration_ms": 12000, "status": "ok", "attempt": 1},
+        ],
+        "llm_calls": [
+            {
+                "node": "write_script",
+                "call": "segment",
+                "attempt": 1,
+                "duration_ms": 8000,
+                "input_tokens": 900,
+                "output_tokens": 400,
+                "segment_index": 0,
+            },
+        ],
+        "tts": {"provider": "minimax", "characters": 5400},
+        "totals": {"llm_call_count": 1, "input_tokens": 900, "output_tokens": 400},
+        "error": None,
+    },
+    "research": {
+        "questions_count": 4,
+        "source_count": 12,
+        "grounded": True,
+        "provider_counts": {"tavily": 8, "rss": 4},
+        "judge_scores": {"hook_strength": 0.9},
+        "judge_verdict": "pass",
+    },
+}
+
+
 class FakeCursor(_BaseFakeCursor):
     async def execute(self, sql: str, params: tuple[Any, ...] = ()) -> None:
         s = " ".join(sql.split())  # 正規化空白
+
+        if "as gen," in s and "research_metrics" in s:
+            slug = params[0] if params else None
+            self._rows = [dict(_EPISODE_GENERATION_ROW)] if slug == "ep-2" else []
+            return
 
         if "coalesce(sum(input_tokens)" in s:
             total_input = sum(r["input_tokens"] for r in _EPISODE_STATS_ROWS)
@@ -402,6 +444,35 @@ def test_episodes_correct_token_returns_200(client: TestClient) -> None:
     assert ep1["listenerCount"] == 0
     assert ep1["favoriteCount"] == 0
     assert ep1["channelName"] is None
+
+
+# ── /admin/episodes/{id}/generation ───────────────────────────────
+
+
+def test_episode_generation_no_token_returns_401(client: TestClient) -> None:
+    res = client.get("/admin/episodes/ep-2/generation")
+    assert res.status_code == 401
+
+
+def test_episode_generation_returns_full_detail(client: TestClient) -> None:
+    res = client.get("/admin/episodes/ep-2/generation", headers=_jwt_admin_headers())
+    assert res.status_code == 200
+    data = res.json()["data"]
+    assert data["status"] == "succeeded"
+    assert data["queueWaitMs"] == 1200
+    assert data["tts"] == {"provider": "minimax", "characters": 5400}
+    assert data["totals"]["llmCallCount"] == 1
+    assert data["stages"][0]["node"] == "write_script"
+    assert data["llmCalls"][0]["segmentIndex"] == 0
+    assert data["research"]["grounded"] is True
+    assert data["research"]["providerCounts"] == {"tavily": 8, "rss": 4}
+    assert data["research"]["judgeVerdict"] == "pass"
+    assert data["error"] is None
+
+
+def test_episode_generation_unknown_slug_returns_404(client: TestClient) -> None:
+    res = client.get("/admin/episodes/no-such-ep/generation", headers=_jwt_admin_headers())
+    assert res.status_code == 404
 
 
 # ── /admin/jobs ───────────────────────────────────────────────────

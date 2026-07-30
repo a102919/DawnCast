@@ -1,5 +1,5 @@
 import { z } from 'zod'
-import type { AccountInfo, Activity, ActivityPatch, AdminEpisodeStatsResponse, Api, Channel, ChannelPlanResponse, ChannelPublic, ChannelTopic, DailyOrder, DictEntry, RecommendedEpisode, Settings, VocabItem } from './types'
+import type { AccountInfo, Activity, ActivityPatch, AdminEpisodeGeneration, AdminEpisodeStatsResponse, Api, Channel, ChannelPlanResponse, ChannelPublic, ChannelTopic, DailyOrder, DictEntry, RecommendedEpisode, Settings, VocabItem } from './types'
 import type { Episode } from '../types/episode'
 import { CueSchema, SegmentSchema, SourceReferenceSchema } from './httpApi'
 import type { MockEpisode } from '../lib/episode'
@@ -491,6 +491,10 @@ export const mockApi: Api = {
 
   // mock 模式沒有真實 episodes/gen_metrics/user_activity 資料可查。
   async getAdminEpisodeStats(): Promise<AdminEpisodeStatsResponse> {
+    throw new Error('mock 模式不支援管理員查詢，請將 VITE_USE_MOCK 設為 false')
+  },
+
+  async getAdminEpisodeGeneration(): Promise<AdminEpisodeGeneration> {
     throw new Error('mock 模式不支援管理員查詢，請將 VITE_USE_MOCK 設為 false')
   },
 

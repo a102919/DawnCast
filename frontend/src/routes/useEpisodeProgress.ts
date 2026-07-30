@@ -13,6 +13,9 @@ export interface UseEpisodeProgressParams {
   /** 這集是不是由點餐訂單（?orderId=）解析出來的；沒有就不會呼叫 markPlayed，
    *  避免任意集數播放都誤觸發「這張訂單已播放」（見 useEpisode.ts）。 */
   readonly orderId: string | null
+  /** true 時代表這次進頁帶著明確跳轉目標（單字本「跳到」／「前往該集」），
+   *  跳過續播定位，避免兩個 seekTo 打架造成使用者聽到雙重跳動。 */
+  readonly skipResumeSeek?: boolean
   seekTo(time: number): void
   loadProgress(episodeId: string): { readonly currentTime: number; readonly exists: boolean }
   markListened(episodeId: string): void
@@ -25,7 +28,7 @@ export interface UseEpisodeProgressParams {
  *
  * 四件事都以「同一集只做一次」為前提，靠 ref（而非 state）記帳，避免額外 re-render。 */
 export function useEpisodeProgress({
-  episode, currentTime, duration, loadState, currentEpisode, orderId,
+  episode, currentTime, duration, loadState, currentEpisode, orderId, skipResumeSeek,
   seekTo, loadProgress, markListened, addListenMinutes, markPlayed, recordPlay,
 }: UseEpisodeProgressParams): void {
   const episodeIdRef = useRef<string | null>(null)
@@ -45,6 +48,14 @@ export function useEpisodeProgress({
 
   useEffect(() => {
     if (!episode || initialSeekAppliedRef.current) return
+    // skipResumeSeek 只在「剛帶跳轉目標進頁」那一輪 render 是 true；跳轉目標消化完
+    // 會清掉 router state，下一輪 render 這裡又會是 false。必須把「這集不用續播定位」
+    // 就地記到 ref（跟正常續播共用同一顆 initialSeekAppliedRef），不然清 state 後
+    // 這個 effect 會誤判成「還沒定位過」，把單字本跳轉的位置蓋成 localStorage 的舊進度。
+    if (skipResumeSeek) {
+      initialSeekAppliedRef.current = true
+      return
+    }
     const episodeId = episode.id
     // 全域 PlayerProvider 已在播這集（例：從 MiniPlayer 點回播放頁）→ currentTime
     // 才是事實。localStorage 進度是節流快照，會落後幾百毫秒到 1 秒，
@@ -61,7 +72,7 @@ export function useEpisodeProgress({
     if (loadState !== 'ready') return
     initialSeekAppliedRef.current = true
     seekTo(progress.currentTime)
-  }, [episode, currentEpisode, currentTime, loadProgress, loadState, seekTo])
+  }, [episode, currentEpisode, currentTime, loadProgress, loadState, seekTo, skipResumeSeek])
 
   useEffect(() => {
     if (!episode || duration <= 0 || hasMarkedListenedRef.current) return

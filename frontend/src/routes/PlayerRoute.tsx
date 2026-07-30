@@ -1,5 +1,5 @@
 import { useState, useEffect, useMemo, useCallback, useRef } from 'react'
-import { useParams, useNavigate } from 'react-router-dom'
+import { useParams, useNavigate, useLocation } from 'react-router-dom'
 import { Sparkles, BookMarked, MessageCircle } from 'lucide-react'
 import { toast } from 'sonner'
 import { api } from '../api'
@@ -12,15 +12,32 @@ import { WordCardPanel } from '../components/wordcard/WordCardPanel'
 import { VocabDrawer } from '../components/vocab/VocabDrawer'
 import type { Cue } from '../types/episode'
 import { usePlayer, useDailyOrder, useSettings, useActivity, useVocab } from '../state'
-import { findActiveCueIndex, buildConversationPrompt, filterDueDeck } from '../lib'
+import { findActiveCueIndex, buildConversationPrompt, countActionable } from '../lib'
 import { useEpisode } from './useEpisode'
 import { useEpisodeProgress } from './useEpisodeProgress'
 import { useCueLoop } from './useCueLoop'
 import { useWordLookup } from './useWordLookup'
 
+/** 單字本「跳到」／「前往該集」導頁帶的 router state：目標時間戳 + 收錄當下的
+ *  精確 cue 索引（優先於時間戳，理由同 WordCardPanel/ReplayAudioButton 的浮點捨入註解）。 */
+interface VocabSeekState {
+  readonly seekTo: number
+  readonly seekLineNo?: number
+}
+
+function parseVocabSeekState(state: unknown): VocabSeekState | null {
+  if (typeof state !== 'object' || state === null) return null
+  const seekTo = (state as Record<string, unknown>).seekTo
+  return typeof seekTo === 'number' ? { seekTo, seekLineNo: (state as Record<string, unknown>).seekLineNo as number | undefined } : null
+}
+
 export function PlayerRoute() {
   const { id } = useParams<{ id: string }>()
   const navigate = useNavigate()
+  const location = useLocation()
+  // location.state 同一個 history entry 內參照穩定；parseVocabSeekState 每次呼叫都會
+  // 建新物件，沒 memo 會讓依賴它的 effect 每次 render 都判斷成「變了」而重複 seekTo。
+  const pendingSeek = useMemo(() => parseVocabSeekState(location.state), [location.state])
   const [isVocabDrawerOpen, setIsVocabDrawerOpen] = useState(false)
   const hasNotifiedDueRef = useRef(false)
   const dueNotifiedEpisodeIdRef = useRef<string | null>(null)
@@ -40,9 +57,22 @@ export function PlayerRoute() {
 
   useEpisodeProgress({
     episode, currentTime, duration, loadState, currentEpisode, orderId,
+    skipResumeSeek: pendingSeek !== null,
     seekTo, loadProgress, markListened, addListenMinutes, markPlayed,
     recordPlay: api.recordEpisodePlay,
   })
+
+  // 單字本「跳到」／「前往該集」的目標 seek：等這集 segments 真的 decode 完成
+  // （loadState==='ready'）才動，不然會定位到 0；套用後清掉 state 避免重整/上一頁重播一次。
+  useEffect(() => {
+    if (!episode || !pendingSeek || loadState !== 'ready') return
+    const idx = pendingSeek.seekLineNo !== undefined && pendingSeek.seekLineNo >= 0 && pendingSeek.seekLineNo < episode.cues.length
+      ? pendingSeek.seekLineNo
+      : Math.max(0, findActiveCueIndex(episode.cues, pendingSeek.seekTo))
+    const cue = episode.cues[idx]
+    seekTo(cue ? cue.start : pendingSeek.seekTo)
+    navigate(location.pathname, { replace: true, state: null })
+  }, [episode, loadState, pendingSeek, seekTo, navigate, location.pathname])
 
   useEffect(() => {
     setPlaybackRate(settings.playbackRate)
@@ -69,14 +99,6 @@ export function PlayerRoute() {
     await wordLookup.open(word, cue)
   }
 
-  const handleReplayCue = () => {
-    if (!episode || !wordLookup.selectedCue) return
-    cueLoop.retarget(wordLookup.selectedCue)
-    seekTo(wordLookup.selectedCue.start)
-    wordLookup.markResumeOnClose()
-    wordLookup.close()
-  }
-
   const handleCueClick = useCallback((cue: Cue) => {
     retargetCueLoop(cue)
     seekTo(cue.start)
@@ -94,11 +116,11 @@ export function PlayerRoute() {
     // 播完（<audio> 是全域節點，改用 currentTime/duration 逼近判斷取代 onEnded 事件）
     if (!episode || duration <= 0 || hasNotifiedDueRef.current) return
     if (currentTime < duration - 0.25) return
-    const dueCount = filterDueDeck(vocabItems).length
+    const dueCount = countActionable(vocabItems)
     if (dueCount === 0) return
     hasNotifiedDueRef.current = true
-    toast(`還有 ${dueCount} 個單字到期待複習`, {
-      action: { label: '去複習', onClick: () => navigate('/flashcards') },
+    toast(`還有 ${dueCount} 個單字待學習複習`, {
+      action: { label: '去複習', onClick: () => navigate('/vocab') },
     })
   }, [currentTime, duration, episode, vocabItems, navigate])
 
@@ -209,7 +231,6 @@ export function PlayerRoute() {
         episodeId={episode.id}
         activeCueIdx={selectedCueIdx}
         onClose={wordLookup.close}
-        onReplayCue={handleReplayCue}
       />
 
       {/* 單字本側拉面板 */}

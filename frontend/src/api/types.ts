@@ -36,9 +36,11 @@ export type VocabItem = {
   readonly exampleZh?: string | null
   // 諧音/關鍵字記憶提示：同上，來自 dict_cache JOIN
   readonly mnemonic?: string | null
-  // 1=new..5=ignored（已精熟）；伺服器建立時預設 1，前端不在新增時送出（比照 nextReview/interval/ease）。
-  // 門檻判斷在前端算，見 VocabProvider.updateCardReview
+  // 1=新字(待學習) 2=複習中(SRS) 5=精熟封存（migration 0026）；伺服器建立時預設 1，
+  // 前端不在新增時送出（比照 nextReview/interval/ease）。門檻判斷在前端算，見 VocabProvider。
   readonly status?: number
+  // 畢業測驗連續通過輪數；連 2 輪即精熟（status=5），見 lib/quiz.ts
+  readonly quizPassStreak?: number
 }
 
 export type Settings = {
@@ -163,6 +165,73 @@ export type AdminEpisodeStatsResponse = {
   readonly items: readonly AdminEpisodeStats[]
 }
 
+/** 單次 LLM 呼叫；鏡像後端 AdminLlmCall（gen_metrics->'llm_calls'）。 */
+export type AdminLlmCall = {
+  readonly node: string
+  readonly call: string
+  readonly attempt: number
+  readonly durationMs: number
+  readonly inputTokens: number
+  readonly outputTokens: number
+  readonly segmentIndex?: number | null
+}
+
+/** TTS 用量；provider="edge" 表示 MiniMax 失敗 fallback（該集 TTS 免費）。 */
+export type AdminTtsUsage = {
+  readonly provider: string
+  readonly characters: number
+}
+
+export type AdminGenerationTotals = {
+  readonly llmCallCount: number
+  readonly inputTokens: number
+  readonly outputTokens: number
+}
+
+export type AdminGenerationError = {
+  readonly node: string
+  readonly type: string
+  readonly message: string
+}
+
+/** 研究過程摘要；後端 research_metrics 已知欄位，舊集數可能全缺。 */
+export type AdminResearchSummary = {
+  readonly questionsCount?: number | null
+  readonly subtopics: readonly string[]
+  readonly sourceCount?: number | null
+  readonly evidenceCardCount?: number | null
+  readonly grounded?: boolean | null
+  readonly providerCounts: Readonly<Record<string, number>>
+  readonly verifiedClaimCount?: number | null
+  readonly usableClaimCount?: number | null
+  readonly conflictCount?: number | null
+  readonly claimCheckTotal?: number | null
+  readonly claimCheckSupported?: number | null
+  readonly claimCheckUnsupported?: number | null
+  readonly claimCheckUnsupportedRatio?: number | null
+  readonly judgeScores: Readonly<Record<string, number>>
+  readonly judgeVerdict?: string | null
+  readonly rewriteIterations?: number | null
+  readonly engineUsed?: string | null
+  readonly errors: readonly string[]
+}
+
+/** GET /admin/episodes/{id}/generation：單集生成過程完整視圖。 */
+export type AdminEpisodeGeneration = {
+  readonly status: string
+  readonly enqueuedAt?: string | null
+  readonly startedAt?: string | null
+  readonly finishedAt?: string | null
+  readonly queueWaitMs?: number | null
+  readonly wallMs?: number | null
+  readonly tts?: AdminTtsUsage | null
+  readonly totals: AdminGenerationTotals
+  readonly stages: readonly StageMetric[]
+  readonly llmCalls: readonly AdminLlmCall[]
+  readonly research: AdminResearchSummary
+  readonly error?: AdminGenerationError | null
+}
+
 export type ChannelCategory = 'tech' | 'business' | 'culture' | 'science'
 export type ChannelStatus = 'active' | 'paused' | 'archived'
 export type TopicType = 'news' | 'product' | 'evergreen' | 'skill'
@@ -275,7 +344,7 @@ export interface Api {
   getSettings(): Promise<Settings>
   updateSettings(patch: Partial<Settings>): Promise<Settings>
   clearVocab(): Promise<void>
-  updateVocab(id: string, patch: Partial<Pick<VocabItem, 'nextReview' | 'interval' | 'ease' | 'status'>>): Promise<void>
+  updateVocab(id: string, patch: Partial<Pick<VocabItem, 'nextReview' | 'interval' | 'ease' | 'status' | 'quizPassStreak'>>): Promise<void>
   // 收藏的 podcast episode
   getFavorites(): Promise<readonly string[]>
   addFavorite(id: string): Promise<void>
@@ -315,6 +384,8 @@ export interface Api {
   deleteAccount(): Promise<void>
   // Admin 單集數據總覽：播放／聽完／收藏／token／耗時（Google OAuth JWT email 白名單）。
   getAdminEpisodeStats(): Promise<AdminEpisodeStatsResponse>
+  /** 單集生成過程明細（stages／LLM 呼叫／TTS 供應商／研究摘要），dialog 開啟時才抓。 */
+  getAdminEpisodeGeneration(episodeId: string): Promise<AdminEpisodeGeneration>
   // Admin 頻道管理（同一組 email 白名單）。使用者端的頻道瀏覽／訂閱是另一組
   // 走 JWT 的公開端點（見下方 listChannels 等），這裡一律加 Admin 前綴避免撞名。
   listAdminChannels(): Promise<readonly Channel[]>

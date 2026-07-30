@@ -199,11 +199,18 @@ export function useSegmentPlayer(): SegmentPlayer {
         dispatch({ type: 'PLAYBACK_STOPPED' })
         return
       }
+      const curIdx = segIdxRef.current
       segIdxRef.current = next
       const signal = controllerRef.current?.signal ?? ALREADY_ABORTED_SIGNAL
       void prefetchAround(next)
+      // 句間停頓：seg.start/end 由後端 build_timeline 算好時已內建間隔（一般 0.3s／
+      // 章節轉換 0.7s，見 subtitles.py），這裡照樣子等，不用自己另外訂數字。
+      const gapSec = Math.max(0, ep.segments[next].start - ep.segments[curIdx].end)
       void ensureBuffer(next).then(b => {
-        if (b && isPlayingRef.current && !signal.aborted) startSourceRef.current(next, 0)
+        if (!b || !isPlayingRef.current || signal.aborted) return
+        window.setTimeout(() => {
+          if (isPlayingRef.current && !signal.aborted) startSourceRef.current(next, 0)
+        }, (gapSec / rateRef.current) * 1000)
       })
     })
     if (!handle) return

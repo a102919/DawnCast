@@ -15,8 +15,6 @@ export interface UseWordLookupResult {
   close(): void
   /** 查詢失敗時重試同一個字。 */
   retry(): void
-  /** 詞卡外的流程（例：「重聽這句」）要在關卡後恢復播放時，先呼叫這個標記。 */
-  markResumeOnClose(): void
 }
 
 export interface UseWordLookupParams {
@@ -68,9 +66,5 @@ export function useWordLookup({ isPlaying, pause, playWithUnlock, addLookupCount
     if (selectedWord) void lookupWord(selectedWord)
   }, [selectedWord, lookupWord])
 
-  const markResumeOnClose = useCallback(() => {
-    resumePlaybackRef.current = true
-  }, [])
-
-  return { selectedWord, selectedCue, dictEntry, isWordCardOpen, lookupError, open, close, retry, markResumeOnClose }
+  return { selectedWord, selectedCue, dictEntry, isWordCardOpen, lookupError, open, close, retry }
 }

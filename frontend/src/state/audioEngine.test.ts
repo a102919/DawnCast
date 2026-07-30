@@ -5,6 +5,21 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { createAudioEngine, type AudioEngine } from './audioEngine'
 
+// happy-dom 沒有 AudioWorkletNode，SoundTouchNode 的 `class extends AudioWorkletNode`
+// 在 module eval 當下就會炸——整個套件用 vi.mock 換掉，跟其餘 Web Audio 節點一樣純假物件。
+const { stNodes } = vi.hoisted(() => ({
+  stNodes: [] as Array<{ playbackRate: { value: number }; connect: ReturnType<typeof vi.fn> }>,
+}))
+vi.mock('@soundtouchjs/audio-worklet/processor?url', () => ({ default: 'mock-processor-url' }))
+vi.mock('@soundtouchjs/audio-worklet', () => ({
+  SoundTouchNode: class {
+    playbackRate = { value: 1 }
+    connect = vi.fn()
+    static register = vi.fn(async () => undefined)
+    constructor() { stNodes.push(this) }
+  },
+}))
+
 interface FakeBufferSourceNode {
   buffer: AudioBuffer | null
   playbackRate: { value: number }
@@ -113,6 +128,7 @@ describe('audioEngine', () => {
 
   beforeEach(() => {
     setupGlobalMocks()
+    stNodes.length = 0
     engine = createAudioEngine()
   })
   afterEach(() => {
@@ -216,6 +232,25 @@ describe('audioEngine', () => {
     expect(source.playbackRate.value).toBe(1.5)
     expect(source.connect).toHaveBeenCalled()
     expect(source.start).toHaveBeenCalledWith(0, 0.2, expect.any(Number))
+  })
+
+  // 迴歸：變速時人聲不能跟著變調。source.playbackRate 本身會變調，靠 stNode 鏡射同一個
+  // rate 讓 SoundTouch processor 抵消——source 接的對象也要是 stNode，不是 mainGain。
+  it('startPlayback：source 接到 stNode（不是直接接 mainGain），且 stNode.playbackRate 鏡射同一個 rate', async () => {
+    await engine.getBuffer('https://cdn/0.mp3')
+    engine.startPlayback({ url: 'https://cdn/0.mp3', globalStartSec: 0, offsetSec: 0, rate: 1.5 })
+    const source = sources.at(-1)!
+    const stNode = stNodes.at(-1)!
+    expect(stNode.playbackRate.value).toBe(1.5)
+    expect(source.connect).toHaveBeenCalledWith(stNode)
+  })
+
+  it('setRate：同步更新 source 跟 stNode 的 playbackRate', async () => {
+    await engine.getBuffer('https://cdn/0.mp3')
+    const handle = engine.startPlayback({ url: 'https://cdn/0.mp3', globalStartSec: 0, offsetSec: 0, rate: 1 })!
+    engine.setRate(handle, 2)
+    expect(handle.source.playbackRate.value).toBe(2)
+    expect(stNodes.at(-1)!.playbackRate.value).toBe(2)
   })
 
   it('stop：回傳算出的全域位置，並呼叫 source.stop + disconnect', async () => {

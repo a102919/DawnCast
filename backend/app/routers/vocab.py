@@ -31,7 +31,7 @@ _SELECT = """
          to_char(v.created_at, 'YYYY-MM-DD"T"HH24:MI:SS"Z"') as created_at,
          v.sense_idx, v.source_sentence, v.source_sentence_zh,
          to_char(v.next_review, 'YYYY-MM-DD') as next_review,
-         v.interval_days as interval, v.ease, v.status,
+         v.interval_days as interval, v.ease, v.status, v.quiz_pass_streak,
          d.example_en, d.example_zh, d.mnemonic
   from public.user_vocab v
   left join public.episodes e on e.id = v.source_episode_id
@@ -140,20 +140,29 @@ async def add_vocab(
 async def update_vocab(
     vocab_id: str, body: UpdateVocabBody, user_id: str = Depends(get_current_user)
 ) -> ApiResponse[None]:
-    """更新 SM-2 欄位（nextReview/interval/ease/status）。只動本人列。"""
+    """更新 SM-2 欄位（nextReview/interval/ease/status/quizPassStreak）。只動本人列。"""
     async with connection() as conn, conn.cursor(row_factory=dict_row) as cur:
         await cur.execute(
             """
             update public.user_vocab set
-              next_review   = coalesce(%s, next_review),
-              interval_days = coalesce(%s, interval_days),
-              ease          = coalesce(%s, ease),
-              status        = coalesce(%s, status),
-              updated_at    = now()
+              next_review      = coalesce(%s, next_review),
+              interval_days    = coalesce(%s, interval_days),
+              ease             = coalesce(%s, ease),
+              status           = coalesce(%s, status),
+              quiz_pass_streak = coalesce(%s, quiz_pass_streak),
+              updated_at       = now()
             where id::text = %s and user_id = %s
             returning id
             """,
-            (body.next_review, body.interval, body.ease, body.status, vocab_id, user_id),
+            (
+                body.next_review,
+                body.interval,
+                body.ease,
+                body.status,
+                body.quiz_pass_streak,
+                vocab_id,
+                user_id,
+            ),
         )
         updated = await cur.fetchone()
         await conn.commit()

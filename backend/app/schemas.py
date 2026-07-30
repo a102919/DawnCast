@@ -33,15 +33,16 @@ class AddVocabBody(CamelModel):
 
 
 class UpdateVocabBody(CamelModel):
-    """updateVocab(id, patch{nextReview,interval,ease,status})。皆 optional。"""
+    """updateVocab(id, patch{nextReview,interval,ease,status,quizPassStreak})。皆 optional。"""
 
     next_review: str | None = None
     interval: int | None = None
     ease: float | None = None
-    # 1=new..5=ignored（精熟）；對齊 migration 0001 註解與 DB default。
-    # 前端 VocabProvider.nextStatus 從 quality 算出 status，沒驗 → 直接繞過門檻
-    # 把卡片標成 mastered，必須在邊界層擋下。
+    # 1=新字(待學習) 2=複習中 5=精熟封存（migration 0026）；前端從 quality 算出
+    # status，沒驗 → 直接繞過門檻把卡片標成 mastered，必須在邊界層擋下。
     status: int | None = Field(default=None, ge=1, le=5)
+    # 畢業測驗連續通過輪數；連 2 輪即精熟，le=2 擋灌水。
+    quiz_pass_streak: int | None = Field(default=None, ge=0, le=2)
 
 
 class UpdateSettingsBody(CamelModel):

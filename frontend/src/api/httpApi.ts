@@ -2,6 +2,7 @@ import { z } from 'zod'
 import type {
   AccountInfo,
   Activity,
+  AdminEpisodeGeneration,
   AdminEpisodeStats,
   AdminEpisodeStatsResponse,
   Api,
@@ -178,6 +179,8 @@ const VocabItemSchema = z.object({
   // schema_mismatch 直接讓整個 VocabRoute + FlashcardRoute 空白。default(1) 對齊
   // backend VocabItem.status 預設值。
   status: z.number().default(1),
+  // 同上過渡期容錯：舊實例不回 quizPassStreak 時以 0 起算。
+  quizPassStreak: z.number().default(0),
 }) satisfies z.ZodType<VocabItem> & z.ZodType<components['schemas']['VocabItem']>
 
 const VocabListSchema = z.array(VocabItemSchema)
@@ -328,6 +331,70 @@ const AdminEpisodeStatsSchema = z.object({
   wallMs: z.number().nullable().optional(),
   stages: z.array(StageMetricSchema),
 }) satisfies z.ZodType<AdminEpisodeStats> & z.ZodType<components['schemas']['AdminEpisodeStats']>
+
+const AdminLlmCallSchema = z.object({
+  node: z.string(),
+  call: z.string(),
+  attempt: z.number(),
+  durationMs: z.number(),
+  inputTokens: z.number(),
+  outputTokens: z.number(),
+  segmentIndex: z.number().nullable().optional(),
+}) satisfies z.ZodType<components['schemas']['AdminLlmCall']>
+
+const AdminTtsUsageSchema = z.object({
+  provider: z.string(),
+  characters: z.number(),
+}) satisfies z.ZodType<components['schemas']['AdminTtsUsage']>
+
+const AdminGenerationTotalsSchema = z.object({
+  llmCallCount: z.number(),
+  inputTokens: z.number(),
+  outputTokens: z.number(),
+}) satisfies z.ZodType<components['schemas']['AdminGenerationTotals']>
+
+const AdminGenerationErrorSchema = z.object({
+  node: z.string(),
+  type: z.string(),
+  message: z.string(),
+}) satisfies z.ZodType<components['schemas']['AdminGenerationError']>
+
+const AdminResearchSummarySchema = z.object({
+  questionsCount: z.number().nullable().optional(),
+  subtopics: z.array(z.string()),
+  sourceCount: z.number().nullable().optional(),
+  evidenceCardCount: z.number().nullable().optional(),
+  grounded: z.boolean().nullable().optional(),
+  providerCounts: z.record(z.string(), z.number()),
+  verifiedClaimCount: z.number().nullable().optional(),
+  usableClaimCount: z.number().nullable().optional(),
+  conflictCount: z.number().nullable().optional(),
+  claimCheckTotal: z.number().nullable().optional(),
+  claimCheckSupported: z.number().nullable().optional(),
+  claimCheckUnsupported: z.number().nullable().optional(),
+  claimCheckUnsupportedRatio: z.number().nullable().optional(),
+  judgeScores: z.record(z.string(), z.number()),
+  judgeVerdict: z.string().nullable().optional(),
+  rewriteIterations: z.number().nullable().optional(),
+  engineUsed: z.string().nullable().optional(),
+  errors: z.array(z.string()),
+}) satisfies z.ZodType<components['schemas']['AdminResearchSummary']>
+
+const AdminEpisodeGenerationSchema = z.object({
+  status: z.string(),
+  enqueuedAt: z.string().nullable().optional(),
+  startedAt: z.string().nullable().optional(),
+  finishedAt: z.string().nullable().optional(),
+  queueWaitMs: z.number().nullable().optional(),
+  wallMs: z.number().nullable().optional(),
+  tts: AdminTtsUsageSchema.nullable().optional(),
+  totals: AdminGenerationTotalsSchema,
+  stages: z.array(StageMetricSchema),
+  llmCalls: z.array(AdminLlmCallSchema),
+  research: AdminResearchSummarySchema,
+  error: AdminGenerationErrorSchema.nullable().optional(),
+}) satisfies z.ZodType<AdminEpisodeGeneration> &
+  z.ZodType<components['schemas']['AdminEpisodeGeneration']>
 
 const AdminEpisodeStatsResponseSchema = z.object({
   episodeCount: z.number(),
@@ -571,6 +638,13 @@ export const httpApi: Api = {
       schema: AdminEpisodeStatsResponseSchema,
       extraHeaders: adminHeaders(),
     })
+  },
+
+  async getAdminEpisodeGeneration(episodeId: string) {
+    return request<AdminEpisodeGeneration>(
+      `/admin/episodes/${encodeURIComponent(episodeId)}/generation`,
+      { schema: AdminEpisodeGenerationSchema, extraHeaders: adminHeaders() },
+    )
   },
 
   async listAdminChannels() {
