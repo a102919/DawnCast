@@ -1,35 +1,35 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
+import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
 import { api, type DailyOrder, type DailyOrderInput } from '../api'
 import { DailyOrderContext, type DailyOrderContextValue } from './dailyOrderContextValue'
-import { DEFAULT_DELIVERY_TIME, addDays, previousNDays, toIsoDate } from '../lib/dailyOrderDate'
 
-const HISTORY_DAYS = 30
-const FORWARD_DAYS = 7
-
-function getTodayDate(): string {
-  return toIsoDate(new Date())
-}
+const HISTORY_PAGE_SIZE = 20
 
 export function DailyOrderProvider({ children }: { readonly children: ReactNode }) {
-  const todayDate = useMemo(() => getTodayDate(), [])
-  const [orders, setOrders] = useState<ReadonlyMap<string, DailyOrder>>(new Map())
+  const [activeOrder, setActiveOrder] = useState<DailyOrder | null>(null)
+  const [history, setHistory] = useState<readonly DailyOrder[]>([])
+  const [historyExhausted, setHistoryExhausted] = useState(false)
 
-  const loadOrders = useCallback(async (): Promise<void> => {
-    const fromDate = previousNDays(todayDate, HISTORY_DAYS).at(-1) ?? todayDate
-    const toDate = addDays(todayDate, FORWARD_DAYS - 1)
+  const loadActive = useCallback(async (): Promise<void> => {
     try {
-      const list = await api.listDailyOrders(fromDate, toDate)
-      const map = new Map<string, DailyOrder>()
-      for (const o of list) map.set(o.date, o)
-      setOrders(map)
+      setActiveOrder(await api.getActiveOrder())
     } catch (err) {
-      console.warn('[daily-order] load failed', err)
+      console.warn('[daily-order] load active failed', err)
     }
-  }, [todayDate])
+  }, [])
+
+  const loadHistory = useCallback(async (): Promise<void> => {
+    try {
+      const list = await api.listOrderHistory(HISTORY_PAGE_SIZE)
+      setHistory(list)
+      setHistoryExhausted(list.length < HISTORY_PAGE_SIZE)
+    } catch (err) {
+      console.warn('[daily-order] load history failed', err)
+    }
+  }, [])
 
   const refresh = useCallback(async (): Promise<void> => {
-    await loadOrders()
-  }, [loadOrders])
+    await Promise.all([loadActive(), loadHistory()])
+  }, [loadActive, loadHistory])
 
   // 初次掛載跑一次載入。mounted ref 確保 StrictMode 雙 mount 只觸發一次。
   const mountedRef = useRef<boolean>(false)
@@ -39,79 +39,51 @@ export function DailyOrderProvider({ children }: { readonly children: ReactNode 
     void refresh()
   }, [refresh])
 
-  const getOrder = useCallback(
-    (date: string): DailyOrder | null => orders.get(date) ?? null,
-    [orders],
-  )
+  const loadMoreHistory = useCallback(async (): Promise<void> => {
+    if (historyExhausted) return
+    const last = history.at(-1)
+    if (!last) return
+    try {
+      const more = await api.listOrderHistory(HISTORY_PAGE_SIZE, last.createdAt)
+      setHistory(prev => [...prev, ...more])
+      if (more.length < HISTORY_PAGE_SIZE) setHistoryExhausted(true)
+    } catch (err) {
+      console.warn('[daily-order] load more history failed', err)
+    }
+  }, [history, historyExhausted])
 
-  const setOrder = useCallback(
-    async (date: string, input: DailyOrderInput): Promise<DailyOrder> => {
-      const now = new Date().toISOString()
-      const previous = orders.get(date)
-      // Phase 4：舊 localStorage 訂單沒 entryMode/lengthTier，補預設後才不會帶 undefined
-      // 進 wire（後端會 422）。沿用舊值 > input > 預設值的優先序，與 deliveryTime 邏輯一致。
-      const full: DailyOrder = {
-        date,
-        selectedTopics: [...input.selectedTopics],
-        ...(input.specificRequest !== undefined && input.specificRequest !== ''
-          ? { specificRequest: input.specificRequest }
-          : {}),
-        status: input.status ?? previous?.status ?? 'pending',
-        deliveryTime: previous?.deliveryTime ?? DEFAULT_DELIVERY_TIME,
-        createdAt: previous?.createdAt ?? now,
-        updatedAt: now,
-        entryMode: input.entryMode ?? previous?.entryMode ?? 'topic',
-        lengthTier: input.lengthTier ?? previous?.lengthTier ?? 'medium',
-      }
-      const saved = await api.saveDailyOrder(full)
-      await api.setLastOrderDate(date)
-      setOrders(prev => {
-        const next = new Map(prev)
-        next.set(date, saved)
-        return next
-      })
-      // T1：fire-and-forget 觸發 worker 跑當日 pipeline；失敗僅 log，
-      // 不影響 setOrder 回傳值。22:00 collect_open cron 與 evergreen 03:30 兜底。
-      void api.triggerGenerateJob(date).catch(err => {
-        console.warn('[daily-order] trigger generate failed', err)
-      })
-      return saved
-    },
-    [orders],
-  )
-
-  const deleteOrder = useCallback(async (date: string): Promise<void> => {
-    await api.deleteDailyOrder(date)
-    setOrders(prev => {
-      if (!prev.has(date)) return prev
-      const next = new Map(prev)
-      next.delete(date)
-      return next
+  const createOrder = useCallback(async (input: DailyOrderInput): Promise<DailyOrder> => {
+    const created = await api.createDailyOrder(input)
+    setActiveOrder(created)
+    // fire-and-forget：失敗僅 log，不影響 createOrder 回傳值。
+    // dawncast-order-reconcile（每 5 分鐘）會撿走卡在 pending 太久的訂單重放觸發。
+    void api.triggerGenerateJob(created.id).catch(err => {
+      console.warn('[daily-order] trigger generate failed', err)
     })
+    return created
   }, [])
 
-  const markPlayed = useCallback(async (date: string): Promise<DailyOrder | null> => {
-    const previous = orders.get(date)
-    if (!previous) return null
-    if (previous.status === 'played') return previous
+  const cancelOrder = useCallback(async (id: string): Promise<void> => {
+    await api.deleteDailyOrder(id)
+    setActiveOrder(prev => (prev?.id === id ? null : prev))
+  }, [])
+
+  const markPlayed = useCallback(async (id: string): Promise<DailyOrder | null> => {
     const playedAt = new Date().toISOString()
-    const updated = await api.markOrderPlayed(date, playedAt)
+    const updated = await api.markOrderPlayed(id, playedAt)
     if (!updated) return null
-    setOrders(prev => {
-      const next = new Map(prev)
-      next.set(date, updated)
-      return next
-    })
+    setActiveOrder(prev => (prev?.id === id ? null : prev))
+    setHistory(prev => [updated, ...prev.filter(o => o.id !== id)])
     return updated
-  }, [orders])
+  }, [])
 
   const value: DailyOrderContextValue = {
-    todayDate,
-    orders,
-    getOrder,
-    setOrder,
-    deleteOrder,
+    activeOrder,
+    history,
+    createOrder,
+    cancelOrder,
     markPlayed,
+    loadMoreHistory,
     refresh,
   }
 

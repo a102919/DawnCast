@@ -31,6 +31,7 @@ from engine.pipeline.generate_job import run_generate_job
 from engine.pipeline.reuse import resolve_for_user
 from shared.config import get_settings
 from shared.db import queue
+from shared.db import repo as app_repo
 from shared.db.pool import close_pool, open_pool
 from shared.db.queue import Msg
 from shared.idempotency import compute_idempotency_key
@@ -43,6 +44,12 @@ GENERATE_QUEUE = "generate"
 GENERATE_VT = 1100  # 生成 job 較重，隱形鎖 18 分鐘（> job_timeout_sec 預設 15 分）
 CONTROL_VT = 120
 IDLE_SLEEP_SEC = 2.0
+# order_reconcile（migration 0024）逾時門檻：
+#   pending 2 分鐘沒翻 queued → 即時觸發 enqueue 大概率失敗，重放。
+#   queued 20 分鐘仍無 deliveries → 略大於 GENERATE_VT + dead-letter 重試預算，
+#   避免把「還在正常跑」的訂單誤判成卡住，才補墊檔常青集。
+STUCK_PENDING_SEC = 120
+STUCK_QUEUED_SEC = 1200
 # push_daily 整合通知的 body 一次最多列幾集標題；超過時標題仍寫「等 N 集」提示還有更多。
 MAX_BODY_TITLES = 3
 
@@ -78,16 +85,15 @@ async def _handle_control(body: dict[str, Any]) -> None:
     task = body.get("task")
     anchor = _anchor_date(body)
     if task == "orchestrate":
-        await _orchestrate(anchor)
+        order_id = body.get("order_id")
+        if not order_id:
+            logger.warning("orchestrate 訊息缺少 order_id，略過（舊格式已停用）")
+            return
+        await _orchestrate_order(order_id, anchor)
     elif task == "evergreen":
         await run_evergreen(anchor)
-    elif task == "collect_open":
-        # 22:00 收集窗開啟：把當天 pending 訂單翻 queued（不踩已 played 列）。
-        # 冪等，crontab 重跑或補班都不會 double-write。
-        n = await repo.mark_orders_status_for_date(
-            anchor, from_status="pending", to_status="queued"
-        )
-        logger.info("collect_open：%d 筆訂單翻 queued（date=%s）", n, anchor)
+    elif task == "order_reconcile":
+        await _order_reconcile()
     elif task == "daily_podcast":
         # 02:00 每日公開批次：DB function 用 deliver_date 做 atomic claim，
         # duplicate control 會回傳 -1（未送出任何訊息），不會重送 generate。
@@ -150,27 +156,72 @@ async def _push_daily(deliver_date: str) -> None:
     )
 
 
-async def _orchestrate(request_date: str) -> None:
-    """A~E：投影 daily_orders → topic_requests，再對每個 (user, big_topic) 跑重用。
+async def _orchestrate_order(order_id: str, fallback_date: str) -> None:
+    """單筆版 A~E：投影這張訂單 → topic_requests，再對 (user, big_topic) 跑重用。
+
+    取代舊版「當天批次」_orchestrate：隨時點餐下每筆訂單各自即時觸發，不再有
+    「當天」這個聚合單位。查無此 order（可能已被 DELETE 取消）就略過，不當錯誤。
 
     MVP 分桶＝big_topic 字面（大方向分桶），不跑向量聚類（V2 再議，git 歷史有 cluster.py 骨架）。
     """
-    n = await repo.project_orders_to_requests(request_date)
-    logger.info("orchestrate：投影 %d 筆 topic_requests（date=%s）", n, request_date)
-    requests = await repo.list_requests_for_date(request_date)
-    for r in requests:
-        # Phase 4：把投影帶下來的 topic_type / length_tier / cefr 傳進 resolve_for_user，
-        # 否則下游 Pod 永遠吃 evergreen/medium/B1 預設，入口選擇形同虛設。
-        # angle 不帶——讓 resolve_for_user 依該 user 的交付史輪替角度。
-        await resolve_for_user(
-            user_id=r["user_id"],
-            big_topic=r["big_topic"],
-            deliver_date=request_date,
-            topic_type=r.get("topic_type"),
-            length_tier=r.get("length_tier") or "medium",
-            cefr=r.get("cefr") or "B1",
-            source=r.get("source") or "fallback",
-        )
+    req = await repo.project_order_to_request(order_id)
+    if req is None:
+        logger.warning("orchestrate：查無 order_id=%s（可能已被取消），略過", order_id)
+        return
+    # Phase 4：把投影帶下來的 topic_type / length_tier / cefr 傳進 resolve_for_user，
+    # 否則下游 Pod 永遠吃 evergreen/medium/B1 預設，入口選擇形同虛設。
+    # angle 不帶——讓 resolve_for_user 依該 user 的交付史輪替角度。
+    await resolve_for_user(
+        user_id=req["user_id"],
+        big_topic=req["big_topic"],
+        deliver_date=fallback_date,
+        topic_type=req.get("topic_type"),
+        length_tier=req.get("length_tier") or "medium",
+        cefr=req.get("cefr") or "B1",
+        source=req.get("source") or "fallback",
+        order_id=order_id,
+    )
+
+
+async def _order_reconcile() -> None:
+    """每 5 分鐘（migration 0024）：修復兩種「即時觸發失敗」導致訂單卡住的情況。
+
+    1. pending 太久沒被翻 queued：前端 fire-and-forget 沒送到，或送到但 enqueue
+       失敗（jobs.py 的 try/except 吞掉了）。重放同一組 CAS + enqueue 邏輯——
+       transition_order_to_queued 本身是 CAS，重放安全，不會重複觸發已被別的
+       請求翻過的訂單。
+    2. queued 太久仍完全沒有 deliveries：generate 訊息連同 dead-letter 重試都
+       已經用盡預算，確定真的失敗了。補一集常青集當墊檔交付（掛上 order_id），
+       讓 ready 翻 true，不讓使用者被卡住點不了下一餐。複用 evergreen 既有的
+       pick_evergreen_episode / insert_delivery，不重新設計新機制。
+
+    只服務個人點餐，刻意不碰 evergreen.py／undelivered_users——那是跨頻道／
+    個人點餐共用的每日 SLA 安全網，動它的「當天」語意會連帶影響頻道使用者的
+    兜底行為，是使用者畫的紅線之外。
+    """
+    stuck_pending = await app_repo.list_stuck_pending_orders(STUCK_PENDING_SEC)
+    for o in stuck_pending:
+        flipped = await app_repo.transition_order_to_queued(o["user_id"], o["id"])
+        if not flipped:
+            continue  # 已經被別的請求（或前一輪 reconcile）翻過了，不是真的卡住
+        try:
+            await queue.send(
+                CONTROL_QUEUE,
+                {"task": "orchestrate", "order_id": o["id"], "date": o["order_date"]},
+            )
+            logger.warning("order_reconcile：重放 pending 訂單 order_id=%s", o["id"])
+        except Exception:
+            logger.exception("order_reconcile 重放 enqueue 失敗 order_id=%s", o["id"])
+
+    stuck_queued = await app_repo.list_stuck_queued_orders_without_delivery(STUCK_QUEUED_SEC)
+    for o in stuck_queued:
+        episode_id = await repo.pick_evergreen_episode(None)
+        if episode_id is None:
+            logger.warning("order_reconcile：找不到墊檔常青集，order_id=%s 仍卡住", o["id"])
+            continue
+        await repo.insert_delivery(o["user_id"], episode_id, o["order_date"], order_id=o["id"])
+        await app_repo.mark_order_ready(o["id"])
+        logger.warning("order_reconcile：訂單 %s 逾時，補墊檔常青集 %s", o["id"], episode_id)
 
 
 # ── 生成訊息處理 ───────────────────────────────────────────────────

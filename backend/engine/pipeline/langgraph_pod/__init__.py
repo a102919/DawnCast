@@ -205,6 +205,7 @@ async def run_pod(
         "length_tier": body.get("length_tier") or "medium",
         "cefr": body.get("cefr") or cfg.cefr_level,
         "avoid_facts": list(body.get("avoid_facts") or []),
+        "order_id": body.get("order_id"),
         "channel_id": channel_id,
         "channel_topic_id": channel_topic_id,
         "series_context": list(series_context or []),

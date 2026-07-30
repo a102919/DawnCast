@@ -86,18 +86,30 @@ async def delete_push_endpoints(endpoints: list[str]) -> None:
         await conn.commit()
 
 
-async def get_order_status(user_id: str, order_date: str) -> str | None:
-    """取某 user 某日期的 daily_order 狀態；查無回 None（與 rowcount=0 區分）。"""
+async def get_order_status(user_id: str, order_id: str) -> str | None:
+    """取某 user 某筆 daily_order 的狀態；查無回 None（與 rowcount=0 區分）。"""
     async with connection() as conn, conn.cursor(row_factory=dict_row) as cur:
         await cur.execute(
-            "select status from public.daily_orders where user_id = %s and order_date = %s",
-            (user_id, order_date),
+            "select status from public.daily_orders where user_id = %s and id = %s",
+            (user_id, order_id),
         )
         row = await cur.fetchone()
     return str(row["status"]) if row else None
 
 
-async def transition_order_to_queued(user_id: str, order_date: str) -> bool:
+async def get_order_date(order_id: str) -> str | None:
+    """取某筆訂單的 order_date（jobs router 組 orchestrate 訊息用）。"""
+    async with connection() as conn, conn.cursor(row_factory=dict_row) as cur:
+        await cur.execute(
+            "select to_char(order_date, 'YYYY-MM-DD') as order_date "
+            "from public.daily_orders where id = %s",
+            (order_id,),
+        )
+        row = await cur.fetchone()
+    return str(row["order_date"]) if row else None
+
+
+async def transition_order_to_queued(user_id: str, order_id: str) -> bool:
     """原子把 daily_order.status 從 pending 翻 queued（jobs router 觸發用）。
 
     SQL 層 CAS：UPDATE ... WHERE status='pending' RETURNING。
@@ -110,16 +122,66 @@ async def transition_order_to_queued(user_id: str, order_date: str) -> bool:
             """
             update public.daily_orders
             set status = 'queued', updated_at = now()
-            where user_id = %s and order_date = %s and status = 'pending'
-            returning order_date
+            where user_id = %s and id = %s and status = 'pending'
+            returning id
             """,
-            (user_id, order_date),
+            (user_id, order_id),
         )
         return cur.rowcount > 0
 
 
-async def find_delivered_episode(user_id: str, deliver_date: str) -> dict[str, Any] | None:
-    """取當天交付給該 user 的集數原始 row，找不到回 None。
+async def mark_order_ready(order_id: str) -> None:
+    """生成完成、deliveries 寫入成功後呼叫：queued → ready。
+
+    拿掉「播放完才能點下一筆」的限制，改成「生成完成就能點下一筆」——
+    one-active-per-user 的 partial unique index 只擋 pending/queued，
+    ready 不在裡面，自動解鎖。status != 'queued' 時 no-op（冪等，重投安全）。
+    """
+    async with connection() as conn, conn.cursor() as cur:
+        await cur.execute(
+            "update public.daily_orders set status = 'ready', updated_at = now() "
+            "where id = %s and status = 'queued'",
+            (order_id,),
+        )
+
+
+async def list_stuck_pending_orders(older_than_sec: int) -> list[dict[str, Any]]:
+    """找 pending 超過門檻卻沒被翻 queued 的訂單（即時觸發 enqueue 失敗）。"""
+    async with connection() as conn, conn.cursor(row_factory=dict_row) as cur:
+        await cur.execute(
+            """
+            select id, user_id, to_char(order_date, 'YYYY-MM-DD') as order_date
+            from public.daily_orders
+            where status = 'pending'
+              and updated_at < now() - make_interval(secs => %s)
+            """,
+            (older_than_sec,),
+        )
+        rows = await cur.fetchall()
+    return [dict(r) for r in rows]
+
+
+async def list_stuck_queued_orders_without_delivery(older_than_sec: int) -> list[dict[str, Any]]:
+    """找 queued 超過門檻仍完全沒有交付的訂單（生成真的失敗，需要墊檔兜底）。"""
+    async with connection() as conn, conn.cursor(row_factory=dict_row) as cur:
+        await cur.execute(
+            """
+            select o.id, o.user_id, to_char(o.order_date, 'YYYY-MM-DD') as order_date
+            from public.daily_orders o
+            where o.status = 'queued'
+              and o.updated_at < now() - make_interval(secs => %s)
+              and not exists (
+                select 1 from public.deliveries d where d.order_id = o.id
+              )
+            """,
+            (older_than_sec,),
+        )
+        rows = await cur.fetchall()
+    return [dict(r) for r in rows]
+
+
+async def find_delivered_episode(user_id: str, order_id: str) -> dict[str, Any] | None:
+    """取某筆訂單交付給該 user 的集數原始 row，找不到回 None。
 
     刻意回傳原始 row 而非組好的 Episode：segments 簽章要呼叫 R2（I/O），
     交給 router 層的 build_episode() 統一組——跟 GET /episodes/{slug} 共用
@@ -127,8 +189,8 @@ async def find_delivered_episode(user_id: str, deliver_date: str) -> dict[str, A
     沒帶 segments 的 Episode，前端拿到空 segments 當「舊集未 backfill」處理，
     不報錯但完全靜音，難排查）。
 
-    undelivered_users 的 NOT EXISTS 邏輯保證同 user+date 至多一列；
-    deliveries 表本身沒有 created_at，故不加 ORDER BY（Postgres 取任意列即可）。
+    用 order_id 精準比對（取代舊版 (user_id, deliver_date) 猜測）：佇列制下
+    同一天可能有多筆歷史訂單，deliver_date 不再是唯一鍵。
     """
     async with connection() as conn, conn.cursor(row_factory=dict_row) as cur:
         await cur.execute(
@@ -138,10 +200,10 @@ async def find_delivered_episode(user_id: str, deliver_date: str) -> dict[str, A
                    e.audio_r2_key, e.audio_r2_keys
             from public.deliveries d
             join public.episodes e on e.id = d.episode_id
-            where d.user_id = %s and d.deliver_date = %s
+            where d.user_id = %s and d.order_id = %s
             limit 1
             """,
-            (user_id, deliver_date),
+            (user_id, order_id),
         )
         row = await cur.fetchone()
     return dict(row) if row else None

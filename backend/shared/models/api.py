@@ -72,10 +72,11 @@ class Settings(CamelModel):
     cefr_level: Literal["A2", "B1", "B2"] = "B1"
 
 
-DailyOrderStatus = Literal["pending", "queued", "played"]
+DailyOrderStatus = Literal["pending", "queued", "ready", "played"]
 
 
 class DailyOrder(CamelModel):
+    id: str
     date: str
     selected_topics: list[str] = Field(default_factory=list)
     specific_request: str | None = None
@@ -87,9 +88,9 @@ class DailyOrder(CamelModel):
     # Phase 4 新增：入口類型與長度 tier。預設值對齊 migration 0007 給舊列回退路徑。
     entry_mode: EntryMode = "topic"
     length_tier: LengthTier = "medium"
-    # status 只有 pending/queued/played 三態，queued→played 只在使用者實際按下播放才會翻，
-    # 內容其實早就生成完畢也一樣顯示 queued；ready 補上「deliveries 是否已有這天的集數」，
-    # 讓前端能把「生成中」跟「已生成待播放」分開顯示，見 StatusBadge.resolve()。
+    # status 四態：pending（剛送出）→ queued（生成中）→ ready（生成完成，已
+    # 解鎖下一筆，見 mark_order_ready）→ played（使用者實際播放完）。ready 欄位
+    # 是 status in (ready, played) 的便捷布林，見 StatusBadge.resolve()。
     ready: bool = False
 
 

@@ -94,7 +94,7 @@ LengthTier = Literal["short", "medium", "long"]
 ScriptFormat = Literal["dialogue", "monologue"]
 
 # 入口類型（PRD 重新設計 Phase 4）：使用者在前端三分頁選的入口，存進 daily_orders
-# 後由 project_orders_to_requests 投影成 topic_requests.topic_type。三選一向使用者公開
+# 後由 project_order_to_request 投影成 topic_requests.topic_type。三選一向使用者公開
 # （news/topic/knowledge），skill 是後端保留值，前端 UI 不暴露。
 EntryMode = Literal["news", "topic", "knowledge", "skill"]
 

@@ -57,7 +57,7 @@ const MOCK_DICT_ENTRY: DictEntry = {
 // Mock api 模組：spyOn 真物件太繞，直接替換整個 export（跟 DailyOrderProvider.test.tsx 同手法）。
 const listEpisodes = vi.fn(async (): Promise<readonly MockEpisode[]> => MOCK_LIST)
 const getEpisode = vi.fn(async (id: string): Promise<Episode> => mockEpisodeFor(id))
-const getDeliveredEpisode = vi.fn(async (_date: string): Promise<Episode | null> => null)
+const getDeliveredEpisode = vi.fn(async (_orderId: string): Promise<Episode | null> => null)
 const lookupDict = vi.fn(async (_word: string): Promise<DictEntry | null> => null)
 
 vi.mock('../api', () => ({
@@ -109,12 +109,13 @@ vi.mock('../state', () => ({
     updateSettings: vi.fn(),
   }),
   useDailyOrder: () => ({
-    todayDate: '2026-07-17',
-    orders: new Map(),
-    getOrder: () => null,
-    setOrder: vi.fn(),
-    deleteOrder: vi.fn(),
+    activeOrder: null,
+    history: [],
+    createOrder: vi.fn(),
+    cancelOrder: vi.fn(),
     markPlayed: vi.fn(),
+    loadMoreHistory: vi.fn(),
+    refresh: vi.fn(),
   }),
   useActivity: () => ({
     streakDates: [],
@@ -474,8 +475,8 @@ describe('PlayerRoute：參考資料（Task #67）', () => {
   it('getDeliveredEpisode 拿到的 references 也會渲染', async () => {
     getEpisode.mockResolvedValueOnce(mockEpisodeWithReferences('ep-2'))
     getDeliveredEpisode.mockResolvedValueOnce(mockEpisodeWithReferences('ep-2'))
-    // 帶 ?date= 會走 getDeliveredEpisode 路徑
-    const { root, container } = await renderAt('/player?date=2026-07-17')
+    // 帶 ?orderId= 會走 getDeliveredEpisode 路徑
+    const { root, container } = await renderAt('/player?orderId=order-1')
     pendingRoots.push(root)
 
     expect(container.querySelector('details')).not.toBeNull()

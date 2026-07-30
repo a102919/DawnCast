@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { useParams } from 'react-router-dom'
-import { motion } from 'framer-motion'
+import { AnimatePresence, motion } from 'framer-motion'
 import { RadioTower } from 'lucide-react'
 import { api, AppError, type ChannelPublic } from '../api'
 import type { MockEpisode } from '../lib'
@@ -52,7 +52,26 @@ export function ChannelDetailRoute() {
     )
   }
 
-  if (channel === null) return null
+  if (channel === null) {
+    return (
+      <div className="max-w-2xl mx-auto px-4 py-6">
+        <div className="flex gap-4 items-center mb-6">
+          <div className="motion-safe:animate-pulse w-32 h-32 rounded-2xl bg-bg-secondary shrink-0" />
+          <div className="min-w-0 flex-1 flex flex-col gap-2">
+            <div className="motion-safe:animate-pulse h-5 w-1/2 rounded bg-bg-secondary" />
+            <div className="motion-safe:animate-pulse h-4 w-full rounded bg-bg-secondary" />
+            <div className="motion-safe:animate-pulse h-3 w-12 rounded bg-bg-secondary" />
+            <div className="motion-safe:animate-pulse mt-2 h-9 w-24 rounded-full bg-bg-secondary" />
+          </div>
+        </div>
+        <div className="space-y-2">
+          {Array.from({ length: 3 }).map((_, i) => (
+            <div key={i} className="motion-safe:animate-pulse h-20 rounded-2xl bg-bg-secondary" />
+          ))}
+        </div>
+      </div>
+    )
+  }
 
   const following = has(channel.slug)
 
@@ -87,9 +106,19 @@ export function ChannelDetailRoute() {
         <EmptyState icon={RadioTower} title="這個頻道還沒有集數" size="compact" />
       ) : (
         <div className="space-y-2">
-          {episodes.map(ep => (
-            <EpisodeRow key={ep.id} ep={ep} variant="card" />
-          ))}
+          <AnimatePresence mode="popLayout" initial={false}>
+            {episodes.map(ep => (
+              <motion.div
+                key={ep.id}
+                layout
+                initial={{ opacity: 0, scale: 0.96 }}
+                animate={{ opacity: 1, scale: 1, transition: springs.gentle }}
+                exit={{ opacity: 0, scale: 0.96, transition: springs.snappy }}
+              >
+                <EpisodeRow ep={ep} variant="card" />
+              </motion.div>
+            ))}
+          </AnimatePresence>
         </div>
       )}
     </div>

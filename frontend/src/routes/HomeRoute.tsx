@@ -17,6 +17,7 @@ import { api } from '../api'
 import { TOPIC_LABELS } from '../lib'
 import type { TopicKey } from '../lib'
 import type { Episode } from '../types/episode'
+import { toIsoDate } from '../lib/dailyOrderDate'
 
 /** 今日推薦最多顯示幾張（featured 不夠時用 published desc 補到這個上限）。 */
 const TODAY_PICKS_LIMIT = 2
@@ -49,25 +50,35 @@ export function HomeRoute() {
   // 每集時長（秒），從 cues 末段推算；單集 fetch 失敗時留空 → 卡片顯示「—」
   const [durations, setDurations] = useState<ReadonlyMap<string, number>>(new Map())
   const [topicFilter, setTopicFilter] = useState<TopicKey>('all')
-  // 今日已送達集數的 Episode 內容（id 對齊 listEpisodes）；null = 沒送達，fallback
+  // 進行中訂單已送達的集數（id 對齊 listEpisodes）；null = 還沒送達，fallback
   const [deliveredEpisode, setDeliveredEpisode] = useState<Episode | null>(null)
+  // 交付 deliveredEpisode 的訂單 id，跟著上面一起設，供 hero 卡片組 player 連結；
+  // 不直接讀當下的 activeOrderId——生成完成當下 activeOrder 就會翻 null（見
+  // migration 0025：ready 不再算進行中），但 hero 卡片這一輪還在顯示已送達的
+  // 那集，連結仍要指回原本那張訂單。
+  const [deliveredOrderId, setDeliveredOrderId] = useState<string | null>(null)
   const { items: vocabItems } = useVocab()
-  const { todayDate, getOrder, refresh: refreshOrders } = useDailyOrder()
-  const today = todayDate
+  const { activeOrder, refresh: refreshOrders } = useDailyOrder()
+  const activeOrderId = activeOrder?.id ?? null
+  const today = useMemo(() => toIsoDate(new Date()), [])
   const dueCount = vocabItems.filter(v => !v.nextReview || v.nextReview <= today).length
 
   // 給「繼續學習」按鈕帶位用：新到首集，沒有就 fallback 留空（按鈕仍渲染但網址無效）
   const continueTargetId = episodes[0]?.id ?? null
 
   // episodes 清單本身由 EpisodesProvider 集中抓取（見 useEpisodes）；這裡只負責
-  // HomeRoute 專屬的今日送達查詢 + 逐集補抓 cues 推算時長。
+  // 進行中訂單的送達查詢 + 逐集補抓 cues 推算時長。沒有進行中訂單就沒有 hero，
+  // 直接清空（例如上一筆訂單生成完成後 activeOrder 翻 null）。
   useEffect(() => {
     let cancelled = false
 
     const load = async () => {
-      const delivered = await api.getDeliveredEpisode(today).catch(() => null)
+      const delivered = activeOrderId
+        ? await api.getDeliveredEpisode(activeOrderId).catch(() => null)
+        : null
       if (cancelled) return
       setDeliveredEpisode(delivered)
+      setDeliveredOrderId(delivered ? activeOrderId : null)
       // 逐集補抓 cues 推算時長；單集失敗不影響整體
       const results = await Promise.all(
         episodes.map(ep => api.getEpisode(ep.id).catch(() => null)),
@@ -86,7 +97,7 @@ export function HomeRoute() {
     return () => {
       cancelled = true
     }
-  }, [episodes, today])
+  }, [episodes, activeOrderId])
 
   // 今日 hero 對應的 MockEpisode（借 listEpisodes 的封面/主題/徽章資訊）
   const todayEpisode = useMemo(() => {
@@ -94,17 +105,16 @@ export function HomeRoute() {
     return episodes.find(ep => ep.id === deliveredEpisode.id) ?? null
   }, [deliveredEpisode, episodes])
 
-  // Episode readiness polling：T1 trigger 下單後 worker 開始跑，產出後 user 沒 reload
-  // 永遠看不到「可收聽」。條件：今日有訂單（status != played）+ deliveredEpisode 還沒拿到
-  // → 每 2s→16s 輪詢，命中就 refresh orders（讓 daily_order 翻 played）並停止。
+  // Episode readiness polling：送出點餐後 worker 開始跑，產出後 user 沒 reload
+  // 永遠看不到「可收聽」。條件：有進行中訂單 + deliveredEpisode 還沒拿到 →
+  // 每 2s→16s 輪詢，命中就 refresh orders（讓 activeOrder 翻 null）並停止。
   // 進度由 timerRef.current 控制，cancelled 旗標防 setState-after-unmount。
-  const todayOrder = getOrder(today)
-  const shouldPoll = todayOrder !== null && todayOrder.status !== 'played' && deliveredEpisode === null
+  const shouldPoll = activeOrderId !== null && deliveredEpisode === null
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const cancelledRef = useRef<boolean>(false)
   useEffect(() => {
     cancelledRef.current = false
-    if (!shouldPoll) return
+    if (!shouldPoll || !activeOrderId) return
     let attempt = 0
     const tick = async () => {
       if (cancelledRef.current) return
@@ -114,11 +124,12 @@ export function HomeRoute() {
       timerRef.current = setTimeout(async () => {
         if (cancelledRef.current) return
         try {
-          const d = await api.getDeliveredEpisode(today)
+          const d = await api.getDeliveredEpisode(activeOrderId)
           if (cancelledRef.current) return
           if (d) {
             setDeliveredEpisode(d)
-            // 命中：連帶刷全集數庫（hero card 需要封面/主題）+ 訂單狀態（翻 played）。
+            setDeliveredOrderId(activeOrderId)
+            // 命中：連帶刷全集數庫（hero card 需要封面/主題）+ 訂單狀態。
             void refresh()
             void refreshOrders()
             return
@@ -134,7 +145,7 @@ export function HomeRoute() {
       cancelledRef.current = true
       if (timerRef.current) clearTimeout(timerRef.current)
     }
-  }, [shouldPoll, today, refresh, refreshOrders])
+  }, [shouldPoll, activeOrderId, refresh, refreshOrders])
 
   // Fallback 用的「精選」集：優先 is_featured，其次全集第一集
   const fallbackFeatured = useMemo(() => {
@@ -165,11 +176,11 @@ export function HomeRoute() {
           <div className="flex flex-col sm:flex-row items-stretch gap-3">
             {(todayEpisode || fallbackFeatured) && (
               <div className="min-w-0 sm:flex-1">
-                {todayEpisode && (
+                {todayEpisode && deliveredOrderId && (
                   <TodayHeroCard
                     ep={todayEpisode}
                     duration={durations.get(todayEpisode.id)}
-                    today={today}
+                    orderId={deliveredOrderId}
                   />
                 )}
                 {!todayEpisode && fallbackFeatured && (

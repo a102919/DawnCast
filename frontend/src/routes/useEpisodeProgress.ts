@@ -10,11 +10,14 @@ export interface UseEpisodeProgressParams {
   readonly loadState: SegmentLoadState
   /** 全域 PlayerProvider 目前正在播的集數；用來判斷是不是「冷啟動」續播。 */
   readonly currentEpisode: Episode | null
+  /** 這集是不是由點餐訂單（?orderId=）解析出來的；沒有就不會呼叫 markPlayed，
+   *  避免任意集數播放都誤觸發「這張訂單已播放」（見 useEpisode.ts）。 */
+  readonly orderId: string | null
   seekTo(time: number): void
   loadProgress(episodeId: string): { readonly currentTime: number; readonly exists: boolean }
   markListened(episodeId: string): void
   addListenMinutes(month: string, minutes: number): void
-  markPlayed(date: string): Promise<DailyOrder | null>
+  markPlayed(orderId: string): Promise<DailyOrder | null>
   recordPlay(episodeId: string): Promise<void>
 }
 
@@ -22,7 +25,7 @@ export interface UseEpisodeProgressParams {
  *
  * 四件事都以「同一集只做一次」為前提，靠 ref（而非 state）記帳，避免額外 re-render。 */
 export function useEpisodeProgress({
-  episode, currentTime, duration, loadState, currentEpisode,
+  episode, currentTime, duration, loadState, currentEpisode, orderId,
   seekTo, loadProgress, markListened, addListenMinutes, markPlayed, recordPlay,
 }: UseEpisodeProgressParams): void {
   const episodeIdRef = useRef<string | null>(null)
@@ -72,12 +75,16 @@ export function useEpisodeProgress({
 
   useEffect(() => {
     if (!episode || duration <= 0 || hasMarkedDailyPlayedRef.current) return
+    // orderId 沒有值＝這集不是點餐訂單交付的那集（例如直接聽頻道/歷史集數），
+    // 不屬於任何「進行中訂單」，不觸發 markPlayed（修正舊版用「今天日期」
+    // 硬編碼、任何集數播完都誤標記今日訂單已播放的 bug）。
+    if (!orderId) return
     if (currentTime / duration >= 0.9) {
       hasMarkedDailyPlayedRef.current = true
       // fire-and-forget：失敗不影響播放，靜默吞掉避免未捕捉 rejection。
-      void markPlayed(new Date().toLocaleDateString('en-CA')).catch(() => undefined)
+      void markPlayed(orderId).catch(() => undefined)
     }
-  }, [currentTime, duration, episode, markPlayed])
+  }, [currentTime, duration, episode, markPlayed, orderId])
 
   useEffect(() => {
     // 播滿 5 秒才算一次播放：擋掉誤觸與快速滑過，不然數字會被雜訊灌水。

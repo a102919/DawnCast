@@ -75,6 +75,7 @@ describe('httpApi envelope 解包', () => {
       ok: true,
       error: null,
       data: {
+        id: 'order-1',
         date: '2026-07-23',
         selectedTopics: ['tech'],
         specificRequest: null,
@@ -89,17 +90,12 @@ describe('httpApi envelope 解包', () => {
       },
     })
     await expect(
-      httpApi.saveDailyOrder({
-        date: '2026-07-23',
+      httpApi.createDailyOrder({
         selectedTopics: ['tech'],
-        status: 'pending',
-        deliveryTime: '07:00',
-        createdAt: '2026-07-23T23:05:21Z',
-        updatedAt: '2026-07-23T23:05:21Z',
         entryMode: 'topic',
         lengthTier: 'medium',
       }),
-    ).resolves.toMatchObject({ specificRequest: null, playedAt: null })
+    ).resolves.toMatchObject({ id: 'order-1', specificRequest: null, playedAt: null })
   })
   it('回應 data 結構不符 schema 時丟出 schema_mismatch', async () => {
     mockFetchOnce(200, { ok: true, error: null, data: { word: 123 } })
@@ -112,13 +108,13 @@ describe('httpApi envelope 解包', () => {
   })
 })
 
-describe('httpApi.triggerGenerateJob（T1）', () => {
-  it('POST /jobs/orders/{date}/generate，method/scheme/schema 都對', async () => {
+describe('httpApi.triggerGenerateJob', () => {
+  it('POST /jobs/orders/{orderId}/generate，method/scheme/schema 都對', async () => {
     const { calls } = mockFetchOnce(202, { ok: true, data: null, error: null })
-    await expect(httpApi.triggerGenerateJob('2026-07-16')).resolves.toBeUndefined()
+    await expect(httpApi.triggerGenerateJob('order-123')).resolves.toBeUndefined()
     expect(calls).toHaveLength(1)
     const call = calls[0]!
-    expect(call.url).toMatch(/\/jobs\/orders\/2026-07-16\/generate$/)
+    expect(call.url).toMatch(/\/jobs\/orders\/order-123\/generate$/)
     expect(call.init?.method).toBe('POST')
     // 無 body、不解析回應
     expect(call.init?.body).toBeUndefined()
@@ -130,7 +126,7 @@ describe('httpApi.triggerGenerateJob（T1）', () => {
       data: null,
       error: { code: 'conflict', message: '已排入排程或已播放' },
     })
-    await expect(httpApi.triggerGenerateJob('2026-07-16')).rejects.toMatchObject({
+    await expect(httpApi.triggerGenerateJob('order-123')).rejects.toMatchObject({
       name: 'AppError',
       code: 'conflict',
     })
@@ -142,7 +138,7 @@ describe('httpApi.triggerGenerateJob（T1）', () => {
       data: null,
       error: { code: 'unauthorized', message: '未登入' },
     })
-    await expect(httpApi.triggerGenerateJob('2026-07-16')).rejects.toMatchObject({
+    await expect(httpApi.triggerGenerateJob('order-123')).rejects.toMatchObject({
       name: 'AppError',
       code: 'unauthorized',
     })
@@ -152,9 +148,9 @@ describe('httpApi.triggerGenerateJob（T1）', () => {
     mockFetchOnce(404, {
       ok: false,
       data: null,
-      error: { code: 'not_found', message: '查無當日訂單' },
+      error: { code: 'not_found', message: '查無此訂單' },
     })
-    await expect(httpApi.triggerGenerateJob('2026-07-16')).rejects.toMatchObject({
+    await expect(httpApi.triggerGenerateJob('order-123')).rejects.toMatchObject({
       name: 'AppError',
       code: 'not_found',
     })

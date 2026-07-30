@@ -11,8 +11,8 @@ import { HeroLayout } from './HeroLayout'
 interface TodayHeroCardProps {
   readonly ep: MockEpisode
   readonly duration?: number
-  /** 對應今日 delivery 的日期，會附在 player 連結上 */
-  readonly today: string
+  /** 交付這集的點餐訂單 id，會附在 player 連結上（讓播完能標記這張訂單已播放） */
+  readonly orderId: string
 }
 
 /**
@@ -25,7 +25,7 @@ interface TodayHeroCardProps {
  * 互動遵循 apple-design §1「回應立即」：active:scale + motion.whileTap springs.press；
  * 進場用 springs.gentle（0.4s, bounce 0），reduced-motion 自動降級 tween。
  */
-export function TodayHeroCard({ ep, duration, today }: TodayHeroCardProps) {
+export function TodayHeroCard({ ep, duration, orderId }: TodayHeroCardProps) {
   const { favorites, toggle } = useFavorites()
   const isFav = favorites.has(ep.id)
   const springs = useSprings()
@@ -33,7 +33,7 @@ export function TodayHeroCard({ ep, duration, today }: TodayHeroCardProps) {
   return (
     <HeroLayout
       testId="today-hero"
-      coverHref={`/player/${ep.id}?date=${today}`}
+      coverHref={`/player/${ep.id}?orderId=${orderId}`}
       coverAriaLabel={`立即收聽 ${ep.title}`}
       cover={
         <EpisodeCover
@@ -75,7 +75,7 @@ export function TodayHeroCard({ ep, duration, today }: TodayHeroCardProps) {
       cta={
         <>
           <Link
-            to={`/player/${ep.id}?date=${today}`}
+            to={`/player/${ep.id}?orderId=${orderId}`}
             className="w-full justify-center px-3 sm:px-4 h-9 sm:h-10 rounded-full bg-accent text-white text-xs sm:text-sm font-semibold flex items-center gap-1.5 active:scale-[0.97] transition-transform shadow-sm whitespace-nowrap focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-1"
           >
             <Play size={15} fill="currentColor" />

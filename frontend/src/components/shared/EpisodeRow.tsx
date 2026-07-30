@@ -10,21 +10,24 @@ interface EpisodeRowProps {
   readonly variant: 'card' | 'compact'
   /** 從 cues 末段推算的集數時長（秒）；card 顯示用 */
   readonly duration?: number
+  /** 導頁目標覆寫，預設 `/player/${ep.id}`；訂單歷史卡片需要帶 `?orderId=`
+   *  才能讓播放器正確歸屬 markPlayed 到那張訂單。 */
+  readonly to?: string
 }
 
-export function EpisodeRow({ ep, variant, duration }: EpisodeRowProps) {
-  if (variant === 'compact') return <CompactRow ep={ep} />
-  return <CardRow ep={ep} duration={duration} />
+export function EpisodeRow({ ep, variant, duration, to }: EpisodeRowProps) {
+  if (variant === 'compact') return <CompactRow ep={ep} to={to} />
+  return <CardRow ep={ep} duration={duration} to={to} />
 }
 
-function CardRow({ ep, duration }: { readonly ep: MockEpisode; readonly duration?: number }) {
+function CardRow({ ep, duration, to }: { readonly ep: MockEpisode; readonly duration?: number; readonly to?: string }) {
   const { listenedEpisodeIds } = useActivity()
   const isListened = listenedEpisodeIds.has(ep.id)
   const { favorites, toggle } = useFavorites()
   const isFav = favorites.has(ep.id)
 
   return (
-    <Link to={`/player/${ep.id}`} className="block">
+    <Link to={to ?? `/player/${ep.id}`} className="block">
       <div className="relative p-4 rounded-lg border border-border bg-bg-primary hover:border-accent/40 hover:shadow-sm active:scale-[0.99] transition-[border-color,box-shadow,transform] duration-fast group">
         {ep.isFeatured && (
           <div className="absolute top-2.5 right-2.5 z-10 flex items-center gap-1 px-1.5 py-0.5 rounded-full bg-accent/10 border border-accent/30 text-accent">
@@ -77,9 +80,9 @@ function CardRow({ ep, duration }: { readonly ep: MockEpisode; readonly duration
   )
 }
 
-function CompactRow({ ep }: { readonly ep: MockEpisode }) {
+function CompactRow({ ep, to }: { readonly ep: MockEpisode; readonly to?: string }) {
   return (
-    <Link to={`/player/${ep.id}`}>
+    <Link to={to ?? `/player/${ep.id}`}>
       <div className="relative p-4 rounded-lg border border-border bg-bg-primary hover:border-accent/40 hover:shadow-sm active:scale-[0.99] transition-[border-color,box-shadow,transform] duration-fast">
         <div className="flex items-start justify-between gap-3 pr-16">
           <div className="min-w-0">

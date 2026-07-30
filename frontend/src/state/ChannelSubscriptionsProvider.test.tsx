@@ -18,11 +18,16 @@ const CHANNEL_B: ChannelPublic = { slug: 'biz-weekly', name: '商業週報', top
 const listMySubscriptions = vi.fn(async (): Promise<readonly ChannelPublic[]> => [CHANNEL_A])
 const subscribeChannel = vi.fn(async (_slug: string): Promise<void> => undefined)
 const unsubscribeChannel = vi.fn(async (_slug: string): Promise<void> => undefined)
+const toastError = vi.fn()
 
 vi.mock('../api', () => ({
   get api() {
     return { listMySubscriptions, subscribeChannel, unsubscribeChannel }
   },
+}))
+
+vi.mock('sonner', () => ({
+  toast: { error: (...args: unknown[]) => toastError(...args) },
 }))
 
 // 沒有依賴陣列：每次 render 都重新捕捉，讓 getCtx() 永遠讀得到最新的 subscribed/has。
@@ -74,6 +79,7 @@ beforeEach(() => {
   listMySubscriptions.mockClear()
   subscribeChannel.mockClear()
   unsubscribeChannel.mockClear()
+  toastError.mockClear()
   listMySubscriptions.mockResolvedValue([CHANNEL_A])
   subscribeChannel.mockResolvedValue(undefined)
   unsubscribeChannel.mockResolvedValue(undefined)
@@ -124,7 +130,7 @@ describe('ChannelSubscriptionsProvider', () => {
     expect(subscribeChannel).not.toHaveBeenCalled()
   })
 
-  it('subscribeChannel 失敗時 toggle 不 throw，樂觀狀態不回滾（比照 FavoritesProvider 行為)', async () => {
+  it('subscribeChannel 失敗時 toggle 不 throw，樂觀狀態回滾並跳 toast', async () => {
     subscribeChannel.mockRejectedValueOnce(new Error('network error'))
     const { getCtx, root } = await renderProvider()
     pendingRoots.push(root)
@@ -133,8 +139,23 @@ describe('ChannelSubscriptionsProvider', () => {
       await getCtx().toggle(CHANNEL_B)
     })
 
-    expect(getCtx().has('biz-weekly')).toBe(true)
+    expect(getCtx().has('biz-weekly')).toBe(false)
     expect(console.warn).toHaveBeenCalled()
+    expect(toastError).toHaveBeenCalled()
+  })
+
+  it('unsubscribeChannel 失敗時樂觀狀態回滾並跳 toast', async () => {
+    unsubscribeChannel.mockRejectedValueOnce(new Error('network error'))
+    const { getCtx, root } = await renderProvider()
+    pendingRoots.push(root)
+
+    await act(async () => {
+      await getCtx().toggle(CHANNEL_A)
+    })
+
+    expect(getCtx().has('tech-daily')).toBe(true)
+    expect(console.warn).toHaveBeenCalled()
+    expect(toastError).toHaveBeenCalled()
   })
 
   it('初始載入失敗時不 throw，subscribed 維持空 Map', async () => {

@@ -2325,12 +2325,15 @@ async def insert_deliveries_node(state: PodState, config: RunnableConfig) -> dic
     user_ids: list[str] = state.get("user_ids") or []
     episode_id = state["episode_id"]
     deliver_date = state["deliver_date"]
+    order_id = state.get("order_id")
 
     for uid in user_ids:
         try:
             # insert_delivery 回傳「是否首次寫入」，直接當推送的去重閘門——
             # pipeline 重投時 ON CONFLICT DO NOTHING 回 False，不會重複通知。
-            inserted = await repo.insert_delivery(uid, episode_id, deliver_date)
+            # order_id：個人點餐路徑才有值（user_ids 恆為單一使用者）；
+            # 頻道批次路徑 order_id 是 None，行為與改動前一致。
+            inserted = await repo.insert_delivery(uid, episode_id, deliver_date, order_id=order_id)
         except ForeignKeyViolation:
             # 上游補償（update_episode_keys_node 的 DELETE-on-failure 或 worker
             # _compensate_generate_failure）已把這筆 episode row 刪掉 —
@@ -2343,6 +2346,12 @@ async def insert_deliveries_node(state: PodState, config: RunnableConfig) -> dic
                 uid,
             )
             continue
+
+        if order_id is not None:
+            # 生成完成即解鎖下一筆訂單，不用等使用者實際播放完——冪等
+            # （status='queued' 才會翻，重投/deliveries 已存在時是 no-op）。
+            await repo.mark_order_ready(order_id)
+
         if not inserted:
             continue
 

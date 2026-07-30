@@ -151,8 +151,7 @@ const VOCAB_KEY = 'dawncast:vocab'
 const SETTINGS_KEY = 'dawncast:settings'
 const FAVORITES_KEY = 'dawncast:favorites'
 const CHANNEL_SUBS_KEY = 'dawncast:channel-subs'
-const DAILY_ORDER_KEY_PREFIX = 'dawncast:dailyOrder:'
-const LAST_ORDER_DATE_KEY = 'dawncast:lastOrderDate'
+const DAILY_ORDERS_KEY = 'dawncast:dailyOrders'
 const ACTIVITY_KEY = 'dawncast:mockActivity'
 
 const DEFAULT_ACTIVITY: Activity = {
@@ -209,40 +208,16 @@ function writeChannelSubs(slugs: readonly string[]): void {
   storageSet(CHANNEL_SUBS_KEY, [...slugs])
 }
 
-function readDailyOrder(date: string): DailyOrder | null {
-  return storageGet<DailyOrder>(DAILY_ORDER_KEY_PREFIX + date)
+/** 隨時點餐：單一陣列存全部訂單（歷史上允許同一天多筆），沒有分表查詢能力，
+ *  直接在記憶體裡 filter/sort，鏡像後端 partial unique index 的「同一時間僅一筆
+ *  進行中」語意由 createDailyOrder 自己檢查。 */
+function readDailyOrders(): DailyOrder[] {
+  const parsed = storageGet<unknown[]>(DAILY_ORDERS_KEY)
+  return Array.isArray(parsed) ? (parsed as DailyOrder[]) : []
 }
 
-function writeDailyOrder(order: DailyOrder): void {
-  storageSet(DAILY_ORDER_KEY_PREFIX + order.date, order)
-}
-
-function removeDailyOrder(date: string): void {
-  localStorage.removeItem(DAILY_ORDER_KEY_PREFIX + date)
-}
-
-/** 從 a 到 b（含）逐日枚舉 YYYY-MM-DD。要求 a <= b，否則回空陣列。 */
-function enumerateDateRange(fromDate: string, toDate: string): readonly string[] {
-  if (fromDate > toDate) return []
-  const result: string[] = []
-  const start = new Date(fromDate + 'T00:00:00')
-  const end = new Date(toDate + 'T00:00:00')
-  if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime())) return []
-  const cursor = new Date(start)
-  while (cursor.getTime() <= end.getTime()) {
-    const iso = cursor.toLocaleDateString('en-CA')
-    result.push(iso)
-    cursor.setDate(cursor.getDate() + 1)
-  }
-  return result
-}
-
-function readLastOrderDate(): string | null {
-  return localStorage.getItem(LAST_ORDER_DATE_KEY)
-}
-
-function writeLastOrderDate(date: string): void {
-  localStorage.setItem(LAST_ORDER_DATE_KEY, date)
+function writeDailyOrders(orders: readonly DailyOrder[]): void {
+  storageSet(DAILY_ORDERS_KEY, [...orders])
 }
 
 function readActivity(): Activity {
@@ -383,48 +358,58 @@ export const mockApi: Api = {
     return readFavorites().includes(id)
   },
 
-  async getDailyOrder(date) {
-    return readDailyOrder(date)
+  async getActiveOrder() {
+    const orders = readDailyOrders()
+    return orders.find(o => o.status === 'pending' || o.status === 'queued') ?? null
   },
 
-  async saveDailyOrder(order) {
-    writeDailyOrder(order)
+  async createDailyOrder(input) {
+    const orders = readDailyOrders()
+    if (orders.some(o => o.status === 'pending' || o.status === 'queued')) {
+      throw new Error('尚有訂單處理中，請等目前訂單完成後再點新的')
+    }
+    const now = new Date().toISOString()
+    const order: DailyOrder = {
+      id: crypto.randomUUID(),
+      date: now.slice(0, 10),
+      selectedTopics: [...input.selectedTopics],
+      ...(input.specificRequest !== undefined && input.specificRequest !== ''
+        ? { specificRequest: input.specificRequest }
+        : {}),
+      status: 'pending',
+      deliveryTime: '07:00',
+      createdAt: now,
+      updatedAt: now,
+      entryMode: input.entryMode ?? 'topic',
+      lengthTier: input.lengthTier ?? 'medium',
+    }
+    writeDailyOrders([...orders, order])
     return order
   },
 
-  async listDailyOrders(fromDate, toDate) {
-    const dates = enumerateDateRange(fromDate, toDate)
-    const orders: DailyOrder[] = []
-    for (const d of dates) {
-      const o = readDailyOrder(d)
-      if (o) orders.push(o)
-    }
-    return orders
+  async listOrderHistory(limit, before) {
+    const played = readDailyOrders()
+      .filter(o => o.status === 'ready' || o.status === 'played')
+      .filter(o => before === undefined || o.createdAt < before)
+      .sort((a, b) => (a.createdAt < b.createdAt ? 1 : -1))
+    return played.slice(0, limit ?? 20)
   },
 
-  async markOrderPlayed(date, playedAt) {
-    const current = readDailyOrder(date)
+  async markOrderPlayed(id, playedAt) {
+    const orders = readDailyOrders()
+    const current = orders.find(o => o.id === id)
     if (!current) return null
-    const updated: DailyOrder = {
-      ...current,
-      status: 'played',
-      playedAt,
-      updatedAt: playedAt,
-    }
-    writeDailyOrder(updated)
+    const updated: DailyOrder = { ...current, status: 'played', playedAt, updatedAt: playedAt }
+    writeDailyOrders(orders.map(o => o.id === id ? updated : o))
     return updated
   },
 
-  async deleteDailyOrder(date) {
-    removeDailyOrder(date)
-  },
-
-  async getLastOrderDate() {
-    return readLastOrderDate()
-  },
-
-  async setLastOrderDate(date) {
-    writeLastOrderDate(date)
+  async deleteDailyOrder(id) {
+    const orders = readDailyOrders()
+    const current = orders.find(o => o.id === id)
+    if (!current) throw new Error('查無此訂單')
+    if (current.status !== 'pending') throw new Error('訂單已開始生成，無法取消')
+    writeDailyOrders(orders.filter(o => o.id !== id))
   },
 
   async updateVocab(id, patch) {
@@ -445,13 +430,13 @@ export const mockApi: Api = {
     return fetchMockEpisode()
   },
 
-  // mock 模式：以 date 字串做簡單 hash 對 SEED_EPISODES 取模，決定性回該集，
-  // 讓任一日期都能測到 hero 正常路徑；null 路徑由測試自己 mock。
-  async getDeliveredEpisode(date) {
+  // mock 模式：以 orderId 字串做簡單 hash 對 SEED_EPISODES 取模，決定性回該集，
+  // 讓任一訂單都能測到 hero 正常路徑；null 路徑由測試自己 mock。
+  async getDeliveredEpisode(orderId) {
     const seed = SEED_EPISODES
     if (seed.length === 0) return null
     let hash = 0
-    for (let i = 0; i < date.length; i++) hash = (hash * 31 + date.charCodeAt(i)) | 0
+    for (let i = 0; i < orderId.length; i++) hash = (hash * 31 + orderId.charCodeAt(i)) | 0
     const idx = Math.abs(hash) % seed.length
     const target = seed[idx]
     if (!target) return null
@@ -465,8 +450,8 @@ export const mockApi: Api = {
     return undefined
   },
 
-  // T1：mock 模式沒有真 worker，setOrder 仍會呼叫此處但純 noop
-  async triggerGenerateJob(_date) {
+  // mock 模式沒有真 worker，createOrder 仍會呼叫此處但純 noop
+  async triggerGenerateJob(_orderId) {
     return undefined
   },
 

@@ -75,6 +75,7 @@ async def resolve_for_user(
     length_tier: str = "medium",
     cefr: str = "B1",
     source: str = "fallback",
+    order_id: str | None = None,
 ) -> str | None:
     """對單一 (user, big_topic) 做重用決策。
 
@@ -86,6 +87,9 @@ async def resolve_for_user(
 
     source：topic_requests.source（'specified'/'fallback'），決定新集的 is_free
             （見 nodes.upsert_episode_node）。
+
+    order_id：個人點餐專屬（migration 0024），標出這筆交付/生成屬於哪張訂單。
+              頻道路徑不傳，預設 None，行為與改動前一致。
     """
     has_prior_delivery = await repo.has_delivered_episode_for_topic(user_id, big_topic)
 
@@ -114,7 +118,7 @@ async def resolve_for_user(
     if episode_id is not None:
         # 重用命中就是「立刻有東西可聽」，跟新生成一樣要通知。
         # insert_delivery 的回傳值當去重閘門：重跑 orchestrate 不會重複推。
-        if await repo.insert_delivery(user_id, episode_id, deliver_date):
+        if await repo.insert_delivery(user_id, episode_id, deliver_date, order_id=order_id):
             # 拿這集的對外資訊（slug + 中文標題）拼通知 payload。
             # get_episode_meta 回 None 表示 episode 已不存在（FK CASCADE
             # 理論上不會發生，但守一下），沒有 slug 就不推。
@@ -152,5 +156,7 @@ async def resolve_for_user(
     }
     if topic_type is not None:
         body["topic_type"] = topic_type
+    if order_id is not None:
+        body["order_id"] = order_id
     await queue.send(GENERATE_QUEUE, body)
     return None

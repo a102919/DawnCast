@@ -21,17 +21,16 @@ from shared.db.pool import connection
 from shared.models import ENTRY_MODE_TO_TOPIC_TYPE, Cue
 
 
-async def project_orders_to_requests(request_date: str) -> int:
-    """把當天 daily_orders 投影成 topic_requests（PRD §4.2、Phase 4）。
+async def project_order_to_request(order_id: str) -> dict[str, Any] | None:
+    """把單筆 daily_order 投影成 topic_requests，回傳重用查詢用的 dict。
 
-    selected_topics + specific_request 併成 raw_topic；兩者皆空時標 source='fallback'，
-    並用 users.onboarding_big_topic 當題目來源（消除「沒下單」這個特殊情況）。
-    回傳投影出的列數。冪等：先刪掉當天已投影的列再重投。
+    取代舊版「project_orders_to_requests(當天) + list_requests_for_date(當天)」
+    這組批次配對——隨時點餐下每筆訂單各自即時觸發，不再有「當天」這個聚合
+    單位。冪等：先刪掉這個 order_id 舊的投影列再重投，order_reconcile 重放
+    orchestrate 時安全。查無此 order 回 None（可能已被取消）。
 
-    Phase 4 新增：把 daily_orders.entry_mode 帶到 topic_requests.topic_type，
-    daily_orders.length_tier 也一併帶入。fallback 情況下使用者選的 length_tier
-    仍帶過去（不退回 medium），因為這是使用者意圖的一部分，不是系統猜的。
-
+    selected_topics + specific_request 併成 raw_topic；兩者皆空時標
+    source='fallback'，並用 users.onboarding_big_topic 當題目來源。
     entry_mode → topic_type 用 Python 端 shared.models.ENTRY_MODE_TO_TOPIC_TYPE
     算好、當參數傳進 INSERT（不用 SQL CASE）：對映邏輯只有一份，跟 EntryMode /
     TopicType 型別定義放在一起讓型別檢查器強制窮盡，不會 SQL 與 Python 各寫
@@ -39,8 +38,8 @@ async def project_orders_to_requests(request_date: str) -> int:
     """
     async with connection() as conn, conn.cursor(row_factory=dict_row) as cur:
         await cur.execute(
-            "delete from public.topic_requests where request_date = %s",
-            (request_date,),
+            "delete from public.topic_requests where order_id = %s",
+            (order_id,),
         )
         # array_to_string + nullif 把 selected_topics（jsonb 陣列）與 specific_request
         # 併成單一 raw_topic；兩者皆空→ NULL → source='fallback'、raw 用大主題。
@@ -49,10 +48,12 @@ async def project_orders_to_requests(request_date: str) -> int:
         await cur.execute(
             """
             select
+                o.id as order_id,
                 o.user_id,
                 o.order_date,
                 o.entry_mode,
                 o.length_tier,
+                u.cefr_target as cefr,
                 coalesce(
                     nullif(
                         trim(both ' ' from concat_ws(
@@ -83,73 +84,38 @@ async def project_orders_to_requests(request_date: str) -> int:
                 end as source
             from public.daily_orders o
             join public.users u on u.id = o.user_id
-            where o.order_date = %s
+            where o.id = %s
             """,
-            (request_date,),
+            (order_id,),
         )
-        rows = await cur.fetchall()
-        if not rows:
-            return 0
-        await cur.executemany(
-            """
-            insert into public.topic_requests
-                (user_id, request_date, raw_topic, source, topic_type, length_tier)
-            values (%(user_id)s, %(request_date)s, %(raw_topic)s, %(source)s,
-                    %(topic_type)s, %(length_tier)s)
-            """,
-            [
-                {
-                    "user_id": r["user_id"],
-                    "request_date": r["order_date"],
-                    "raw_topic": r["raw_topic"],
-                    "source": r["source"],
-                    "topic_type": ENTRY_MODE_TO_TOPIC_TYPE[r["entry_mode"]],
-                    "length_tier": r["length_tier"],
-                }
-                for r in rows
-            ],
-        )
-        return len(rows)
-
-
-async def list_requests_for_date(request_date: str) -> list[dict[str, Any]]:
-    """取當天投影出的 topic_requests，供 orchestrate 逐筆跑重用。
-
-    big_topic 用 raw_topic 當大方向分桶 key（MVP 不接向量聚類，見 reuse.py）。
-    raw_topic 為 NULL 的略過（理論上 fallback 已用 onboarding_big_topic 補過）。
-
-    Phase 4：多帶 topic_type / length_tier 給 _orchestrate，傳給 resolve_for_user
-    與 find_reusable_episode。format 是 derived，跳過不重複帶。
-    cefr 從 users.cefr_target join 出來（不落 topic_requests，讀取時取最新值即可）。
-    """
-    async with connection() as conn, conn.cursor(row_factory=dict_row) as cur:
+        row = await cur.fetchone()
+        if row is None or row["raw_topic"] is None:
+            return None
+        topic_type = ENTRY_MODE_TO_TOPIC_TYPE[row["entry_mode"]]
         await cur.execute(
             """
-            select r.user_id::text as user_id,
-                   r.raw_topic as big_topic,
-                   r.topic_type,
-                   r.length_tier,
-                   r.source,
-                   u.cefr_target as cefr
-            from public.topic_requests r
-            join public.users u on u.id = r.user_id
-            where r.request_date = %s and r.raw_topic is not null
-            order by r.user_id
+            insert into public.topic_requests
+                (user_id, request_date, raw_topic, source, topic_type, length_tier, order_id)
+            values (%s, %s, %s, %s, %s, %s, %s)
             """,
-            (request_date,),
+            (
+                row["user_id"],
+                row["order_date"],
+                row["raw_topic"],
+                row["source"],
+                topic_type,
+                row["length_tier"],
+                order_id,
+            ),
         )
-        rows = await cur.fetchall()
-    return [
-        {
-            "user_id": r["user_id"],
-            "big_topic": r["big_topic"],
-            "topic_type": r["topic_type"],
-            "length_tier": r["length_tier"],
-            "source": r["source"],
-            "cefr": r["cefr"] or "B1",
-        }
-        for r in rows
-    ]
+    return {
+        "user_id": str(row["user_id"]),
+        "big_topic": row["raw_topic"],
+        "topic_type": topic_type,
+        "length_tier": row["length_tier"],
+        "source": row["source"],
+        "cefr": row["cefr"] or "B1",
+    }
 
 
 async def upsert_episode(
@@ -554,20 +520,27 @@ async def list_prior_episode_meta(
     return [{"angle": r["angle"], "extracted_facts": r["extracted_facts"] or []} for r in rows]
 
 
-async def insert_delivery(user_id: str, episode_id: str, deliver_date: str) -> bool:
+async def insert_delivery(
+    user_id: str, episode_id: str, deliver_date: str, *, order_id: str | None = None
+) -> bool:
     """建一筆交付（heard-set 權威來源）。重投不報錯（ON CONFLICT DO NOTHING）。
 
     回傳是否實際新增（False = 早已交付過，冪等略過）。
+
+    order_id：個人點餐專屬（migration 0024），標出這筆交付屬於哪張訂單，解決
+    佇列制下「同一天多筆訂單，哪筆交付屬於哪張」的歧義。預設 None——頻道/
+    evergreen 路徑不帶，conflict target 用 `unique nulls not distinct` 三欄
+    constraint，NULL 之間仍視為相等，dedup 行為與改動前一致。
     """
     async with connection() as conn, conn.cursor(row_factory=dict_row) as cur:
         await cur.execute(
             """
-            insert into public.deliveries (user_id, episode_id, deliver_date)
-            values (%s, %s, %s)
-            on conflict (user_id, episode_id) do nothing
+            insert into public.deliveries (user_id, episode_id, deliver_date, order_id)
+            values (%s, %s, %s, %s)
+            on conflict (user_id, episode_id, order_id) do nothing
             returning id
             """,
-            (user_id, episode_id, deliver_date),
+            (user_id, episode_id, deliver_date, order_id),
         )
         row = await cur.fetchone()
     return row is not None
@@ -682,21 +655,3 @@ async def pick_evergreen_episode(big_topic: str | None) -> str | None:
     return str(row["id"]) if row else None
 
 
-async def mark_orders_status_for_date(
-    request_date: str, *, from_status: str, to_status: str
-) -> int:
-    """把當天所有 from_status 訂單翻成 to_status（collect_open 22:00 用）。
-
-    WHERE 帶 status=from_status，避免覆蓋已 played 的列；冪等（重跑 rowcount=0 視為正常）。
-    回傳實際更新的列數給 logger。
-    """
-    async with connection() as conn, conn.cursor() as cur:
-        await cur.execute(
-            """
-            update public.daily_orders
-            set status = %s, updated_at = now()
-            where order_date = %s and status = %s
-            """,
-            (to_status, request_date, from_status),
-        )
-        return cur.rowcount

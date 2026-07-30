@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { Link } from 'react-router-dom'
-import { motion } from 'framer-motion'
+import { AnimatePresence, motion } from 'framer-motion'
 import { RadioTower } from 'lucide-react'
 import { api, AppError, type ChannelPublic } from '../api'
 import { useChannelSubscriptions } from '../state'
@@ -15,6 +15,7 @@ export function ChannelsRoute() {
   const [channels, setChannels] = useState<readonly ChannelPublic[] | null>(null)
   const [error, setError] = useState<string | null>(null)
   const { has, toggle } = useChannelSubscriptions()
+  const springs = useSprings()
 
   const load = useCallback(async (): Promise<void> => {
     setError(null)
@@ -41,18 +42,33 @@ export function ChannelsRoute() {
 
       {error !== null ? (
         <ErrorBanner message={error} onRetry={load} retryLabel="重新載入" />
-      ) : channels === null ? null : channels.length === 0 ? (
+      ) : channels === null ? (
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+          {Array.from({ length: 4 }).map((_, i) => (
+            <ChannelCardSkeleton key={i} />
+          ))}
+        </div>
+      ) : channels.length === 0 ? (
         <EmptyState icon={RadioTower} title="目前還沒有任何頻道" />
       ) : (
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-          {channels.map(channel => (
-            <ChannelCard
-              key={channel.slug}
-              channel={channel}
-              following={has(channel.slug)}
-              onToggle={() => void toggle(channel)}
-            />
-          ))}
+          <AnimatePresence mode="popLayout" initial={false}>
+            {channels.map(channel => (
+              <motion.div
+                key={channel.slug}
+                layout
+                initial={{ opacity: 0, scale: 0.96 }}
+                animate={{ opacity: 1, scale: 1, transition: springs.gentle }}
+                exit={{ opacity: 0, scale: 0.96, transition: springs.snappy }}
+              >
+                <ChannelCard
+                  channel={channel}
+                  following={has(channel.slug)}
+                  onToggle={() => void toggle(channel)}
+                />
+              </motion.div>
+            ))}
+          </AnimatePresence>
         </div>
       )}
     </div>
@@ -73,9 +89,14 @@ function ChannelCard({
   return (
     <Link
       to={`/channels/${channel.slug}`}
-      className="block p-4 rounded-lg border border-border bg-bg-primary hover:border-accent/40 hover:shadow-sm active:scale-[0.99] transition-[border-color,box-shadow,transform] duration-fast"
+      className="relative overflow-hidden block p-3 sm:p-4 rounded-2xl border border-border bg-bg-primary hover:border-accent/40 hover:shadow-md transition-[border-color,box-shadow] duration-fast"
     >
-      <div className="flex gap-3">
+      <div className="absolute inset-x-0 top-0 h-10 bg-gradient-to-b from-white/[0.05] to-transparent pointer-events-none rounded-t-2xl" />
+      <motion.div
+        className="relative flex gap-3"
+        whileTap={springs.reduce ? undefined : { scale: 0.98 }}
+        transition={springs.press}
+      >
         <ChannelCover url={channel.coverImageUrl} slug={channel.slug} topic={channel.topic} size="lg" />
         <div className="min-w-0 flex-1 flex flex-col">
           <div className="font-semibold text-text-primary text-sm truncate">{channel.name}</div>
@@ -105,7 +126,25 @@ function ChannelCard({
             </motion.button>
           </div>
         </div>
-      </div>
+      </motion.div>
     </Link>
+  )
+}
+
+function ChannelCardSkeleton() {
+  return (
+    <div className="relative overflow-hidden p-4 rounded-2xl border border-border bg-bg-primary">
+      <div className="flex gap-3">
+        <div className="motion-safe:animate-pulse w-24 h-24 rounded-2xl bg-bg-secondary shrink-0" />
+        <div className="min-w-0 flex-1 flex flex-col gap-2">
+          <div className="motion-safe:animate-pulse h-4 w-2/3 rounded bg-bg-secondary" />
+          <div className="motion-safe:animate-pulse h-3 w-full rounded bg-bg-secondary" />
+          <div className="mt-auto pt-2 flex items-center justify-between gap-2">
+            <div className="motion-safe:animate-pulse h-3 w-8 rounded bg-bg-secondary" />
+            <div className="motion-safe:animate-pulse h-6 w-16 rounded-full bg-bg-secondary" />
+          </div>
+        </div>
+      </div>
+    </div>
   )
 }

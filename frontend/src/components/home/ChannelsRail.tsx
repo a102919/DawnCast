@@ -1,9 +1,11 @@
 import { useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
+import { motion } from 'framer-motion'
 import { ChevronRight, RadioTower } from 'lucide-react'
 import { EmptyState } from '../primitives/EmptyState'
 import { SectionLabel } from '../primitives/SectionLabel'
 import { ChannelCover } from '../shared/ChannelCover'
+import { useSprings } from '../../lib/motion'
 import { api } from '../../api'
 import type { ChannelPublic } from '../../api'
 
@@ -21,6 +23,7 @@ const PREVIEW_LIMIT = 4
  */
 export function ChannelsRail() {
   const [channels, setChannels] = useState<readonly ChannelPublic[] | null>(null)
+  const springs = useSprings()
 
   useEffect(() => {
     let cancelled = false
@@ -38,7 +41,21 @@ export function ChannelsRail() {
     }
   }, [])
 
-  if (channels === null) return null
+  if (channels === null) {
+    return (
+      <section className="space-y-2.5 mt-2">
+        <SectionLabel size="headline">頻道</SectionLabel>
+        <div className="flex gap-3 overflow-x-auto -mx-4 px-4 pb-1 scroll-pl-4">
+          {Array.from({ length: PREVIEW_LIMIT }).map((_, i) => (
+            <div key={i} className="flex flex-col items-center gap-1.5 shrink-0 w-28 sm:w-32">
+              <div className="motion-safe:animate-pulse w-28 h-28 sm:w-32 sm:h-32 rounded-2xl bg-bg-secondary" />
+              <div className="motion-safe:animate-pulse h-3 w-16 rounded bg-bg-secondary" />
+            </div>
+          ))}
+        </div>
+      </section>
+    )
+  }
 
   if (channels.length === 0) {
     return <EmptyState icon={RadioTower} title="目前還沒有任何頻道" size="compact" />
@@ -60,18 +77,24 @@ export function ChannelsRail() {
           </Link>
         )}
       </div>
-      <div className="flex gap-3 overflow-x-auto snap-x snap-mandatory -mx-4 px-4 pb-1">
+      <div className="flex gap-3 overflow-x-auto snap-x snap-mandatory -mx-4 px-4 pb-1 scroll-pl-4">
         {preview.map(channel => (
           <Link
             key={channel.slug}
             to={`/channels/${channel.slug}`}
-            className="flex flex-col items-center gap-1.5 shrink-0 w-24 sm:w-32 snap-start active:scale-[0.96] transition-transform duration-fast focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent rounded-xl"
+            className="shrink-0 w-28 sm:w-32 snap-start focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent rounded-xl"
           >
-            <ChannelCover url={channel.coverImageUrl} slug={channel.slug} topic={channel.topic} size="lg" className="sm:w-32 sm:h-32" />
-            <span className="text-xs font-medium text-text-primary text-center line-clamp-2 leading-tight">
-              {channel.name}
-            </span>
-            <span className="text-[11px] text-text-tertiary">{channel.episodeCount} 集</span>
+            <motion.div
+              className="flex flex-col items-center gap-1.5"
+              whileTap={springs.reduce ? undefined : { scale: 0.94 }}
+              transition={springs.press}
+            >
+              <ChannelCover url={channel.coverImageUrl} slug={channel.slug} topic={channel.topic} size="lg" className="w-28 h-28 sm:w-32 sm:h-32" />
+              <span className="text-xs font-medium text-text-primary text-center line-clamp-2 leading-tight">
+                {channel.name}
+              </span>
+              <span className="text-[11px] text-text-tertiary">{channel.episodeCount} 集</span>
+            </motion.div>
           </Link>
         ))}
       </div>

@@ -46,9 +46,6 @@ export class AppError extends Error {
 
 const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL ?? '').replace(/\/$/, '')
 
-// getLastOrderDate / setLastOrderDate 屬純 UI 狀態，留在 localStorage（後端聖約外）。
-const LAST_ORDER_DATE_KEY = 'dawncast:lastOrderDate'
-
 // admin 端點共用 header。X-Admin-Token 後門已於 2026-07-29 砍掉，現僅留 email
 // 白名單這條路（後端從既有的 Authorization Bearer JWT 推 email）。
 // 保留 extraHeaders 介面純粹是為了 admin 系列函式的 signature 一致——其值對
@@ -194,9 +191,10 @@ const SettingsSchema = z.object({
   cefrLevel: z.enum(['A2', 'B1', 'B2']),
 }) satisfies z.ZodType<Settings> & z.ZodType<components['schemas']['Settings']>
 
-const DailyOrderStatusSchema = z.enum(['pending', 'queued', 'played']) satisfies z.ZodType<DailyOrderStatus>
+const DailyOrderStatusSchema = z.enum(['pending', 'queued', 'ready', 'played']) satisfies z.ZodType<DailyOrderStatus>
 
 const DailyOrderSchema = z.object({
+  id: z.string(),
   date: z.string(),
   selectedTopics: z.array(z.string()),
   specificRequest: z.string().nullable().optional(),
@@ -479,42 +477,37 @@ export const httpApi: Api = {
     return list.includes(id)
   },
 
-  async getDailyOrder(date) {
+  async getActiveOrder() {
     return request<DailyOrder | null>(
-      `/daily-orders/${encodeURIComponent(date)}`,
+      '/daily-orders/active',
       { schema: DailyOrderSchema, nullable: true },
     )
   },
 
-  async saveDailyOrder(order) {
-    return request<DailyOrder>('/daily-orders', { method: 'PUT', body: order, schema: DailyOrderSchema })
+  async createDailyOrder(input) {
+    return request<DailyOrder>('/daily-orders', { method: 'POST', body: input, schema: DailyOrderSchema })
   },
 
-  async listDailyOrders(fromDate, toDate) {
+  async listOrderHistory(limit, before) {
+    const params = new URLSearchParams()
+    if (limit !== undefined) params.set('limit', String(limit))
+    if (before !== undefined) params.set('before', before)
+    const query = params.toString()
     return request<readonly DailyOrder[]>(
-      `/daily-orders?from_date=${encodeURIComponent(fromDate)}&to_date=${encodeURIComponent(toDate)}`,
+      `/daily-orders/history${query ? `?${query}` : ''}`,
       { schema: DailyOrderListSchema },
     )
   },
 
-  async markOrderPlayed(date, playedAt) {
+  async markOrderPlayed(id, playedAt) {
     return request<DailyOrder | null>(
-      `/daily-orders/${encodeURIComponent(date)}/played`,
+      `/daily-orders/${encodeURIComponent(id)}/played`,
       { method: 'POST', body: { playedAt }, schema: DailyOrderSchema, nullable: true },
     )
   },
 
-  async deleteDailyOrder(date) {
-    await request<null>(`/daily-orders/${encodeURIComponent(date)}`, { method: 'DELETE', schema: null })
-  },
-
-  // 純 UI 狀態，留 localStorage（後端聖約外）
-  async getLastOrderDate() {
-    return localStorage.getItem(LAST_ORDER_DATE_KEY)
-  },
-
-  async setLastOrderDate(date) {
-    localStorage.setItem(LAST_ORDER_DATE_KEY, date)
+  async deleteDailyOrder(id) {
+    await request<null>(`/daily-orders/${encodeURIComponent(id)}`, { method: 'DELETE', schema: null })
   },
 
   async listEpisodes(opts) {
@@ -532,11 +525,11 @@ export const httpApi: Api = {
     return toEpisode(content)
   },
 
-  async getDeliveredEpisode(date) {
-    // 當天還沒交付（collect_open 跑了但 orchestrate/evergreen 還沒結）→ 回 null，
+  async getDeliveredEpisode(orderId) {
+    // 這筆訂單還沒交付（送出後才剛觸發、生成還沒結）→ 回 null，
     // 由前端 PlayerRoute fallback 到 listEpisodes()[0]。
     const content = await request<z.infer<typeof EpisodeContentSchema> | null>(
-      `/daily-orders/${encodeURIComponent(date)}/episode`,
+      `/daily-orders/${encodeURIComponent(orderId)}/episode`,
       { schema: EpisodeContentSchema, nullable: true },
     )
     if (content === null) return null
@@ -547,12 +540,12 @@ export const httpApi: Api = {
     await request<null>(`/episodes/${encodeURIComponent(episodeId)}/play`, { method: 'POST', schema: null })
   },
 
-  async triggerGenerateJob(date) {
-    // T1：送訂單後 fire-and-forget 觸發 worker 跑當日 pipeline。
+  async triggerGenerateJob(orderId) {
+    // 送訂單後 fire-and-forget 觸發 worker 跑生成 pipeline。
     // 後端回 202 + envelope；前端 Promise<void> 不解析 body。
-    // 失敗由呼叫端 catch（DailyOrderProvider 僅 console.warn，不打斷 setOrder）。
+    // 失敗由呼叫端 catch（DailyOrderProvider 僅 console.warn，不打斷 createOrder）。
     await request<null>(
-      `/jobs/orders/${encodeURIComponent(date)}/generate`,
+      `/jobs/orders/${encodeURIComponent(orderId)}/generate`,
       { method: 'POST', schema: null },
     )
   },

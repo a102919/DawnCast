@@ -46,6 +46,7 @@ class PodState(TypedDict, total=False):
     length_tier: str  # short / medium / long，缺省時 tone_selector 前補 "medium"
     cefr: str  # A2 / B1 / B2，從 users.cefr_target 一路帶下來；缺省退 settings.cefr_level
     avoid_facts: list[str]  # 同 user 同主題舊集的 facts，寫稿 prompt 避重用
+    order_id: str | None  # 個人點餐訂單 id（migration 0024）；頻道路徑永遠 None，零行為變動
 
     # ── 頻道機制（Channel）─────────────────────────────────────
     channel_id: str | None  # 這集屬於哪個頻道；None＝不屬於任何頻道（既有個人化生成路徑）

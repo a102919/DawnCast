@@ -240,6 +240,24 @@
   grid-template-areas: 'content close';
 }
 
+/* 有 icon（success/error/warning/info）時多一欄放在文字左邊 */
+.dc-toaster [data-sonner-toast]:has([data-icon]) {
+  grid-template-columns: auto 1fr auto;
+  grid-template-areas:
+    'icon content close'
+    'action action action';
+}
+
+.dc-toaster [data-sonner-toast]:has([data-icon]):not(:has([data-button])) {
+  grid-template-areas: 'icon content close';
+}
+
+.dc-toaster [data-sonner-toast] [data-icon] {
+  grid-area: icon;
+  align-self: start;
+  margin-top: 0.125rem; /* 與標題第一行文字光學對齊 */
+}
+
 .dc-toaster [data-sonner-toast][data-type='success'] {
   border-color: color-mix(in oklab, var(--color-success) 45%, var(--color-border-strong));
 }

@@ -1,43 +1,16 @@
 import { useState } from 'react'
-import {
-  Sparkles,
-  Trash2,
-  CheckCircle2,
-  Send,
-  Lock,
-  AlertTriangle,
-  Clock,
-  ChevronDown,
-  Newspaper,
-  MessageSquare,
-  BookOpen,
-  Timer,
-  Hourglass,
-} from 'lucide-react'
+import { Sparkles, Newspaper, MessageSquare, BookOpen, Clock, Timer, Hourglass } from 'lucide-react'
 import { Button, Chip } from '../primitives'
-import { StatusBadge } from './StatusBadge'
-import { TOPIC_LABELS, formatDateZhTW } from '../../lib'
+import { TOPIC_LABELS } from '../../lib'
 import type { TopicKey } from '../../lib'
-import type { DailyOrder, EntryMode, LengthTier } from '../../api'
-import { isOrderLocked, isPast, getWeekdayLabel } from '../../lib/dailyOrderDate'
-import { formatTopicSummary } from '../../lib/episode'
+import type { EntryMode, LengthTier } from '../../api'
 
 type TopicChoice = Exclude<TopicKey, 'all'>
-
-const VALID_TOPICS: readonly TopicChoice[] = ['tech', 'business', 'culture', 'science'] as const
-
-function isTopicChoice(s: string): s is TopicChoice {
-  return (VALID_TOPICS as readonly string[]).includes(s)
-}
 
 const TOPIC_ORDER: readonly TopicChoice[] = ['tech', 'business', 'culture', 'science'] as const
 
 // Phase 4：使用者入口類型（與後端 EntryMode Literal 對齊；skill 不開給使用者）。
 const ENTRY_MODES: readonly EntryMode[] = ['news', 'topic', 'knowledge'] as const
-
-function isEntryMode(s: string | undefined): s is EntryMode {
-  return s === 'news' || s === 'topic' || s === 'knowledge' || s === 'skill'
-}
 
 // 三入口的顯示中文字 + icon + 描述（icon 從 lucide-react 抓，不直接用 emoji）。
 type IconComponent = typeof Newspaper
@@ -76,136 +49,61 @@ function defaultLengthFor(entryMode: EntryMode): LengthTier {
   return 'medium'
 }
 
-export type DailyOrderFormSubmitResult =
-  | {
-      kind: 'submit'
-      selectedTopics: readonly TopicChoice[]
-      specificRequest: string
-      entryMode: EntryMode
-      lengthTier: LengthTier
-    }
-  | {
-      kind: 'update'
-      selectedTopics: readonly TopicChoice[]
-      specificRequest: string
-      entryMode: EntryMode
-      lengthTier: LengthTier
-    }
-  | { kind: 'cancel' }
-
-interface DailyOrderFormProps {
-  readonly date: string
-  readonly existing: DailyOrder | null
-  readonly onSubmit: (result: DailyOrderFormSubmitResult) => void
-  readonly busy: boolean
-  readonly collapsed: boolean
-  readonly onExpand: () => void
+export interface DailyOrderFormSubmitResult {
+  readonly selectedTopics: readonly TopicChoice[]
+  readonly specificRequest: string
+  readonly entryMode: EntryMode
+  readonly lengthTier: LengthTier
 }
 
-export function DailyOrderForm({
-  date,
-  existing,
-  onSubmit,
-  busy,
-  collapsed,
-  onExpand,
-}: DailyOrderFormProps) {
-  const locked = existing ? isOrderLocked(existing) : false
-  const isDateInPast = isPast(date)
+interface DailyOrderFormProps {
+  readonly busy: boolean
+  readonly onSubmit: (result: DailyOrderFormSubmitResult) => void
+}
 
-  const [topics, setTopics] = useState<readonly TopicChoice[]>(() => initialTopics(existing))
-  const [request, setRequest] = useState<string>(() => existing?.specificRequest ?? '')
-  // Phase 4 新增：入口類型與長度 tier。existing 沒帶時是 undefined（舊 localStorage），
-  // 這時依現況退回 'topic' / 'medium'；切換 entryMode 不會自動覆寫 lengthTier，
-  // 避免覆蓋使用者已手動選的值，僅在「使用者從未動過 lengthTier」時補預設值。
-  const [entryMode, setEntryMode] = useState<EntryMode>(() =>
-    existing && isEntryMode(existing.entryMode) ? existing.entryMode : 'topic',
-  )
-  const [lengthTier, setLengthTier] = useState<LengthTier>(() => {
-    // 既有訂單有記錄 → 用既有值；沒有 → 依 entryMode 預設。
-    if (
-      existing &&
-      (existing.lengthTier === 'short' ||
-        existing.lengthTier === 'medium' ||
-        existing.lengthTier === 'long')
-    ) {
-      return existing.lengthTier
-    }
-    return defaultLengthFor(existing && isEntryMode(existing.entryMode) ? existing.entryMode : 'topic')
-  })
+/** 純建單表單：包在 Sheet 裡使用，每次打開都是全新一份，沒有「編輯既有訂單」
+ *  這件事——送出即觸發生成，狀態機推進只能由後端控制。 */
+export function DailyOrderForm({ busy, onSubmit }: DailyOrderFormProps) {
+  const [topics, setTopics] = useState<readonly TopicChoice[]>([])
+  const [request, setRequest] = useState('')
+  const [entryMode, setEntryMode] = useState<EntryMode>('topic')
+  const [lengthTier, setLengthTier] = useState<LengthTier>('medium')
   // 切 entryMode 時，若使用者尚未明確覆寫長度，沿用新模式的預設長度。
-  // 用 lengthTierTouched state 區分「從未動過」vs「動過」。
-  const [lengthTierTouched, setLengthTierTouched] = useState<boolean>(
-    () => !!existing?.lengthTier,
-  )
+  const [lengthTierTouched, setLengthTierTouched] = useState(false)
 
   const toggleTopic = (key: TopicChoice) => {
-    if (locked) return
     setTopics(prev => (prev.includes(key) ? prev.filter(k => k !== key) : [...prev, key]))
   }
 
   const handleEntryModeChange = (next: EntryMode) => {
-    if (locked) return
     setEntryMode(next)
-    if (!lengthTierTouched) {
-      setLengthTier(defaultLengthFor(next))
-    }
+    if (!lengthTierTouched) setLengthTier(defaultLengthFor(next))
   }
 
   const handleLengthTierChange = (next: LengthTier) => {
-    if (locked) return
     setLengthTier(next)
     setLengthTierTouched(true)
   }
 
-  const handlePrimary = () => {
-    const payload = {
-      selectedTopics: topics,
-      specificRequest: request.trim(),
-      entryMode,
-      lengthTier,
-    }
-    if (existing) {
-      onSubmit({ kind: 'update', ...payload })
-    } else {
-      onSubmit({ kind: 'submit', ...payload })
-    }
+  const handleSubmit = () => {
+    onSubmit({ selectedTopics: topics, specificRequest: request.trim(), entryMode, lengthTier })
   }
 
-  const handleCancel = () => onSubmit({ kind: 'cancel' })
-
-  const canSubmit = topics.length > 0 && !locked && !isDateInPast
-
-  // 摺疊狀態：顯示精簡摘要卡，點按鈕才展開編輯。
-  // 元件實例不卸載,topics / request 內部狀態得以保留。
-  if (collapsed) {
-    return (
-      <CollapsedSummaryCard
-        date={date}
-        existing={existing}
-        locked={locked}
-        onExpand={onExpand}
-      />
-    )
-  }
+  const canSubmit = topics.length > 0
 
   return (
-    <section className="p-5 rounded-xl border border-border bg-bg-primary space-y-5">
-      <header className="space-y-1.5">
-        <div className="flex items-center justify-between gap-2">
-          <h2 className="text-sm font-semibold text-text-primary">
-            {existing ? '編輯訂單' : isDateInPast ? '補點（過去）' : '新增訂單'}
-          </h2>
-          <StatusBadge order={existing} locked={locked} display="badge" />
-        </div>
-        <p className="text-xs text-text-secondary leading-relaxed">
-          {isDateInPast
-            ? '過去日期的訂單僅供查看，如要補點會建立新訂單。'
-            : '送出後立即開始生成，無法再修改。'}
+    <div className="p-5 space-y-5">
+      <header className="space-y-1">
+        <h2
+          id="daily-order-sheet-title"
+          className="text-headline tracking-headline leading-headline font-semibold text-text-primary"
+        >
+          新增一集
+        </h2>
+        <p className="text-caption leading-caption text-text-secondary">
+          送出後立即開始生成，無法再修改。
         </p>
       </header>
-
-      {locked && <LockedBanner existing={existing} />}
 
       {/* Phase 4：三分頁入口選擇 */}
       <div className="space-y-2">
@@ -254,18 +152,14 @@ export function DailyOrderForm({
         </div>
         <div className="flex gap-1.5 flex-wrap">
           {TOPIC_ORDER.map(key => (
-            <Chip
-              key={key}
-              active={topics.includes(key)}
-              onClick={() => toggleTopic(key)}
-            >
+            <Chip key={key} active={topics.includes(key)} onClick={() => toggleTopic(key)}>
               {TOPIC_LABELS[key]}
             </Chip>
           ))}
         </div>
-        {topics.length === 0 && !locked && !isDateInPast && (
+        {topics.length === 0 && (
           <p className="text-[11px] text-warning" role="status" aria-live="polite">
-            至少選一個主題，才能送出訂單。
+            至少選一個主題，才能送出。
           </p>
         )}
       </div>
@@ -281,142 +175,24 @@ export function DailyOrderForm({
           onChange={e => setRequest(e.target.value)}
           placeholder="例如：科技面試常見問答、餐廳點餐用語..."
           rows={3}
-          disabled={locked}
-          className="w-full px-3 py-2.5 text-sm bg-bg-secondary border border-border rounded-md text-text-primary placeholder:text-text-tertiary resize-none focus:outline-none focus:border-accent transition-colors duration-fast disabled:opacity-50 disabled:cursor-not-allowed"
+          className="w-full px-3 py-2.5 text-sm bg-bg-secondary border border-border rounded-md text-text-primary placeholder:text-text-tertiary resize-none focus:outline-none focus:border-accent transition-colors duration-fast"
         />
       </div>
 
       {/* 操作列 */}
-      <div className="flex items-center justify-between gap-2 pt-1">
-        {existing && !locked ? (
-          <button
-            type="button"
-            onClick={handleCancel}
-            disabled={busy}
-            className="inline-flex items-center gap-1 text-xs text-text-tertiary hover:text-danger disabled:opacity-40 disabled:cursor-not-allowed transition-colors duration-fast min-h-[44px] px-2"
-          >
-            <Trash2 size={12} />
-            取消訂單
-          </button>
-        ) : (
-          <span />
-        )}
-
+      <div className="flex justify-end pt-1">
         <Button
-          onClick={handlePrimary}
+          onClick={handleSubmit}
           disabled={!canSubmit || busy}
           title={canSubmit ? undefined : '請先選至少一個主題'}
-          aria-label={canSubmit ? undefined : '送出訂單（請先選主題）'}
+          aria-label={canSubmit ? undefined : '送出（請先選主題）'}
           size="md"
           variant="primary"
         >
-          {existing ? (
-            <>
-              <Send size={14} />
-              更新訂單
-            </>
-          ) : (
-            <>
-              <Sparkles size={14} />
-              送出訂單
-            </>
-          )}
+          <Sparkles size={14} />
+          送出
         </Button>
       </div>
-    </section>
-  )
-}
-
-function initialTopics(existing: DailyOrder | null): readonly TopicChoice[] {
-  if (!existing) return []
-  return existing.selectedTopics.filter(isTopicChoice)
-}
-
-function LockedBanner({ existing }: { readonly existing: DailyOrder | null }) {
-  if (existing?.status === 'played') {
-    return (
-      <div className="flex items-start gap-2 p-3 rounded-md bg-success/5 border border-success/20 text-xs text-text-secondary">
-        <CheckCircle2 size={14} className="text-success shrink-0 mt-0.5" aria-hidden />
-        <span>這一餐已播放過，無法再編輯。</span>
-      </div>
-    )
-  }
-  return (
-    <div className="flex items-start gap-2 p-3 rounded-md bg-warning/5 border border-warning/20 text-xs text-text-secondary">
-      <AlertTriangle size={14} className="text-warning shrink-0 mt-0.5" aria-hidden />
-      <span>已送出，正在生成中，無法再編輯。</span>
     </div>
-  )
-}
-
-// 摺疊狀態下的精簡摘要卡：一行日期 + 狀態 + 主題摘要 + 展開按鈕。
-// 設計目標：歷史區塊可以一眼看到，使用者有需要再展開編輯。
-function CollapsedSummaryCard({
-  date,
-  existing,
-  locked,
-  onExpand,
-}: {
-  readonly date: string
-  readonly existing: DailyOrder | null
-  readonly locked: boolean
-  readonly onExpand: () => void
-}) {
-  const topicSummary = formatTopicSummary(existing?.selectedTopics ?? [])
-
-  // Phase 4：把「入口・長度」加到摘要列；舊訂單沒帶欄位時不顯示而非出 undefined。
-  const mode = isEntryMode(existing?.entryMode) ? existing.entryMode : null
-  const tier =
-    existing?.lengthTier === 'short' ||
-    existing?.lengthTier === 'medium' ||
-    existing?.lengthTier === 'long'
-      ? existing.lengthTier
-      : null
-  const modeAndTier =
-    mode && tier
-      ? `${ENTRY_MODE_META[mode].label}・${LENGTH_TIER_META[tier].label}`
-      : null
-
-  return (
-    <section className="rounded-xl border border-border bg-bg-primary">
-      <div className="flex items-center gap-3 p-4">
-        {/* 日期區塊 */}
-        <div className="shrink-0 w-14 text-center">
-          <div className="text-[10px] text-text-tertiary leading-none">星期{getWeekdayLabel(date)}</div>
-          <div className="text-xl font-semibold text-text-primary leading-tight mt-0.5">
-            {date.slice(8, 10)}
-          </div>
-        </div>
-
-        {/* 狀態 + 摘要 */}
-        <div className="flex-1 min-w-0 space-y-1.5">
-          <div className="flex items-center gap-2 flex-wrap">
-            <span className="text-xs text-text-tertiary">{formatDateZhTW(date)}</span>
-            <StatusBadge order={existing} locked={locked} display="badge" />
-          </div>
-          <div className="text-sm text-text-primary truncate">
-            {existing ? (
-              <>
-                {modeAndTier && <span>{modeAndTier}</span>}
-                {modeAndTier && <span className="text-text-tertiary"> · </span>}
-                <span>{topicSummary}</span>
-              </>
-            ) : (
-              <span className="text-text-tertiary">還沒點餐</span>
-            )}
-          </div>
-        </div>
-
-        {/* 動作：鎖定時不顯示按鈕（檢視限定）；否則展開編輯 */}
-        {locked ? (
-          <Lock size={16} className="text-text-tertiary shrink-0" aria-hidden />
-        ) : (
-          <Button variant="ghost" size="sm" onClick={onExpand}>
-            {existing ? '編輯' : '點餐'}
-            <ChevronDown size={14} className="-mr-1" aria-hidden />
-          </Button>
-        )}
-      </div>
-    </section>
   )
 }

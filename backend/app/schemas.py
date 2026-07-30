@@ -87,22 +87,23 @@ class PatchActivityBody(CamelModel):
     last_played: LastPlayedInput | None = None
 
 
-class SaveDailyOrderBody(CamelModel):
-    """saveDailyOrder(order)。前端送完整 DailyOrder；date 為 key。"""
+class CreateDailyOrderBody(CamelModel):
+    """createDailyOrder(input)。隨時點餐：不帶 date/status/playedAt——
 
-    date: str = Field(min_length=1)
+    date 由 server 用 app_timezone 算「今天」，status 永遠從 pending 起跑，
+    playedAt 只在 markPlayed 時才有意義。同一時間僅允許一筆進行中訂單，
+    已有進行中訂單時 DB 層 partial unique index 會擋下（見 migration 0024）。
+    """
+
     selected_topics: list[str] = Field(default_factory=list)
     specific_request: str | None = None
-    status: Literal["pending", "queued", "played"] = "pending"
     delivery_time: str = "07:00"
-    played_at: str | None = None
-    # Phase 4：寫入端也帶入口類型與長度 tier；不送時靠 DB DEFAULT fallback（migration 0007）。
     entry_mode: EntryMode = "topic"
     length_tier: LengthTier = "medium"
 
 
 class MarkPlayedBody(CamelModel):
-    """markOrderPlayed(date, playedAt) 的 body 部分（date 走 path）。"""
+    """markOrderPlayed(id, playedAt) 的 body 部分（id 走 path）。"""
 
     played_at: str = Field(min_length=1)
 

@@ -1,12 +1,12 @@
 // @vitest-environment happy-dom
-// DailyOrderProvider 測試（T1：前端送訂單後觸發 pipeline）。
+// DailyOrderProvider 測試（隨時點餐：送出後立即觸發生成 pipeline）。
 
 // React 19 對 act() 的環境感知旗標，沒設會跳 warn；不影響測試通過但很吵。
 ;(globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
 //
-// 重點：把「saveDailyOrder → setLastOrderDate → triggerGenerateJob」這個呼叫鏈
-// 釘進 CI，否則 DailyOrderProvider.setOrder 重構時若漏掉 triggerGenerateJob，
-// T1 會靜默失效（22:00 collect_open cron 兜底前使用者什麼都收不到）。
+// 重點：把「createDailyOrder → triggerGenerateJob」這個呼叫鏈釘進 CI，否則
+// DailyOrderProvider.createOrder 重構時若漏掉 triggerGenerateJob，送出後
+// dawncast-order-reconcile 兜底前使用者什麼都收不到。
 //
 // 不裝 @testing-library/react，直接用 react-dom/client.createRoot +
 // happy-dom 提供的 window/document 就夠（本檔案專注測行為，不驗 DOM）。
@@ -18,31 +18,45 @@ import { DailyOrderProvider } from './DailyOrderProvider'
 import { useDailyOrder } from './useDailyOrder'
 import type { DailyOrder, DailyOrderInput } from '../api'
 
+const baseOrder = (overrides: Partial<DailyOrder> = {}): DailyOrder => ({
+  id: 'order-1',
+  date: '2026-07-16',
+  selectedTopics: ['tech'],
+  status: 'pending',
+  deliveryTime: '07:00',
+  createdAt: '2026-07-16T00:00:00Z',
+  updatedAt: '2026-07-16T00:00:00Z',
+  entryMode: 'topic',
+  lengthTier: 'medium',
+  ready: false,
+  ...overrides,
+})
+
 // Mock api 模組：spyOn 真物件太繞，直接替換整個 export。
-const saveDailyOrder = vi.fn(async (order: DailyOrder) => order)
-const setLastOrderDate = vi.fn(async (_date: string) => undefined)
-const triggerGenerateJob = vi.fn(async (_date: string) => undefined)
-const listDailyOrders = vi.fn(async (_from: string, _to: string): Promise<readonly DailyOrder[]> => [])
+const createDailyOrder = vi.fn(async (_input: DailyOrderInput): Promise<DailyOrder> => baseOrder())
+const triggerGenerateJob = vi.fn(async (_orderId: string) => undefined)
+const getActiveOrder = vi.fn(async (): Promise<DailyOrder | null> => null)
+const listOrderHistory = vi.fn(async (_limit?: number, _before?: string): Promise<readonly DailyOrder[]> => [])
 
 vi.mock('../api', () => ({
   get api() {
     return {
-      saveDailyOrder,
-      setLastOrderDate,
+      createDailyOrder,
       triggerGenerateJob,
-      listDailyOrders,
+      getActiveOrder,
+      listOrderHistory,
     }
   },
 }))
 
-// 包一個 hook tester 把 context 裡的 setOrder 暴露到外部供 await 呼叫。
-function CaptureSetOrder({ onReady }: { onReady: (so: (date: string, input: DailyOrderInput) => Promise<DailyOrder>) => void }) {
+// 包一個 hook tester 把 context 裡的 createOrder 暴露到外部供 await 呼叫。
+function CaptureCreateOrder({ onReady }: { onReady: (co: (input: DailyOrderInput) => Promise<DailyOrder>) => void }) {
   const ctx = useDailyOrder()
-  // setOrder 來自 useCallback，引用穩定；useEffect 只在 mount 跑一次就夠，
+  // createOrder 來自 useCallback，引用穩定；useEffect 只在 mount 跑一次就夠，
   // 不需要再 force re-render。onReady 由 renderProvider 同步指定，不會變。
   useEffect(() => {
-    onReady(ctx.setOrder)
-  }, [ctx.setOrder, onReady])
+    onReady(ctx.createOrder)
+  }, [ctx.createOrder, onReady])
   return null
 }
 
@@ -51,7 +65,7 @@ function Wrapper({ children }: { readonly children: ReactNode }) {
 }
 
 async function renderProvider(): Promise<{
-  setOrder: (date: string, input: DailyOrderInput) => Promise<DailyOrder>
+  createOrder: (input: DailyOrderInput) => Promise<DailyOrder>
   root: Root
   container: HTMLDivElement
 }> {
@@ -59,18 +73,18 @@ async function renderProvider(): Promise<{
   document.body.appendChild(container)
   const root = createRoot(container)
 
-  let setOrderRef: ((date: string, input: DailyOrderInput) => Promise<DailyOrder>) | null = null
+  let createOrderRef: ((input: DailyOrderInput) => Promise<DailyOrder>) | null = null
 
   await act(async () => {
     root.render(
       <Wrapper>
-        <CaptureSetOrder onReady={so => { setOrderRef = so }} />
+        <CaptureCreateOrder onReady={co => { createOrderRef = co }} />
       </Wrapper>,
     )
   })
 
-  if (!setOrderRef) throw new Error('setOrder 尚未就緒（CaptureSetOrder useEffect 沒跑）')
-  return { setOrder: setOrderRef, root, container }
+  if (!createOrderRef) throw new Error('createOrder 尚未就緒（CaptureCreateOrder useEffect 沒跑）')
+  return { createOrder: createOrderRef, root, container }
 }
 
 // 把每個測試用過的 root 收起來，在 afterEach 統一 unmount + 清 DOM，
@@ -78,15 +92,16 @@ async function renderProvider(): Promise<{
 const pendingRoots: Root[] = []
 
 beforeEach(() => {
-  saveDailyOrder.mockClear()
-  setLastOrderDate.mockClear()
+  createDailyOrder.mockClear()
   triggerGenerateJob.mockClear()
-  listDailyOrders.mockClear()
-  // 預設行為：listDailyOrders 立刻回空陣列，saveDailyOrder 回原 order
-  listDailyOrders.mockResolvedValue([])
-  saveDailyOrder.mockImplementation(async (order: DailyOrder) => order)
+  getActiveOrder.mockClear()
+  listOrderHistory.mockClear()
+  // 預設行為：沒有進行中訂單、沒有歷史，createDailyOrder 回傳呼叫端指定的 order
+  getActiveOrder.mockResolvedValue(null)
+  listOrderHistory.mockResolvedValue([])
+  createDailyOrder.mockImplementation(async (input: DailyOrderInput) =>
+    baseOrder({ selectedTopics: [...input.selectedTopics] }))
   triggerGenerateJob.mockResolvedValue(undefined)
-  setLastOrderDate.mockResolvedValue(undefined)
   // 抑制觸發呼叫的 console.warn（測試錯誤路徑時顯然會跑）
   vi.spyOn(console, 'warn').mockImplementation(() => {})
 })
@@ -99,9 +114,9 @@ afterEach(async () => {
   vi.restoreAllMocks()
 })
 
-describe('DailyOrderProvider.setOrder 觸發鏈（T1）', () => {
-  it('呼叫順序：saveDailyOrder → setLastOrderDate → triggerGenerateJob', async () => {
-    const { setOrder, root } = await renderProvider()
+describe('DailyOrderProvider.createOrder 觸發鏈', () => {
+  it('呼叫順序：createDailyOrder → triggerGenerateJob', async () => {
+    const { createOrder, root } = await renderProvider()
     pendingRoots.push(root)
 
     const input: DailyOrderInput = {
@@ -112,74 +127,63 @@ describe('DailyOrderProvider.setOrder 觸發鏈（T1）', () => {
     }
 
     await act(async () => {
-      await setOrder('2026-07-16', input)
+      await createOrder(input)
     })
 
-    // 必須依序發生：save 先拿到 DB 結果，setLastOrderDate 寫 localStorage，
-    // triggerGenerateJob 才是 fire-and-forget 觸發 pipeline。
-    expect(saveDailyOrder).toHaveBeenCalledTimes(1)
-    expect(setLastOrderDate).toHaveBeenCalledTimes(1)
+    expect(createDailyOrder).toHaveBeenCalledTimes(1)
     expect(triggerGenerateJob).toHaveBeenCalledTimes(1)
 
-    // 呼叫順序檢查：第 N 次呼叫的時間戳必須 ≤ 第 N+1 次。
-    const saveOrder = saveDailyOrder.mock.invocationCallOrder[0]!
-    const lastDateOrder = setLastOrderDate.mock.invocationCallOrder[0]!
+    // 呼叫順序檢查：create 必須先於 trigger。
+    const createOrderCall = createDailyOrder.mock.invocationCallOrder[0]!
     const triggerOrder = triggerGenerateJob.mock.invocationCallOrder[0]!
-    expect(saveOrder).toBeLessThan(lastDateOrder)
-    expect(lastDateOrder).toBeLessThan(triggerOrder)
+    expect(createOrderCall).toBeLessThan(triggerOrder)
   })
 
-  it('triggerGenerateJob 收到的參數等於 setOrder 的 date', async () => {
-    const { setOrder, root } = await renderProvider()
+  it('triggerGenerateJob 收到的參數等於 createDailyOrder 回傳的 id', async () => {
+    createDailyOrder.mockResolvedValueOnce(baseOrder({ id: 'order-42' }))
+    const { createOrder, root } = await renderProvider()
     pendingRoots.push(root)
 
     await act(async () => {
-      await setOrder('2026-07-16', {
-        selectedTopics: ['tech'],
-      })
+      await createOrder({ selectedTopics: ['tech'] })
     })
 
-    expect(triggerGenerateJob).toHaveBeenCalledWith('2026-07-16')
+    expect(triggerGenerateJob).toHaveBeenCalledWith('order-42')
   })
 
-  it('triggerGenerateJob reject 時 setOrder 仍 resolve（fire-and-forget 不打斷）', async () => {
+  it('triggerGenerateJob reject 時 createOrder 仍 resolve（fire-and-forget 不打斷）', async () => {
     const failure = new Error('simulated network 500')
     triggerGenerateJob.mockRejectedValueOnce(failure)
 
-    const { setOrder, root } = await renderProvider()
+    const { createOrder, root } = await renderProvider()
     pendingRoots.push(root)
 
     // 用微任務 + act 包起來，確保 fire-and-forget 的 promise 真的被吃下 catch。
-    const captured = await act(async () => setOrder('2026-07-16', {
-      selectedTopics: ['tech'],
-    }))
+    const captured = await act(async () => createOrder({ selectedTopics: ['tech'] }))
     // 再讓 microtask 清乾淨（catch handler 會跑）
     await act(async () => {
       await Promise.resolve()
       await Promise.resolve()
     })
 
-    // setOrder 仍要回 saved order，不 throw、不變 undefined
+    // createOrder 仍要回 saved order，不 throw、不變 undefined
     expect(captured).not.toBeNull()
-    expect(captured.date).toBe('2026-07-16')
     expect(captured.selectedTopics).toEqual(['tech'])
 
     // console.warn 應該被呼叫過（失敗有跡可循）
     expect(console.warn).toHaveBeenCalled()
   })
 
-  it('saveDailyOrder 失敗時 setOrder 仍要 reject（這個不是 fire-and-forget）', async () => {
-    saveDailyOrder.mockRejectedValueOnce(new Error('PUT /daily-orders 500'))
+  it('createDailyOrder 失敗時 createOrder 仍要 reject（這個不是 fire-and-forget）', async () => {
+    createDailyOrder.mockRejectedValueOnce(new Error('POST /daily-orders 409'))
 
-    const { setOrder, root } = await renderProvider()
+    const { createOrder, root } = await renderProvider()
     pendingRoots.push(root)
 
     await act(async () => {
       await expect(
-        setOrder('2026-07-16', {
-          selectedTopics: ['tech'],
-        }),
-      ).rejects.toThrow('PUT /daily-orders 500')
+        createOrder({ selectedTopics: ['tech'] }),
+      ).rejects.toThrow('POST /daily-orders 409')
     })
 
     // trigger 不應被呼叫（前面已經炸了）

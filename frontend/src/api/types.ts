@@ -52,7 +52,7 @@ export type Settings = {
   readonly cefrLevel: 'A2' | 'B1' | 'B2'
 }
 
-export type DailyOrderStatus = 'pending' | 'queued' | 'played'
+export type DailyOrderStatus = 'pending' | 'queued' | 'ready' | 'played'
 
 /** 入口類型：使用者在前端三分頁選的入口。
  *  與後端 EntryMode Literal 對齊；skill 是後端保留值，前端 UI 不暴露。 */
@@ -63,6 +63,8 @@ export type EntryMode = 'news' | 'topic' | 'knowledge' | 'skill'
 export type LengthTier = 'short' | 'medium' | 'long'
 
 export type DailyOrder = {
+  readonly id: string
+  /** 送出日期（server 用 app 時區算出，非使用者可選）；歷史列表顯示用 */
   readonly date: string
   readonly selectedTopics: readonly string[]
   readonly specificRequest?: string | null
@@ -80,11 +82,11 @@ export type DailyOrder = {
   readonly ready?: boolean
 }
 
-/** 寫入時不需要 date / createdAt / updatedAt / playedAt，provider 補齊 */
+/** 建立新訂單的輸入：不帶 id/date/status/createdAt 等 server 決定的欄位。
+ *  隨時點餐：送出即建立新訂單並立即觸發生成，沒有「編輯既有訂單」這件事。 */
 export type DailyOrderInput = {
   readonly selectedTopics: readonly string[]
   readonly specificRequest?: string | null
-  readonly status?: DailyOrderStatus
   readonly entryMode?: EntryMode
   readonly lengthTier?: LengthTier
 }
@@ -279,20 +281,18 @@ export interface Api {
   addFavorite(id: string): Promise<void>
   removeFavorite(id: string): Promise<void>
   isFavorite(id: string): Promise<boolean>
-  // 每日點餐
-  getDailyOrder(date: string): Promise<DailyOrder | null>
-  saveDailyOrder(order: DailyOrder): Promise<DailyOrder>
-  listDailyOrders(fromDate: string, toDate: string): Promise<readonly DailyOrder[]>
-  markOrderPlayed(date: string, playedAt: string): Promise<DailyOrder | null>
-  deleteDailyOrder(date: string): Promise<void>
-  getLastOrderDate(): Promise<string | null>
-  setLastOrderDate(date: string): Promise<void>
+  // 點餐（隨時可點、佇列制：同一時間僅一筆進行中訂單）
+  getActiveOrder(): Promise<DailyOrder | null>
+  createDailyOrder(input: DailyOrderInput): Promise<DailyOrder>
+  listOrderHistory(limit?: number, before?: string): Promise<readonly DailyOrder[]>
+  markOrderPlayed(id: string, playedAt: string): Promise<DailyOrder | null>
+  deleteDailyOrder(id: string): Promise<void>
   // podcast episode 內容。opts.channel：可選頻道 slug，帶了只回該頻道底下的集數
   // （/channels/:slug 詳情頁用）；不帶維持既有行為（全站免費／已授權集數）。
   listEpisodes(opts?: { readonly channel?: string }): Promise<readonly MockEpisode[]>
   getEpisode(slug: string): Promise<Episode>
-  // 依日期取當日交付的集數（player ?date= 連結用）；找不到回 null 由前端 fallback
-  getDeliveredEpisode(date: string): Promise<Episode | null>
+  // 依訂單 id 取這筆訂單交付的集數（player ?orderId= 連結用）；找不到回 null 由前端 fallback
+  getDeliveredEpisode(orderId: string): Promise<Episode | null>
   // 播放次數 +1，不去重。播放頁背景呼叫，失敗不影響播放體驗。
   recordEpisodePlay(episodeId: string): Promise<void>
   // 使用者端公開頻道：探索／詳情／訂閱（JWT 認證，跟 Admin 端分開）
@@ -303,9 +303,10 @@ export interface Api {
   listMySubscriptions(): Promise<readonly ChannelPublic[]>
   // 首頁「根據你追蹤的頻道」：追蹤頻道裡還沒聽完的最新集數
   getRecommendedEpisodes(): Promise<readonly RecommendedEpisode[]>
-  // T1：送訂單後 fire-and-forget 觸發 worker 跑當日 pipeline（POST /jobs/orders/{date}/generate，
-  // 後端回 202 + envelope；前端 Promise<void> 不解析 body，失敗僅 log 不 throw）
-  triggerGenerateJob(date: string): Promise<void>
+  // 送訂單後 fire-and-forget 觸發 worker 跑生成 pipeline
+  // （POST /jobs/orders/{orderId}/generate，後端回 202 + envelope；
+  // 前端 Promise<void> 不解析 body，失敗僅 log 不 throw）
+  triggerGenerateJob(orderId: string): Promise<void>
   // 學習進度上雲（T2）
   getActivity(): Promise<Activity>
   patchActivity(patch: ActivityPatch): Promise<Activity>

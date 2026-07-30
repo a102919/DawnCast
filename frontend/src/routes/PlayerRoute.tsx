@@ -31,7 +31,7 @@ export function PlayerRoute() {
   const { addListenMinutes, addLookupCount, markListened } = useActivity()
   const { items: vocabItems } = useVocab()
 
-  const { episode, fetchError, reload } = useEpisode(id)
+  const { episode, fetchError, orderId, reload } = useEpisode(id)
 
   useEffect(() => {
     // 推到全域 PlayerProvider：離開播放頁後 GlobalAudioHost/MiniPlayer 才知道現在播誰。
@@ -39,7 +39,7 @@ export function PlayerRoute() {
   }, [episode, setCurrentEpisode])
 
   useEpisodeProgress({
-    episode, currentTime, duration, loadState, currentEpisode,
+    episode, currentTime, duration, loadState, currentEpisode, orderId,
     seekTo, loadProgress, markListened, addListenMinutes, markPlayed,
     recordPlay: api.recordEpisodePlay,
   })

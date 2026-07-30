@@ -122,24 +122,6 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/daily-orders/{date}": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /** Get Daily Order */
-        get: operations["get_daily_order_daily_orders__date__get"];
-        put?: never;
-        post?: never;
-        /** Delete Daily Order */
-        delete: operations["delete_daily_order_daily_orders__date__delete"];
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
     "/daily-orders": {
         parameters: {
             query?: never;
@@ -147,13 +129,34 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** List Daily Orders */
-        get: operations["list_daily_orders_daily_orders_get"];
+        get?: never;
+        put?: never;
         /**
-         * Save Daily Order
-         * @description upsert 整筆訂單（key = user_id + date）。
+         * Create Daily Order
+         * @description 建立新訂單。已有進行中訂單時，partial unique index 撞 UniqueViolation → 409。
          */
-        put: operations["save_daily_order_daily_orders_put"];
+        post: operations["create_daily_order_daily_orders_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/daily-orders/active": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Active Order
+         * @description 目前進行中（pending/queued）的訂單，沒有回 null。
+         *
+         *     註冊順序：必須在 GET /{order_id} 之前，否則 'active' 會被當成 order_id 吃掉。
+         */
+        get: operations["get_active_order_daily_orders_active_get"];
+        put?: never;
         post?: never;
         delete?: never;
         options?: never;
@@ -161,7 +164,54 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/daily-orders/{date}/played": {
+    "/daily-orders/history": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List Order History
+         * @description 已生成完成（ready）或已播放（played）的訂單，cursor 分頁（created_at desc）。
+         *
+         *     生成完成即解鎖下一筆訂單，不用等實際播放完——ready 訂單也算「進來歷史」。
+         *     註冊順序：必須在 GET /{order_id} 之前，理由同 /active。
+         */
+        get: operations["list_order_history_daily_orders_history_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/daily-orders/{order_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Daily Order */
+        get: operations["get_daily_order_daily_orders__order_id__get"];
+        put?: never;
+        post?: never;
+        /**
+         * Delete Daily Order
+         * @description 只允許取消 pending 訂單。queued 已經開始生成，硬刪會產生孤兒交付 → 409。
+         *
+         *     單一原子 DELETE...WHERE status='pending' 判斷成功與否，避免 select 後
+         *     再 delete 的 TOCTOU（並發下 jobs router 可能剛好把它翻成 queued）。
+         */
+        delete: operations["delete_daily_order_daily_orders__order_id__delete"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/daily-orders/{order_id}/played": {
         parameters: {
             query?: never;
             header?: never;
@@ -174,14 +224,14 @@ export interface paths {
          * Mark Order Played
          * @description 標記已播放。找不到回 null（對齊 mockApi）。
          */
-        post: operations["mark_order_played_daily_orders__date__played_post"];
+        post: operations["mark_order_played_daily_orders__order_id__played_post"];
         delete?: never;
         options?: never;
         head?: never;
         patch?: never;
         trace?: never;
     };
-    "/daily-orders/{date}/episode": {
+    "/daily-orders/{order_id}/episode": {
         parameters: {
             query?: never;
             header?: never;
@@ -190,12 +240,13 @@ export interface paths {
         };
         /**
          * Get Daily Order Episode
-         * @description 取當天交付給該 user 的集數，找不到回 null（前端 fallback 到 listEpisodes()[0]）。
+         * @description 取這筆訂單交付給該 user 的集數，找不到回 null（前端 fallback 到 listEpisodes()[0]）。
          *
-         *     URL 語意：daily_order 是主資源，episode 是其子資源（解決 PlayerRoute 點 ?date=
-         *     連結時不知道播哪集的問題）。
+         *     URL 語意：daily_order 是主資源，episode 是其子資源（解決 PlayerRoute 導頁時
+         *     不知道播哪集的問題）。用 order_id 精準比對，取代舊版用日期猜的寫法——
+         *     佇列制下同一天可能有多筆歷史訂單，日期不再是唯一鍵。
          */
-        get: operations["get_daily_order_episode_daily_orders__date__episode_get"];
+        get: operations["get_daily_order_episode_daily_orders__order_id__episode_get"];
         put?: never;
         post?: never;
         delete?: never;
@@ -638,7 +689,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/jobs/orders/{date}/generate": {
+    "/jobs/orders/{order_id}/generate": {
         parameters: {
             query?: never;
             header?: never;
@@ -649,12 +700,12 @@ export interface paths {
         put?: never;
         /**
          * Trigger Order Generate
-         * @description 送一筆 control orchestrate 給 worker，觸發當日 episode pipeline。
+         * @description 送一筆 control orchestrate 給 worker，觸發這筆訂單的 episode pipeline。
          *
-         *     回 202 Accepted：job 已 enqueue，不代表已生成；GET /daily-orders/{date}/episode
+         *     回 202 Accepted：job 已 enqueue，不代表已生成；GET /daily-orders/{order_id}/episode
          *     輪詢結果。
          */
-        post: operations["trigger_order_generate_jobs_orders__date__generate_post"];
+        post: operations["trigger_order_generate_jobs_orders__order_id__generate_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -1345,6 +1396,37 @@ export interface components {
              */
             status: "active" | "paused" | "archived";
         };
+        /**
+         * CreateDailyOrderBody
+         * @description createDailyOrder(input)。隨時點餐：不帶 date/status/playedAt——
+         *
+         *     date 由 server 用 app_timezone 算「今天」，status 永遠從 pending 起跑，
+         *     playedAt 只在 markPlayed 時才有意義。同一時間僅允許一筆進行中訂單，
+         *     已有進行中訂單時 DB 層 partial unique index 會擋下（見 migration 0024）。
+         */
+        CreateDailyOrderBody: {
+            /** Selectedtopics */
+            selectedTopics?: string[];
+            /** Specificrequest */
+            specificRequest?: string | null;
+            /**
+             * Deliverytime
+             * @default 07:00
+             */
+            deliveryTime: string;
+            /**
+             * Entrymode
+             * @default topic
+             * @enum {string}
+             */
+            entryMode: "news" | "topic" | "knowledge" | "skill";
+            /**
+             * Lengthtier
+             * @default medium
+             * @enum {string}
+             */
+            lengthTier: "short" | "medium" | "long";
+        };
         /** Cue */
         Cue: {
             /** Index */
@@ -1362,6 +1444,8 @@ export interface components {
         };
         /** DailyOrder */
         DailyOrder: {
+            /** Id */
+            id: string;
             /** Date */
             date: string;
             /** Selectedtopics */
@@ -1373,7 +1457,7 @@ export interface components {
              * @default pending
              * @enum {string}
              */
-            status: "pending" | "queued" | "played";
+            status: "pending" | "queued" | "ready" | "played";
             /**
              * Deliverytime
              * @default 07:00
@@ -1558,7 +1642,7 @@ export interface components {
         };
         /**
          * MarkPlayedBody
-         * @description markOrderPlayed(date, playedAt) 的 body 部分（date 走 path）。
+         * @description markOrderPlayed(id, playedAt) 的 body 部分（id 走 path）。
          */
         MarkPlayedBody: {
             /** Playedat */
@@ -1654,43 +1738,6 @@ export interface components {
             channelSlug: string;
             /** Channelname */
             channelName: string;
-        };
-        /**
-         * SaveDailyOrderBody
-         * @description saveDailyOrder(order)。前端送完整 DailyOrder；date 為 key。
-         */
-        SaveDailyOrderBody: {
-            /** Date */
-            date: string;
-            /** Selectedtopics */
-            selectedTopics?: string[];
-            /** Specificrequest */
-            specificRequest?: string | null;
-            /**
-             * Status
-             * @default pending
-             * @enum {string}
-             */
-            status: "pending" | "queued" | "played";
-            /**
-             * Deliverytime
-             * @default 07:00
-             */
-            deliveryTime: string;
-            /** Playedat */
-            playedAt?: string | null;
-            /**
-             * Entrymode
-             * @default topic
-             * @enum {string}
-             */
-            entryMode: "news" | "topic" | "knowledge" | "skill";
-            /**
-             * Lengthtier
-             * @default medium
-             * @enum {string}
-             */
-            lengthTier: "short" | "medium" | "long";
         };
         /**
          * Segment
@@ -2284,15 +2331,48 @@ export interface operations {
             };
         };
     };
-    get_daily_order_daily_orders__date__get: {
+    create_daily_order_daily_orders_post: {
         parameters: {
             query?: never;
             header?: {
                 authorization?: string | null;
             };
-            path: {
-                date: string;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CreateDailyOrderBody"];
             };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiResponse_DailyOrder_"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_active_order_daily_orders_active_get: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path?: never;
             cookie?: never;
         };
         requestBody?: never;
@@ -2317,44 +2397,11 @@ export interface operations {
             };
         };
     };
-    delete_daily_order_daily_orders__date__delete: {
+    list_order_history_daily_orders_history_get: {
         parameters: {
-            query?: never;
-            header?: {
-                authorization?: string | null;
-            };
-            path: {
-                date: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ApiResponse_NoneType_"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    list_daily_orders_daily_orders_get: {
-        parameters: {
-            query: {
-                from_date: string;
-                to_date: string;
+            query?: {
+                limit?: number;
+                before?: string | null;
             };
             header?: {
                 authorization?: string | null;
@@ -2384,20 +2431,18 @@ export interface operations {
             };
         };
     };
-    save_daily_order_daily_orders_put: {
+    get_daily_order_daily_orders__order_id__get: {
         parameters: {
             query?: never;
             header?: {
                 authorization?: string | null;
             };
-            path?: never;
+            path: {
+                order_id: string;
+            };
             cookie?: never;
         };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["SaveDailyOrderBody"];
-            };
-        };
+        requestBody?: never;
         responses: {
             /** @description Successful Response */
             200: {
@@ -2405,7 +2450,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["ApiResponse_DailyOrder_"];
+                    "application/json": components["schemas"]["ApiResponse_Union_DailyOrder__NoneType__"];
                 };
             };
             /** @description Validation Error */
@@ -2419,14 +2464,47 @@ export interface operations {
             };
         };
     };
-    mark_order_played_daily_orders__date__played_post: {
+    delete_daily_order_daily_orders__order_id__delete: {
         parameters: {
             query?: never;
             header?: {
                 authorization?: string | null;
             };
             path: {
-                date: string;
+                order_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiResponse_NoneType_"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    mark_order_played_daily_orders__order_id__played_post: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path: {
+                order_id: string;
             };
             cookie?: never;
         };
@@ -2456,14 +2534,14 @@ export interface operations {
             };
         };
     };
-    get_daily_order_episode_daily_orders__date__episode_get: {
+    get_daily_order_episode_daily_orders__order_id__episode_get: {
         parameters: {
             query?: never;
             header?: {
                 authorization?: string | null;
             };
             path: {
-                date: string;
+                order_id: string;
             };
             cookie?: never;
         };
@@ -3269,14 +3347,14 @@ export interface operations {
             };
         };
     };
-    trigger_order_generate_jobs_orders__date__generate_post: {
+    trigger_order_generate_jobs_orders__order_id__generate_post: {
         parameters: {
             query?: never;
             header?: {
                 authorization?: string | null;
             };
             path: {
-                date: string;
+                order_id: string;
             };
             cookie?: never;
         };

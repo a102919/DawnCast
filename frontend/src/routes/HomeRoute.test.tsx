@@ -11,7 +11,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { HomeRoute } from './HomeRoute'
 import type { Episode } from '../types/episode'
 import type { MockEpisode } from '../lib'
-import type { ChannelPublic, RecommendedEpisode } from '../api'
+import type { ChannelPublic, DailyOrder, RecommendedEpisode } from '../api'
 
 const EPISODES: readonly MockEpisode[] = [
   { id: 'tech-1', title: 'AI Systems', titleZh: 'AI 系統', topic: 'tech', cefrLevel: 'B1', episode: 1, publishedAt: '2026-07-01' },
@@ -55,6 +55,10 @@ const episodesState: { episodes: readonly MockEpisode[]; error: string | null } 
 }
 const refreshEpisodes = vi.fn(async (): Promise<void> => undefined)
 
+// activeOrder 預設 null（沒有進行中訂單 → 不觸發輪詢，避免 setTimeout 殘留
+// 導致 act() warning）；個別測試可 override 成一筆進行中訂單來測 hero delivery。
+const dailyOrderState: { activeOrder: DailyOrder | null } = { activeOrder: null }
+
 vi.mock('../state', () => ({
   useActivity: () => ({ listenedEpisodeIds: new Set<string>() }),
   useVocab: () => ({ items: [] }),
@@ -65,15 +69,13 @@ vi.mock('../state', () => ({
     error: episodesState.error,
     refresh: refreshEpisodes,
   }),
-  // Episode readiness polling：測試不模擬訂單（getOrder 回 null → 不觸發輪詢），
-  // 避免 setTimeout 殘留導致 act() warning。
   useDailyOrder: () => ({
-    todayDate: new Date().toISOString().slice(0, 10),
-    orders: new Map(),
-    getOrder: () => null,
-    setOrder: async () => ({}) as never,
-    deleteOrder: async () => undefined,
+    activeOrder: dailyOrderState.activeOrder,
+    history: [],
+    createOrder: async () => ({}) as never,
+    cancelOrder: async () => undefined,
     markPlayed: async () => null,
+    loadMoreHistory: async () => undefined,
     refresh: async () => undefined,
   }),
 }))
@@ -134,6 +136,7 @@ beforeEach(() => {
   getRecommendedEpisodes.mockResolvedValue([])
   listChannels.mockClear()
   listChannels.mockResolvedValue(CHANNELS)
+  dailyOrderState.activeOrder = null
   localStorage.clear()
 })
 
@@ -177,6 +180,18 @@ describe('HomeRoute Hero 區塊', () => {
   })
 
   it('有 delivery 時顯示 hero 元件並標題對應', async () => {
+    dailyOrderState.activeOrder = {
+      id: 'order-1',
+      date: '2026-07-16',
+      selectedTopics: [],
+      status: 'queued',
+      deliveryTime: '07:00',
+      createdAt: '2026-07-16T00:00:00Z',
+      updatedAt: '2026-07-16T00:00:00Z',
+      entryMode: 'topic',
+      lengthTier: 'medium',
+      ready: true,
+    }
     getDeliveredEpisode.mockResolvedValue({
       id: EPISODES[0]!.id,
       title: EPISODES[0]!.title,

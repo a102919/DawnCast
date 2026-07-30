@@ -57,6 +57,11 @@ class FakeRepo:
         self.delivery_check_calls: list[tuple[str, str]] = []
         self.specified_check_calls: list[tuple[str, str]] = []
         self.deliveries: list[tuple[str, str, str]] = []
+        # insert_delivery 收到的 order_id（migration 0024，個人點餐專屬），
+        # 與 self.deliveries 同步 append，index 對齊。
+        self.delivery_order_ids: list[str | None] = []
+        # mark_order_ready 收到的 order_id（migration 0025，生成完成即解鎖下一筆）。
+        self.ready_order_ids: list[str] = []
         # 角度輪替 / avoid_facts 用：測試可預先塞舊集 meta。
         self.prior_meta: list[dict[str, Any]] = []
 
@@ -86,9 +91,15 @@ class FakeRepo:
     ) -> list[dict[str, Any]]:
         return self.prior_meta[:limit]
 
-    async def insert_delivery(self, user_id: str, episode_id: str, deliver_date: str) -> bool:
+    async def insert_delivery(
+        self, user_id: str, episode_id: str, deliver_date: str, *, order_id: str | None = None
+    ) -> bool:
         self.deliveries.append((user_id, episode_id, deliver_date))
+        self.delivery_order_ids.append(order_id)
         return True
+
+    async def mark_order_ready(self, order_id: str) -> None:
+        self.ready_order_ids.append(order_id)
 
     async def get_episode_meta(self, episode_id: str) -> dict[str, str]:
         # reuse 路徑不驗通知文案，給 dummy 即可走完 notify_user 呼叫
@@ -181,6 +192,31 @@ async def test_insert_delivery_survives_push_failure(
 
     assert result == {}
     assert repo.deliveries == [("u1", "ep-123", "2026-06-23")]
+
+
+async def test_insert_deliveries_node_marks_order_ready(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """生成完成即解鎖下一筆訂單（migration 0025）：帶 order_id 就該呼叫 mark_order_ready。"""
+    repo = FakeRepo(reusable=None)
+
+    async def _ok_notify(_user_id: str, _payload: dict[str, str]) -> int:
+        return 1
+
+    monkeypatch.setattr(nodes, "notify_user", _ok_notify)
+
+    result = await nodes.insert_deliveries_node(
+        {
+            "user_ids": ["u1"],
+            "episode_id": "ep-123",
+            "deliver_date": "2026-06-23",
+            "order_id": "order-1",
+        },
+        {"configurable": {"repo": repo}},
+    )
+
+    assert result == {}
+    assert repo.ready_order_ids == ["order-1"]
 
 
 async def test_reuse_miss_enqueues_generate(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -424,6 +460,7 @@ class _GenRepoSpy:
         self.inserted: dict[str, Any] = {}
         self.updated: dict[str, Any] = {}
         self.deliveries: list[tuple[str, str, str]] = []
+        self.delivery_order_ids: list[str | None] = []
 
     async def upsert_episode(self, **kw: Any) -> tuple[str, bool]:
         self.inserted = kw
@@ -434,9 +471,15 @@ class _GenRepoSpy:
     async def update_episode_keys(self, episode_id: str, **kw: Any) -> None:
         self.updated = {"episode_id": episode_id, **kw}
 
-    async def insert_delivery(self, user_id: str, episode_id: str, deliver_date: str) -> bool:
+    async def insert_delivery(
+        self, user_id: str, episode_id: str, deliver_date: str, *, order_id: str | None = None
+    ) -> bool:
         self.deliveries.append((user_id, episode_id, deliver_date))
+        self.delivery_order_ids.append(order_id)
         return True
+
+    async def mark_order_ready(self, order_id: str) -> None:
+        pass
 
     async def get_episode_meta(self, episode_id: str) -> dict[str, str]:
         # push payload 真正用得到的兩個欄位；測試不驗通知文案所以給 dummy 即可

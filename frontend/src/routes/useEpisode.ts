@@ -5,25 +5,32 @@ import type { Episode } from '../types/episode'
 export interface UseEpisodeResult {
   readonly episode: Episode | null
   readonly fetchError: string | null
+  /** 這集是不是由 ?orderId= 解析出來的（＝這集是某張點餐訂單交付的那集）。
+   *  只有這個情況下才該在播放完成時呼叫 markPlayed——避免任意集數播放
+   *  都誤觸發「這張訂單已播放」。 */
+  readonly orderId: string | null
   reload(): Promise<void>
 }
 
-/** PlayerRoute 單集抓取：優先 ?date= 當日交付，其次 URL 的 id，都沒有時
- *  fallback 到 listEpisodes()[0]，避免深連結／首頁進入都擋在空畫面。 */
+/** PlayerRoute 單集抓取：優先 ?orderId= 這筆訂單交付的集數，其次 URL 的 id，
+ *  都沒有時 fallback 到 listEpisodes()[0]，避免深連結／首頁進入都擋在空畫面。 */
 export function useEpisode(id: string | undefined): UseEpisodeResult {
   const [episode, setEpisode] = useState<Episode | null>(null)
   const [fetchError, setFetchError] = useState<string | null>(null)
+  const [orderId, setOrderId] = useState<string | null>(null)
 
   const reload = useCallback(async () => {
     setFetchError(null)
+    setOrderId(null)
     try {
-      // ?date= 連結：DailyRoute 帶日期過來，先查當天交付；找不到（尚未生成／不歸屬）
-      // fallback 到 listEpisodes()[0]，避免擋使用者。
-      const dateParam = new URLSearchParams(window.location.search).get('date')
-      if (dateParam) {
-        const delivered = await api.getDeliveredEpisode(dateParam)
+      // ?orderId= 連結：DailyRoute 帶訂單 id 過來，先查這筆訂單交付的集數；
+      // 找不到（尚未生成完成／不歸屬）fallback 到 listEpisodes()[0]，避免擋使用者。
+      const orderIdParam = new URLSearchParams(window.location.search).get('orderId')
+      if (orderIdParam) {
+        const delivered = await api.getDeliveredEpisode(orderIdParam)
         if (delivered) {
           setEpisode(delivered)
+          setOrderId(orderIdParam)
           return
         }
       }
@@ -51,5 +58,5 @@ export function useEpisode(id: string | undefined): UseEpisodeResult {
     void reload()
   }, [reload])
 
-  return { episode, fetchError, reload }
+  return { episode, fetchError, orderId, reload }
 }

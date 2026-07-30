@@ -69,6 +69,7 @@ class _DeliveryRow:
     user_id: str
     episode_id: str
     deliver_date: str
+    order_id: str | None = None
 
 
 @dataclass
@@ -237,17 +238,18 @@ class MockRepo:
         if gen_metrics is not None:
             row.gen_metrics = dict(gen_metrics)
 
-    async def insert_delivery(self, user_id: str, episode_id: str, deliver_date: str) -> bool:
-        # 模擬 ON CONFLICT DO NOTHING
+    async def insert_delivery(
+        self, user_id: str, episode_id: str, deliver_date: str, *, order_id: str | None = None
+    ) -> bool:
+        # 模擬 ON CONFLICT (user_id, episode_id, order_id) DO NOTHING，
+        # NULLS NOT DISTINCT：order_id 是 None 時仍視為相同鍵（鏡像 migration 0024）。
         for d in self.deliveries:
             same_key = (
-                d.user_id == user_id
-                and d.episode_id == episode_id
-                and d.deliver_date == deliver_date
+                d.user_id == user_id and d.episode_id == episode_id and d.order_id == order_id
             )
             if same_key:
                 return False
-        self.deliveries.append(_DeliveryRow(user_id, episode_id, deliver_date))
+        self.deliveries.append(_DeliveryRow(user_id, episode_id, deliver_date, order_id))
         return True
 
     async def delete_episode_by_idem(self, idempotency_key: str) -> int:

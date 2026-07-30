@@ -60,7 +60,7 @@ export function HomeHeroFallback({ featured }: HomeHeroFallbackProps) {
             className="w-full justify-center px-3 sm:px-4 h-9 sm:h-10 rounded-full bg-accent text-white text-xs sm:text-sm font-semibold flex items-center gap-1.5 active:scale-[0.97] transition-transform shadow-sm whitespace-nowrap focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-1"
           >
             <Calendar size={15} />
-            <span>立即點餐</span>
+            <span>立即點播</span>
           </Link>
         </>
       }
