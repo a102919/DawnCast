@@ -85,6 +85,20 @@ const HAVE_FUTURE_DATA = 3
 const HAVE_METADATA = 1
 
 describe('audioEngine', () => {
+  it('attachToDOM 建隱形 host div 並 append 進 body（fake Audio 走 detached 降級；實機 audio 是真 Element 會進 host）', () => {
+    setupGlobalMock()
+    const body = document.body
+    const appendChildSpy = vi.spyOn(body, 'appendChild')
+    const createElSpy = vi.spyOn(document, 'createElement')
+    createAudioEngine()
+    expect(createElSpy).toHaveBeenCalledWith('div')
+    expect(appendChildSpy).toHaveBeenCalled()
+    // host 應帶 aria-hidden 與資料標記（給 cleanup dedup 用）
+    const host = appendChildSpy.mock.calls[0]![0] as HTMLElement
+    expect(host.getAttribute('aria-hidden')).toBe('true')
+    expect(host.getAttribute('data-audio-host')).not.toBeNull()
+  })
+
   it('unlock 在三個元素上各 play+pause 一次（iOS 同步授權）', () => {
     const { els } = setupGlobalMock()
     const engine = createAudioEngine()

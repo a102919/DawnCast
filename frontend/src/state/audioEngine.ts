@@ -21,6 +21,11 @@
  *
  * iOS 上 el.volume 唯讀（靜默忽略）：音量交給硬體鍵，程式面只保留 muted（iOS 可設）。
  * 試聽的 DUCK_LEVEL 在 iOS 上會降級成原音量，可接受。
+ *
+ * iOS Safari 額外限制：`<audio>` 元素必須在 DOM 內才會真的出聲。`new Audio()`
+ * 拿到的 detached 元素即使 play() 也會被瀏覽器 silent reject（desktop 不受限
+ * 但實機很重要）。createAudioEngine() 內建隱形 container，把三個元素 append
+ * 進去；測試環境（happy-dom/jsdom）沒 document.body 時降級成 detached 模式。
  */
 
 export const DUCK_LEVEL = 0.3
@@ -65,6 +70,26 @@ function setPreservesPitch(el: HTMLAudioElement): void {
   anyEl.webkitPreservesPitch = true
 }
 
+/** 隱形容器：給 audio 元素一個 DOM 落腳處（iOS Safari 必要）；不影響 layout、不
+ *  阻擋點擊、不被輔助技術讀到。測試環境 fake Audio 沒 Element prototype 時
+ *  降級成 detached（host 仍會 append 進 body，但 fake 不進 host）。 */
+function attachToDOM(els: readonly HTMLAudioElement[]): void {
+  const body = typeof document !== 'undefined' ? document.body : null
+  if (!body) return
+  // 防止 HMR / Vitest 多 describe 重複掛載時 body 累積舊 host：拔掉舊的，元素斷開
+  // parent 後可 GC。
+  body.querySelectorAll('[data-audio-host]').forEach(el => el.remove())
+  const host = document.createElement('div')
+  host.setAttribute('aria-hidden', 'true')
+  host.setAttribute('data-audio-host', '')
+  host.style.cssText = 'position:absolute;width:0;height:0;opacity:0;pointer-events:none;overflow:hidden;'
+  for (const el of els) {
+    if (!(el instanceof Element)) continue
+    host.appendChild(el)
+  }
+  body.appendChild(host)
+}
+
 export function createAudioEngine(): AudioEngine {
   const makeEl = (volume: number): HTMLAudioElement => {
     const el = new Audio()
@@ -77,6 +102,7 @@ export function createAudioEngine(): AudioEngine {
   const mainB = makeEl(1)
   const previewEl = makeEl(DUCK_LEVEL)
   const all = [mainA, mainB, previewEl] as const
+  attachToDOM(all)
 
   let activeMainEl: HTMLAudioElement | null = null
   let muted = false
