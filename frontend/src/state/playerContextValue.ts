@@ -12,8 +12,12 @@ export type PlayerContextValue = {
   readonly loadState: SegmentLoadState
   readonly currentEpisode: Episode | null
   seekTo(time: number): void
+  /** 練習模式 word click：跳到 (cue.start + word.start)。回 false 表示資料不足
+   *  （沒 word boundary 或 cue / word index 超出範圍），LyricsView 走查詞 fallback。 */
+  seekToWord(cueIdx: number, wordIdx: number): boolean
   play(): void
   pause(): void
+  loadEpisode(episode: Episode | null): void
   setPlaybackRate(rate: number): void
   setMuted(m: boolean): void
   loadProgress(episodeId: string): { readonly currentTime: number; readonly exists: boolean }

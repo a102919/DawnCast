@@ -2435,6 +2435,14 @@ async def upload_artifacts_node(state: PodState, config: RunnableConfig) -> dict
                 key = f"{prefix}/segments/{seg.index:03d}.mp3"
                 r2.put_object(key, seg.audio_path.read_bytes(), "audio/mpeg")
                 audio_keys.append(key)
+                # 詞級字幕 sidecar：練習模式 word click 用。空 list 表示沒
+                # word boundary（edge-tts fallback / 抓字幕失敗），不上傳。
+                if seg.word_offsets:
+                    sidecar_key = f"{prefix}/segments/{seg.index:03d}.words.json"
+                    sidecar_bytes = json.dumps(
+                        [w.__dict__ for w in seg.word_offsets], ensure_ascii=False
+                    ).encode("utf-8")
+                    r2.put_object(sidecar_key, sidecar_bytes, "application/json")
             r2.put_object(srt_key, art.srt.encode("utf-8"), "application/x-subrip")
         else:
             from shared.storage import r2 as real_r2  # noqa: PLC0415
@@ -2443,6 +2451,12 @@ async def upload_artifacts_node(state: PodState, config: RunnableConfig) -> dict
                 key = f"{prefix}/segments/{seg.index:03d}.mp3"
                 real_r2.put_object(key, seg.audio_path.read_bytes(), "audio/mpeg")
                 audio_keys.append(key)
+                if seg.word_offsets:
+                    sidecar_key = f"{prefix}/segments/{seg.index:03d}.words.json"
+                    sidecar_bytes = json.dumps(
+                        [w.__dict__ for w in seg.word_offsets], ensure_ascii=False
+                    ).encode("utf-8")
+                    real_r2.put_object(sidecar_key, sidecar_bytes, "application/json")
             real_r2.put_object(srt_key, art.srt.encode("utf-8"), "application/x-subrip")
     except Exception as exc:  # 包括 StorageError 與 MockR2 forced failure
         logger.warning(

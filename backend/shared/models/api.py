@@ -96,6 +96,17 @@ class DailyOrder(CamelModel):
     ready: bool = False
 
 
+class WordOffset(CamelModel):
+    """單字在音檔內的時間戳。單位秒，相對於 cue.start（不是 episode-global）。
+
+    練習模式點字 → seek 到 (cue.start + word.start)。
+    """
+
+    word: str
+    start: float
+    end: float
+
+
 class Cue(CamelModel):
     index: int
     speaker: str
@@ -103,6 +114,9 @@ class Cue(CamelModel):
     zh: str
     start: float
     end: float
+    # 詞級字幕：練習模式 word click 用。舊集 / edge-tts fallback 沒這個資料時為 None。
+    # words 內的 start / end 是相對於 cue.start 的秒數（不是 episode-global）。
+    words: list[WordOffset] | None = None
 
 
 class Segment(CamelModel):
@@ -112,6 +126,9 @@ class Segment(CamelModel):
     Web Audio API 串接播的承載。index / start / end 對齊 Cue，duration 是
     trim 後 mp3 真實時長（秒）。前端用 index 對 Cue.binary search 結果定位
     segment、用 start / end 算 currentTime。
+
+    word_offsets_url：詞級字幕 JSON 的已簽章 URL；舊集 / edge-tts fallback / 字幕
+    抓取失敗時為 None。前端 getSegment 拿到 None 時走 cue-level click fallback。
     """
 
     index: int
@@ -119,6 +136,7 @@ class Segment(CamelModel):
     duration: float
     start: float
     end: float
+    word_offsets_url: str | None = None
 
 
 class SourceReference(CamelModel):

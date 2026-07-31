@@ -26,7 +26,7 @@ import asyncio
 import logging
 import subprocess
 from collections.abc import Awaitable, Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 import edge_tts
@@ -68,11 +68,27 @@ _MINIMAX_EMOTIONS = frozenset(
 
 
 @dataclass(frozen=True)
+class WordOffset:
+    """單字在 segment 音檔內的時間戳（秒，相對於 segment 自己的 0）。
+
+    start / end 是 trim 後 mp3 內的位置。word 是該字原始 text。
+    用於練習模式 word click：點字 → seek 到 segment.start + word.start。
+    """
+
+    word: str
+    start_sec: float
+    end_sec: float
+
+
+@dataclass(frozen=True)
 class SynthSegment:
-    """單行合成結果：文字、音檔路徑與該行真實時長（秒）。
+    """單行合成結果：文字、音檔路徑、該行真實時長（秒）、詞級時間戳。
 
     pause_before：該行是否為 chapter/話題轉換邊界，時間軸計算時前面該行的停頓
     要拉長（見 subtitles.build_timeline 的 long_pause_sec）。
+    word_offsets：MiniMax TTS 路徑會拿到（詞級字幕）；edge-tts fallback 為空 list
+    （edge-tts 雖有 WordBoundary event 但字幕精度差，且對齊中文 word 切分不穩，
+    不存。空 list 時前端走 cue-level click fallback）。
     """
 
     index: int
@@ -82,6 +98,7 @@ class SynthSegment:
     audio_path: Path
     duration: float
     pause_before: bool = False
+    word_offsets: list[WordOffset] = field(default_factory=list)
 
 
 def _probe_duration(audio_path: Path) -> float:
@@ -124,7 +141,16 @@ _TAIL_KEEP_SEC = 0.15
 
 
 def _trim_silence(src: Path, dst: Path) -> None:
-    """修剪 src 頭尾靜音寫到 dst；trim 後空檔（極端安靜行）就退回用原始音檔。"""
+    """修剪 src 頭尾靜音寫到 dst；trim 後空檔（極端安靜行）就退回用原始音檔。
+
+    兩段處理：
+    1. silenceremove 去頭尾靜音（areverse 雙向砍）+ libmp3lame 重編碼。砍頭時保留
+       _LEAD_KEEP_SEC（80ms 攻擊段）避免吃字首輔音。
+    2. 重編碼後 libmp3lame 會重新注入 576 samples (~13ms @ 24kHz) 的開頭 encoder delay，
+       接段時這 13ms 會在 segment N+1 開頭聽成可聞的「吃字頭」。第二段再用 -c copy
+       + -ss 0.013 把這層 padding 切掉（frame-boundary seek 殘留 0-26ms，靠 cue 對齊
+       吸收）。
+    """
     filt = (
         f"silenceremove=start_periods=1:start_duration={_LEAD_TRIGGER_SEC}:"
         f"start_threshold={_SILENCE_THRESHOLD}:start_silence={_LEAD_KEEP_SEC},"
@@ -133,6 +159,7 @@ def _trim_silence(src: Path, dst: Path) -> None:
         f"start_threshold={_SILENCE_THRESHOLD}:start_silence={_TAIL_KEEP_SEC},"
         "areverse"
     )
+    intermediate = dst.with_name(f"{dst.stem}_trimmed{dst.suffix}")
     try:
         subprocess.run(
             [
@@ -148,6 +175,25 @@ def _trim_silence(src: Path, dst: Path) -> None:
                 "libmp3lame",
                 "-b:a",
                 "128k",
+                str(intermediate),
+            ],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        # 第二段：去 LAME encoder delay。-ss 後 -c copy 走 frame boundary，殘留 0-26ms。
+        subprocess.run(
+            [
+                "ffmpeg",
+                "-y",
+                "-loglevel",
+                "error",
+                "-ss",
+                "0.013",
+                "-i",
+                str(intermediate),
+                "-c",
+                "copy",
                 str(dst),
             ],
             capture_output=True,
@@ -156,6 +202,8 @@ def _trim_silence(src: Path, dst: Path) -> None:
         )
     except subprocess.CalledProcessError as exc:
         raise TTSError(f"修剪靜音失敗：{src.name}") from exc
+    finally:
+        intermediate.unlink(missing_ok=True)
 
     if not dst.exists() or dst.stat().st_size == 0:
         # 整行都很安靜（近似耳語/單字）被門檻誤判成全靜音砍光，保交付優先於完美：直接用原始檔。
@@ -204,11 +252,50 @@ async def _synth_line_edge(
     return _probe_duration(out_path)
 
 
+async def _fetch_word_boundary(client: httpx.AsyncClient, subtitle_url: str) -> list[WordOffset]:
+    """抓 MiniMax subtitle_file 的詞級字幕 JSON，轉 WordOffset list。
+
+    回傳格式（從實測 response 推斷，文件未列 schema）：
+    [{"text": "你好", "start_time": 0, "end_time": 320}, ...]，單位 ms。
+    抓失敗回空 list——詞級字幕缺失不該擋整行合成，前端 fallback 到 cue-level click。
+    """
+    try:
+        resp = await client.get(subtitle_url)
+        resp.raise_for_status()
+        raw = resp.json()
+    except Exception as exc:  # 下載/解析失敗都不該炸掉整行合成
+        logger.warning("抓 word boundary 字幕失敗：%s", exc)
+        return []
+    if not isinstance(raw, list):
+        return []
+    out: list[WordOffset] = []
+    for entry in raw:
+        if not isinstance(entry, dict):
+            continue
+        word = entry.get("text")
+        start_ms = entry.get("start_time")
+        end_ms = entry.get("end_time")
+        if not isinstance(word, str) or not word:
+            continue
+        if not isinstance(start_ms, (int, float)) or not isinstance(end_ms, (int, float)):
+            continue
+        start_sec = float(start_ms) / 1000.0
+        end_sec = float(end_ms) / 1000.0
+        out.append(WordOffset(word=word, start_sec=start_sec, end_sec=end_sec))
+    return out
+
+
 async def _minimax_tts_request(
     client: httpx.AsyncClient, settings: Settings, payload: dict[str, object]
-) -> bytes:
-    """打 t2a_v2 拿 hex 音訊。timeout/5xx 退避重試 http_max_retries 次；
-    429 / 4xx / 業務錯誤碼不重試，直接 TTSError（讓上層整份 fallback edge-tts）。"""
+) -> tuple[bytes, str | None]:
+    """打 t2a_v2 拿 hex 音訊 + subtitle URL（給詞級字幕用）。
+
+    timeout/5xx 退避重試 http_max_retries 次；429 / 4xx / 業務錯誤碼不重試，
+    直接 TTSError（讓上層整份 fallback edge-tts）。
+
+    回 (audio_bytes, subtitle_url | None)：subtitle 缺失（payload 沒開 subtitle_enable
+    或 response 沒回 subtitle_file）時 subtitle_url 是 None。
+    """
     last_exc: Exception | None = None
     for attempt in range(settings.http_max_retries + 1):
         try:
@@ -235,32 +322,38 @@ async def _minimax_tts_request(
             raise TTSError(
                 f"MiniMax TTS 業務錯誤 {base.get('status_code')}：{base.get('status_msg')}"
             )
-        audio_hex = (data.get("data") or {}).get("audio")
+        payload_data = data.get("data") or {}
+        audio_hex = payload_data.get("audio")
         if not audio_hex:
             raise TTSError("MiniMax TTS 回應缺 audio 欄位")
+        subtitle_url = payload_data.get("subtitle_file")
         try:
-            return bytes.fromhex(audio_hex)
+            audio = bytes.fromhex(audio_hex)
         except ValueError as exc:
             raise TTSError("MiniMax TTS audio 欄位非合法 hex") from exc
+        return audio, (subtitle_url if isinstance(subtitle_url, str) and subtitle_url else None)
 
     raise TTSError("MiniMax TTS 重試耗盡") from last_exc
 
 
 def _make_minimax_line_synth(
     client: httpx.AsyncClient, settings: Settings, speed: float
-) -> Callable[[int, str, str, str | None, Path], Awaitable[float]]:
-    """綁定 client/speed 的 MiniMax 單行合成器（與 edge 路徑同簽名）。"""
+) -> Callable[[int, str, str, str | None, Path], Awaitable[tuple[float, list[WordOffset]]]]:
+    """綁定 client/speed 的 MiniMax 單行合成器（與 edge 路徑同簽名）。
+
+    回 (duration, word_offsets)：word_offsets 給 SynthSegment.word_offsets 用。
+    """
 
     async def synth_line(
         index: int, speaker: str, text: str, emotion: str | None, out_path: Path
-    ) -> float:
+    ) -> tuple[float, list[WordOffset]]:
         voice = MINIMAX_VOICES.get(speaker)
         if voice is None:
             raise TTSError(f"未知主持人 {speaker!r}，無對應 MiniMax voice")
         voice_setting: dict[str, object] = {"voice_id": voice, "speed": speed}
         if emotion in _MINIMAX_EMOTIONS:
             voice_setting["emotion"] = emotion
-        audio = await _minimax_tts_request(
+        audio, subtitle_url = await _minimax_tts_request(
             client,
             settings,
             {
@@ -268,6 +361,11 @@ def _make_minimax_line_synth(
                 "text": text,
                 "voice_setting": voice_setting,
                 "audio_setting": {"format": "mp3", "sample_rate": 32000},
+                # 開詞級字幕（練習模式 word click 用）。字幕單位 ms，存在
+                # subtitle_file URL；缺這個參數就拿不到詞級 boundary。
+                "subtitle_enable": True,
+                "subtitle_type": "word",
+                "stream": False,
             },
         )
         raw_path = out_path.with_name(f"{out_path.stem}_raw{out_path.suffix}")
@@ -275,15 +373,33 @@ def _make_minimax_line_synth(
         # 與 edge 路徑同樣去頭尾靜音——供應商無論誰，cue 時間軸都要貼著實際語音。
         _trim_silence(raw_path, out_path)
         raw_path.unlink(missing_ok=True)
-        return _probe_duration(out_path)
+        duration = _probe_duration(out_path)
+        # word boundary：抓 subtitle_file 拿詞級字幕。失敗不擋合成（空 list fallback）。
+        word_offsets = await _fetch_word_boundary(client, subtitle_url) if subtitle_url else []
+        return duration, word_offsets
 
     return synth_line
+
+
+async def _edge_line_with_word_offsets(
+    index: int,
+    speaker: str,
+    text: str,
+    emotion: str | None,
+    out_path: Path,
+    rate: str,
+) -> tuple[float, list[WordOffset]]:
+    """edge-tts fallback：拿 duration 但不存 word_offsets（精度差，不上傳）。"""
+    duration = await _synth_line_edge(index, speaker, text, emotion, out_path, rate)
+    return duration, []
 
 
 async def _run_lines(
     script: ScriptJSON,
     workdir: Path,
-    synth_line: Callable[[int, str, str, str | None, Path], Awaitable[float]],
+    synth_line: Callable[
+        [int, str, str, str | None, Path], Awaitable[tuple[float, list[WordOffset]]]
+    ],
 ) -> list[SynthSegment]:
     """逐行跑指定合成器，組出 SynthSegment list（順序即播放順序）。"""
     workdir.mkdir(parents=True, exist_ok=True)
@@ -291,7 +407,7 @@ async def _run_lines(
     for i, line in enumerate(script.script):
         out_path = workdir / f"line_{i:03d}_{line.speaker}.mp3"
         emotion = getattr(line, "emotion", None)
-        duration = await synth_line(i, line.speaker, line.text, emotion, out_path)
+        duration, word_offsets = await synth_line(i, line.speaker, line.text, emotion, out_path)
         segments.append(
             SynthSegment(
                 index=i,
@@ -301,6 +417,7 @@ async def _run_lines(
                 audio_path=out_path,
                 duration=duration,
                 pause_before=line.pause_before,
+                word_offsets=word_offsets,
             )
         )
     return segments
@@ -341,7 +458,7 @@ async def synth_script(
 
     async def edge_line(
         index: int, speaker: str, text: str, emotion: str | None, out_path: Path
-    ) -> float:
-        return await _synth_line_edge(index, speaker, text, emotion, out_path, rate)
+    ) -> tuple[float, list[WordOffset]]:
+        return await _edge_line_with_word_offsets(index, speaker, text, emotion, out_path, rate)
 
     return await _run_lines(script, workdir, edge_line), "edge"

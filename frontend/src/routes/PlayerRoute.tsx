@@ -1,6 +1,6 @@
 import { useState, useEffect, useMemo, useCallback, useRef } from 'react'
 import { useParams, useNavigate, useLocation } from 'react-router-dom'
-import { Sparkles, BookMarked, MessageCircle } from 'lucide-react'
+import { Sparkles, BookMarked, MessageCircle, Headphones } from 'lucide-react'
 import { toast } from 'sonner'
 import { api } from '../api'
 import { ErrorBanner } from '../components/primitives/ErrorBanner'
@@ -42,7 +42,7 @@ export function PlayerRoute() {
   const hasNotifiedDueRef = useRef(false)
   const dueNotifiedEpisodeIdRef = useRef<string | null>(null)
 
-  const { currentTime, isPlaying, duration, seekTo, play, pause, loadProgress, setPlaybackRate, loadState, currentEpisode, setCurrentEpisode, getSegmentPlayer } = usePlayer()
+  const { currentTime, isPlaying, duration, seekTo, seekToWord, play, pause, loadProgress, setPlaybackRate, loadState, currentEpisode, setCurrentEpisode, getSegmentPlayer } = usePlayer()
   const { settings } = useSettings()
   const { markPlayed } = useDailyOrder()
   const { addListenMinutes, addLookupCount, markListened } = useActivity()
@@ -98,6 +98,29 @@ export function PlayerRoute() {
     if (!settings.popupEnabled) return
     await wordLookup.open(word, cue)
   }
+
+  /** 點字嘗試 seek 到該字時間點（練習模式 word click）。
+   *  cue.words 用的是 TTS 給的 word boundary，跟 splitTextToWords 的 token 切分
+   *  不一定 1:1（heuristic vs ASR）。這裡用「cue.words 中第一個 word 字串開頭
+   *  對得起來 token」的策略找對應 word index；找不到就 fallback cue.start。
+   *  回 true 表示已 seek、LyricsView 不要走查詞 fallback。 */
+  const handleWordSeek = useCallback((word: string, cue: Cue): boolean => {
+    const ep = episode
+    if (!ep) return false
+    const cueIdx = ep.cues.indexOf(cue)
+    if (cueIdx < 0) return false
+    const words = cue.words
+    if (!words || words.length === 0) return false
+    const idx = words.findIndex((w) => w.word === word)
+    if (idx < 0) {
+      // 字串比對失敗（miniMax tokenize 跟 splitTextToWords 不一致）：
+      // 跳到 cue 開頭，至少做到 cue-level seek。
+      seekTo(cue.start)
+      return true
+    }
+    const ok = seekToWord(cueIdx, idx)
+    return ok
+  }, [episode, seekTo, seekToWord])
 
   const handleCueClick = useCallback((cue: Cue) => {
     retargetCueLoop(cue)
@@ -171,6 +194,7 @@ export function PlayerRoute() {
           currentTime={currentTime}
           onWordClick={handleWordClick}
           onCueClick={handleCueClick}
+          onWordSeek={handleWordSeek}
           references={episode.references}
         />
       </main>
@@ -190,6 +214,13 @@ export function PlayerRoute() {
           >
             <MessageCircle size={14} />
             複製對話練習 Prompt
+          </button>
+          <button
+            onClick={() => navigate(`/practice/${episode.id}`)}
+            className="flex items-center gap-1.5 text-xs text-text-secondary hover:text-text-primary transition-colors"
+          >
+            <Headphones size={14} />
+            進入練習模式
           </button>
           <button
             onClick={() => setIsVocabDrawerOpen(true)}

@@ -107,9 +107,15 @@ export function PlayerProvider({ children, lastPlayedEpisodeId, lastPlayedPositi
     if (!Number.isFinite(time)) return
     playerRef.current.seekTo(time)
   }, [])
+  const seekToWord = useCallback((cueIdx: number, wordIdx: number): boolean => {
+    return playerRef.current.seekToWord(cueIdx, wordIdx)
+  }, [])
 
   const play = useCallback(() => { playerRef.current.play() }, [])
   const pause = useCallback(() => { playerRef.current.pause() }, [])
+  const loadEpisode = useCallback((ep: Episode | null) => {
+    playerRef.current.loadEpisode(ep)
+  }, [])
   const getSegmentPlayer = useCallback(() => playerRef.current, [])
   const getCurrentTime = useCallback(() => playerRef.current.currentTime, [])
 
@@ -124,8 +130,10 @@ export function PlayerProvider({ children, lastPlayedEpisodeId, lastPlayedPositi
     loadState: player.loadState,
     currentEpisode,
     seekTo,
+    seekToWord,
     play,
     pause,
+    loadEpisode,
     setPlaybackRate: player.setPlaybackRate,
     setMuted: player.setMuted,
     loadProgress,

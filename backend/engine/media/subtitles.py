@@ -12,7 +12,7 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 
-from shared.models import Cue
+from shared.models import Cue, WordOffset
 
 from .tts import SynthSegment
 
@@ -28,6 +28,9 @@ def build_timeline(
     long_pause_sec 必須跟前端播放器插入的靜音長度一致（音檔已不再合併成整集 mp3，
     pause_before 邊界的長靜音改由前端在 source.onended 後 setTimeout 模擬），
     否則字幕時間軸會跟前端實際播放脫鉤。
+
+    word_offsets：從 SynthSegment.word_offsets 帶進 Cue.words（詞級字幕；練習模式
+    word click 用）。edge-tts fallback 給空 list（不存）。
     """
     long_pause = pause_sec if long_pause_sec is None else long_pause_sec
     cues: list[Cue] = []
@@ -35,6 +38,12 @@ def build_timeline(
     for idx, seg in enumerate(segs):
         start = cursor
         end = start + seg.duration
+        # 轉成 API 端的 WordOffset（共用 dataclass 是 tts.WordOffset，但 Cue 期待
+        # shared.models.api.WordOffset；兩個欄位相同但型別系統視為不同）。
+        words: list[WordOffset] | None = (
+            [WordOffset(word=w.word, start=w.start_sec, end=w.end_sec) for w in seg.word_offsets]
+            if seg.word_offsets else None
+        )
         cues.append(
             Cue(
                 index=idx + 1,
@@ -43,6 +52,7 @@ def build_timeline(
                 zh=seg.zh,
                 start=round(start, 3),
                 end=round(end, 3),
+                words=words,
             )
         )
         nxt = segs[idx + 1] if idx + 1 < len(segs) else None
@@ -92,7 +102,17 @@ def write_vtt(cues: Sequence[Cue]) -> str:
 
 
 def cues_to_json(cues: Sequence[Cue]) -> list[dict[str, object]]:
-    """Cue list → camelCase dict list（前端播放頁直接吃）。"""
+    """Cue list → camelCase dict list（前端播放頁直接吃）。
+
+    words=None 的 cue 不帶 words 欄位（向後相容舊 client；前端 words 缺欄位
+    走 cue-level click fallback）。
+    """
     # ponytail: 砍掉 burn_video 之後 mp4 不再生，前端只吃 Cue list 自己 render；
     # raw srt/vtt 字串留著備用
-    return [cue.model_dump(by_alias=True) for cue in cues]
+    out: list[dict[str, object]] = []
+    for cue in cues:
+        d = cue.model_dump(by_alias=True)
+        if d.get("words") is None:
+            d.pop("words", None)
+        out.append(d)
+    return out

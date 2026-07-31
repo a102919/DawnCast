@@ -39,6 +39,10 @@ export interface SegmentPlayer {
   play(): void
   pause(): void
   seekTo(globalSec: number): void
+  /** 練習模式 word click：跳到 (cue.start + word.start)。需要 cue.words 有值；
+   *  舊集 / edge-tts fallback 沒 word boundary 時，wordStartSecFallback 兜底用
+   *  cue.start（整句 click 行為）。回 true 表示有跳，false 表示資料不足。 */
+  seekToWord(cueIdx: number, wordIdx: number): boolean
   setPlaybackRate(rate: number): void
   setMuted(m: boolean): void
   playSegment(segmentIdx: number, offsetSec: number, durationSec: number): void
@@ -101,15 +105,22 @@ export function useSegmentPlayer(): SegmentPlayer {
         }
         // 確保下一段一定 preload 過（在這之前使用者可能手動切了進度，預載已被
         // 跳過的更後段；這裡補一次保險）。
-        if (!nextSeg || nextSeg.audioUrl !== ep.segments[next].audioUrl) {
-          engine.preload(ep.segments[next].audioUrl)
+        const nextUrl = ep.segments[next].audioUrl
+        if (!nextSeg || nextSeg.audioUrl !== nextUrl) {
+          engine.preload(nextUrl)
         }
         segIdxRef.current = next
-        const gapSec = Math.max(0, ep.segments[next].start - ep.segments[cur].end)
-        window.setTimeout(() => {
-          if (!isPlayingRef.current) return
+        // 等下一段真的 ready（canplay/canplaythrough）才 startMain，不再用
+        // setTimeout 模擬 gap——後端已修 LAME front padding，segment 邊界 0ms；
+        // setTimeout 的 26ms frame-boundary 漂移才是 click 的源頭。
+        // 使用者已 pause 就不要自動接播（避免 race 把暫停蓋掉）。
+        if (!isPlayingRef.current) return
+        void engine.onceReady(nextUrl).then((ok) => {
+          if (!ok || !isPlayingRef.current) return
+          // 二次檢查 segIdxRef：seek 後 useEffect 可能已切到別段，不再接播。
+          if (segIdxRef.current !== next) return
           startMainRef.current(next, 0)
-        }, (gapSec / rateRef.current) * 1000)
+        })
       },
       () => {
         // play() promise rejected（通常是 iOS 沒拿到授權、自動接播時環境拒絕）
@@ -182,6 +193,23 @@ export function useSegmentPlayer(): SegmentPlayer {
     if (wasPlaying) startMain(idx, offsetSec)
   }, [startMain, stopActive])
 
+  const seekToWord = useCallback((cueIdx: number, wordIdx: number): boolean => {
+    const ep = episodeRef.current
+    if (!ep) return false
+    const cue = ep.cues[cueIdx]
+    if (!cue) return false
+    const words = cue.words
+    if (!words) {
+      // 沒 word boundary（舊集 / edge-tts fallback）：跳到 cue 開頭，整句 click 行為。
+      seekTo(cue.start)
+      return false
+    }
+    const word = words[wordIdx]
+    if (!word) return false
+    seekTo(cue.start + word.start)
+    return true
+  }, [seekTo])
+
   const setPlaybackRate = useCallback((rate: number) => {
     rateRef.current = rate
     setPlaybackRateState(rate)
@@ -216,6 +244,6 @@ export function useSegmentPlayer(): SegmentPlayer {
 
   return {
     loadState, isPlaying, currentTime, duration, playbackRate, muted,
-    unlock, loadEpisode, play, pause, seekTo, setPlaybackRate, setMuted, playSegment,
+    unlock, loadEpisode, play, pause, seekTo, seekToWord, setPlaybackRate, setMuted, playSegment,
   }
 }

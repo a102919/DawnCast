@@ -1,3 +1,10 @@
+/** 單字在 cue 音檔內的時間戳（秒，相對於 cue.start，不是 episode-global）。 */
+export type WordOffset = {
+  readonly word: string
+  readonly start: number
+  readonly end: number
+}
+
 export type Cue = {
   readonly index: number
   readonly speaker: string
@@ -5,6 +12,9 @@ export type Cue = {
   readonly zh: string
   readonly start: number
   readonly end: number
+  /** 詞級字幕：練習模式 word click 用。舊集 / edge-tts fallback 為 undefined。
+   *  words[i].start 是相對於 cue.start 的秒數。 */
+  readonly words?: readonly WordOffset[]
 }
 
 /** 集數外部來源連結（給播放器「參考資料」區塊使用）。 */
@@ -25,6 +35,10 @@ export type Segment = {
   readonly duration: number
   readonly start: number
   readonly end: number
+  /** 詞級字幕 JSON 簽章 URL：null 表示沒 word boundary（舊集 / edge fallback）。
+   *  實務上前端 Cue.words 已內嵌 word 資料（後端 build_timeline 串進去），
+   *  這欄位保留給未來 lazy-load word JSON 用，目前多數場景直接讀 Cue.words。 */
+  readonly wordOffsetsUrl?: string | null
 }
 
 export type Episode = {

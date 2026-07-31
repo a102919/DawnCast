@@ -62,6 +62,14 @@ export interface AudioEngine {
   setRate(handle: PlaybackHandle, rate: number): void
   currentPositionSec(handle: PlaybackHandle): number
   setMuted(m: boolean): void
+  /** 查某 URL 對應 element 的 readyState（HAVE_FUTURE_DATA=3 代表可播）。
+   *  給 useSegmentPlayer.onended 在切下一段前確認下一段已 canplay，避免 setTimeout
+   *  模擬 gap 帶來的 frame-boundary 26ms 誤差。 */
+  getReadyState(url: string): number
+  /** 等某 URL 對應 element 進入 readyState >= 3 才 resolve。idempotent：
+   *  如果該 element 已經 ready，promise 立刻 resolve；如果多個 caller 同時等同一個
+   *  URL，共享同一個 promise（不會重複註冊 canplay listener）。 */
+  onceReady(url: string): Promise<boolean>
 }
 
 /** preservesPitch 未進所有 TS lib/瀏覽器版本，連同 webkit 前綴一起設。 */
@@ -122,6 +130,44 @@ export function createAudioEngine(): AudioEngine {
     // 仍指向「剛播完」的元素，play() 從新 src 啟動仍會在同一個 hardware path
     // —— 不同元素讓兩個 src 在背景同時存在，瀏覽器切換更流暢。
     return activeMainEl === mainA ? mainB : mainA
+  }
+
+  // per-URL onceReady 共享 promise cache：避免多個 caller 同時等同一個 URL
+  // 重複註冊 canplay listener。元素 src 被換掉（其他 segment 接手）時清掉。
+  const readyPromises = new Map<string, Promise<boolean>>()
+
+  function getReadyState(url: string): number {
+    for (const el of [mainA, mainB]) {
+      if (el.src && el.src.includes(url)) return el.readyState
+    }
+    return 0
+  }
+
+  function onceReady(url: string): Promise<boolean> {
+    // 已經 ready 就直接 resolve，不重新註冊 listener。
+    if (getReadyState(url) >= 3) return Promise.resolve(true)
+    const cached = readyPromises.get(url)
+    if (cached) return cached
+    const promise = new Promise<boolean>((resolve) => {
+      const el = pickMainEl(url)
+      const onReady = () => { cleanup(); readyPromises.delete(url); resolve(true) }
+      const onError = () => { cleanup(); readyPromises.delete(url); resolve(false) }
+      const cleanup = () => {
+        el.removeEventListener('canplaythrough', onReady)
+        el.removeEventListener('canplay', onReady)
+        el.removeEventListener('error', onError)
+      }
+      // 先註冊 listener 再設 src：fake/mock audio engine 的 src setter 會同步觸發
+      // canplay 事件，listener 沒先掛上就漏接，promise 永遠卡住。
+      el.addEventListener('canplaythrough', onReady, { once: true })
+      el.addEventListener('canplay', onReady, { once: true })
+      el.addEventListener('error', onError, { once: true })
+      if (!el.src.includes(url)) el.src = url
+      // src setter 可能已經同步觸發 canplay 過了（race），再驗一次 readyState。
+      if (el.readyState >= 3) { onReady() }
+    })
+    readyPromises.set(url, promise)
+    return promise
   }
 
   function unlock(targetUrl?: string): void {
@@ -265,5 +311,5 @@ export function createAudioEngine(): AudioEngine {
     for (const el of all) el.muted = m
   }
 
-  return { unlock, preload, startPlayback, stop, setRate, currentPositionSec: positionOf, setMuted }
+  return { unlock, preload, startPlayback, stop, setRate, currentPositionSec: positionOf, setMuted, getReadyState, onceReady }
 }

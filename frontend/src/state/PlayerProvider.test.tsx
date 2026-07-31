@@ -28,6 +28,7 @@ vi.mock('./useSegmentPlayer', () => ({
     play: vi.fn(),
     pause: vi.fn(),
     seekTo: vi.fn(),
+    seekToWord: vi.fn(() => false),
     setPlaybackRate: vi.fn(),
     setMuted: vi.fn(),
     playSegment: vi.fn(),

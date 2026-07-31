@@ -11,6 +11,7 @@ from __future__ import annotations
 import re
 import shutil
 from pathlib import Path
+from typing import cast
 
 import httpx
 import pytest
@@ -22,6 +23,7 @@ from engine.media.tts import (
     MINIMAX_VOICES,
     VOICES,
     SynthSegment,
+    WordOffset,
     _make_minimax_line_synth,
     _minimax_tts_request,
     synth_script,
@@ -157,8 +159,27 @@ async def test_minimax_tts_request_decodes_hex() -> None:
         )
 
     async with _client_with(handler) as client:
-        audio = await _minimax_tts_request(client, _tts_settings(), {"text": "hi"})
+        audio, subtitle_url = await _minimax_tts_request(client, _tts_settings(), {"text": "hi"})
     assert audio == payload_audio
+    assert subtitle_url is None
+
+
+async def test_minimax_tts_request_returns_subtitle_url_when_present() -> None:
+    payload_audio = b"x"
+    subtitle_url = "https://example.test/sub.json"
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "base_resp": {"status_code": 0},
+                "data": {"audio": payload_audio.hex(), "subtitle_file": subtitle_url},
+            },
+        )
+
+    async with _client_with(handler) as client:
+        _, returned = await _minimax_tts_request(client, _tts_settings(), {"text": "hi"})
+    assert returned == subtitle_url
 
 
 async def test_minimax_tts_request_business_error_raises() -> None:
@@ -177,13 +198,18 @@ async def test_minimax_line_synth_帶合法_emotion_進voice_setting(
 ) -> None:
     monkeypatch.setattr(tts_mod, "_trim_silence", lambda src, dst: dst.write_bytes(b"mp3"))
     monkeypatch.setattr(tts_mod, "_probe_duration", lambda p: 1.0)
+    monkeypatch.setattr(
+        tts_mod, "_fetch_word_boundary", lambda client, url: []
+    )
 
     captured: list[dict[str, object]] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
         import json as _json
 
-        captured.append(_json.loads(request.content))
+        body = _json.loads(request.content)
+        assert isinstance(body, dict)
+        captured.append({k: v for k, v in body.items()})
         return httpx.Response(
             200, json={"base_resp": {"status_code": 0}, "data": {"audio": b"x".hex()}}
         )
@@ -192,7 +218,11 @@ async def test_minimax_line_synth_帶合法_emotion_進voice_setting(
         synth_line = _make_minimax_line_synth(client, _tts_settings(), 1.0)
         await synth_line(0, "Alex", "hi", "happy", tmp_path / "line_000.mp3")
 
-    assert captured[0]["voice_setting"]["emotion"] == "happy"
+    voice_setting = cast("dict[str, object]", captured[0]["voice_setting"])
+    assert voice_setting["emotion"] == "happy"
+    # 練習模式 word boundary：請求要帶 subtitle_enable+subtitle_type=word
+    assert captured[0]["subtitle_enable"] is True
+    assert captured[0]["subtitle_type"] == "word"
 
 
 async def test_minimax_line_synth_無效_emotion不帶進voice_setting(
@@ -201,13 +231,18 @@ async def test_minimax_line_synth_無效_emotion不帶進voice_setting(
     """LLM 拼錯值或沒標（None）都要退化成現況行為：不帶 emotion key。"""
     monkeypatch.setattr(tts_mod, "_trim_silence", lambda src, dst: dst.write_bytes(b"mp3"))
     monkeypatch.setattr(tts_mod, "_probe_duration", lambda p: 1.0)
+    monkeypatch.setattr(
+        tts_mod, "_fetch_word_boundary", lambda client, url: []
+    )
 
     captured: list[dict[str, object]] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
         import json as _json
 
-        captured.append(_json.loads(request.content))
+        body = _json.loads(request.content)
+        assert isinstance(body, dict)
+        captured.append({k: v for k, v in body.items()})
         return httpx.Response(
             200, json={"base_resp": {"status_code": 0}, "data": {"audio": b"x".hex()}}
         )
@@ -217,8 +252,42 @@ async def test_minimax_line_synth_無效_emotion不帶進voice_setting(
         await synth_line(0, "Alex", "hi", "excited", tmp_path / "line_000.mp3")
         await synth_line(1, "Alex", "hi", None, tmp_path / "line_001.mp3")
 
-    assert "emotion" not in captured[0]["voice_setting"]
-    assert "emotion" not in captured[1]["voice_setting"]
+    vs0 = cast("dict[str, object]", captured[0]["voice_setting"])
+    vs1 = cast("dict[str, object]", captured[1]["voice_setting"])
+    assert "emotion" not in vs0
+    assert "emotion" not in vs1
+
+
+async def test_minimax_line_synth_帶word_offsets回傳(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """MiniMax 路徑：subtitle_file 抓到 word boundary → SynthSegment.word_offsets 帶值。"""
+    from engine.media.tts import WordOffset
+
+    monkeypatch.setattr(tts_mod, "_trim_silence", lambda src, dst: dst.write_bytes(b"mp3"))
+    monkeypatch.setattr(tts_mod, "_probe_duration", lambda p: 1.0)
+
+    async def fake_boundary(client, url):
+        return [WordOffset(word="hi", start_sec=0.1, end_sec=0.5)]
+
+    monkeypatch.setattr(tts_mod, "_fetch_word_boundary", fake_boundary)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "base_resp": {"status_code": 0},
+                "data": {"audio": b"x".hex(), "subtitle_file": "https://x/sub.json"},
+            },
+        )
+
+    async with _client_with(handler) as client:
+        synth_line = _make_minimax_line_synth(client, _tts_settings(), 1.0)
+        duration, words = await synth_line(0, "Alex", "hi", None, tmp_path / "line_000.mp3")
+
+    assert duration == 1.0
+    assert len(words) == 1
+    assert words[0].word == "hi"
 
 
 async def test_synth_script_falls_back_to_edge_on_minimax_failure(
@@ -236,10 +305,11 @@ async def test_synth_script_falls_back_to_edge_on_minimax_failure(
 
     async def fake_edge(
         index: int, speaker: str, text: str, emotion: str | None, out_path: Path, rate: str
-    ) -> float:
+    ) -> tuple[float, list[WordOffset]]:
+
         edge_calls.append(f"{speaker}:{rate}")
         out_path.write_bytes(b"mp3")
-        return 1.0
+        return 1.0, []
 
     monkeypatch.setattr(tts_mod, "_synth_line_edge", fake_edge)
 
@@ -248,9 +318,97 @@ async def test_synth_script_falls_back_to_edge_on_minimax_failure(
 
     assert provider == "edge"
     assert len(segs) == len(script.script)
+    # edge-tts 路徑：word_offsets 為空 list（不存邊界差的字幕）
+    assert all(s.word_offsets == [] for s in segs)
     # 全部行都由 edge 合成，且 A2 語速（-15%）有帶到
     assert len(edge_calls) == len(script.script)
     assert all(call.endswith(":-15%") for call in edge_calls)
+
+
+def test_trim_silence_strips_lame_front_padding(tmp_path: Path) -> None:
+    """_trim_silence 重編碼後要多切一次 LAME 開頭 encoder delay（576 samples ≈ 13ms）。
+
+    用 ffmpeg lavfi 產 1 秒 440Hz 正弦波當 fixture（fake bytes ffmpeg 會 decode 失敗）。
+    重點：
+    1. process 不炸、dst 檔案產出
+    2. intermediate 不殘留
+    3. dst 開頭不能是 0 bytes（ffmpeg frame-accurate seek 會保留一些前導）
+    """
+    import subprocess as _sp
+
+    from engine.media.tts import _trim_silence
+
+    src = tmp_path / "in.mp3"
+    _sp.run(
+        [
+            "ffmpeg",
+            "-y",
+            "-loglevel",
+            "error",
+            "-f",
+            "lavfi",
+            "-i",
+            "sine=frequency=440:duration=1",
+            "-ar",
+            "24000",
+            "-ac",
+            "1",
+            "-c:a",
+            "libmp3lame",
+            "-b:a",
+            "128k",
+            str(src),
+        ],
+        check=True,
+        capture_output=True,
+    )
+
+    dst = tmp_path / "out.mp3"
+    _trim_silence(src, dst)
+
+    assert dst.exists(), "trim 後 dst 必須產出"
+    assert (tmp_path / "out_trimmed.mp3").exists() is False, "intermediate 不應殘留"
+    assert dst.stat().st_size > 0
+
+
+async def test_fetch_word_boundary_parses_json(tmp_path: Path) -> None:
+    from engine.media.tts import _fetch_word_boundary
+
+    subtitle_url = "https://example.test/sub.json"
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json=[
+                {"text": "你", "start_time": 0, "end_time": 100},
+                {"text": "好", "start_time": 100, "end_time": 300},
+                {"text": "", "start_time": 0, "end_time": 50},  # 空字 → 跳過
+                {"text": "x", "start_time": "bad"},  # 缺欄位 → 跳過
+                "not-a-dict",  # 非 dict → 跳過
+            ],
+        )
+
+    async with _client_with(handler) as client:
+        offsets = await _fetch_word_boundary(client, subtitle_url)
+
+    assert len(offsets) == 2
+    assert offsets[0].word == "你"
+    assert offsets[0].start_sec == 0.0
+    assert offsets[0].end_sec == 0.1
+    assert offsets[1].end_sec == 0.3
+
+
+async def test_fetch_word_boundary_returns_empty_on_error() -> None:
+    """抓字幕失敗不該擋合成——回空 list，前端走 cue-level fallback。"""
+    from engine.media.tts import _fetch_word_boundary
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(500)
+
+    async with _client_with(handler) as client:
+        offsets = await _fetch_word_boundary(client, "https://example.test/sub.json")
+
+    assert offsets == []
 
 
 # ── 端對端時間軸對照 ──────────────────────────────────────────

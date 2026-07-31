@@ -15,7 +15,7 @@ from shared.config import get_settings
 from shared.models import Cue, ScriptJSON
 
 from .subtitles import build_timeline, cues_to_json, write_srt, write_vtt
-from .tts import SynthSegment, synth_script
+from .tts import SynthSegment, WordOffset, synth_script
 from .workdir import make_job_workdir
 
 __all__ = [
@@ -33,13 +33,20 @@ __all__ = [
 ]
 
 
+from dataclasses import field
+
+
 @dataclass(frozen=True)
 class SegmentArtifact:
-    """單行 TTS 產物：音檔路徑 + 真實時長。"""
+    """單行 TTS 產物：音檔路徑 + 真實時長 + 詞級字幕（練習模式 word click 用）。
+
+    word_offsets 從 SynthSegment 帶上來（MiniMax 路徑有、edge-tts fallback 空 list）。
+    """
 
     index: int
     audio_path: Path
     duration: float
+    word_offsets: list[WordOffset] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -83,7 +90,12 @@ async def render_episode(
     vtt = write_vtt(cues)
 
     segments = [
-        SegmentArtifact(index=i, audio_path=seg.audio_path, duration=seg.duration)
+        SegmentArtifact(
+            index=i,
+            audio_path=seg.audio_path,
+            duration=seg.duration,
+            word_offsets=list(seg.word_offsets),
+        )
         for i, seg in enumerate(segs)
     ]
 

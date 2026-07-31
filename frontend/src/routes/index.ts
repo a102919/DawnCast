@@ -1,5 +1,6 @@
 export { HomeRoute } from './HomeRoute'
 export { PlayerRoute } from './PlayerRoute'
+export { PracticeRoute } from './PracticeRoute'
 export { VocabRoute } from './VocabRoute'
 export { FavoritesRoute } from './FavoritesRoute'
 export { SettingsRoute } from './SettingsRoute'

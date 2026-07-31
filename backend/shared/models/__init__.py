@@ -34,6 +34,7 @@ from shared.models.api import (
     SourceReference,
     StageMetric,
     VocabItem,
+    WordOffset,
 )
 from shared.models.engine import (
     ANGLES,
@@ -111,4 +112,5 @@ __all__ = [
     "TopicType",
     "VerifiedClaim",
     "VocabItem",
+    "WordOffset",
 ]

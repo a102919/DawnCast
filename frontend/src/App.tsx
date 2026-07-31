@@ -5,7 +5,7 @@ import { useEffect, type ReactNode } from 'react'
 import { AuthProvider, ActivityProvider, EpisodesProvider, PlayerProvider, VocabProvider, SettingsProvider, FavoritesProvider, ChannelSubscriptionsProvider, DailyOrderProvider, useAuth, usePlayer, useActivity } from './state'
 import { TopBar, BottomNav, isImmersivePath } from './components/layout'
 import { MiniPlayer } from './components/player'
-import { HomeRoute, PlayerRoute, VocabRoute, FavoritesRoute, SettingsRoute, ProgressRoute, SessionRoute, DailyRoute, ChannelsRoute, ChannelDetailRoute, LoginRoute, AdminLayout, AdminEpisodesPage, AdminChannelsPage } from './routes'
+import { HomeRoute, PlayerRoute, PracticeRoute, VocabRoute, FavoritesRoute, SettingsRoute, ProgressRoute, SessionRoute, DailyRoute, ChannelsRoute, ChannelDetailRoute, LoginRoute, AdminLayout, AdminEpisodesPage, AdminChannelsPage } from './routes'
 import { useSprings } from './lib/motion'
 import { UpdatePrompt } from './components/UpdatePrompt'
 import { PushPrompt } from './components/PushPrompt'
@@ -47,6 +47,7 @@ function AnimatedRoutes() {
           <Route path="/" element={<HomeRoute />} />
           <Route path="/player" element={<PlayerRoute />} />
           <Route path="/player/:id" element={<PlayerRoute />} />
+          <Route path="/practice/:id" element={<PracticeRoute />} />
           <Route path="/vocab" element={<VocabRoute />} />
           <Route path="/favorites" element={<FavoritesRoute />} />
           <Route path="/daily" element={<DailyRoute />} />

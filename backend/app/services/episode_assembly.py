@@ -86,6 +86,9 @@ def _segment_metadata_from_script(script_json: Any) -> list[dict[str, Any]]:
     新方案下每行 mp3 對應一個 segment，duration 從該行 cue 實際時長推得。
     如果 script_json 沒有 cues（舊集沒存），回空 list——此時 segments 留空，
     前端走 audioUrl fallback（雖然 audioUrl 為 null，舊 client 會 graceful 失敗）。
+
+    word_offsets：從 script_json.cues[i].words 帶出（前端 Cue.words 已經有了，
+    這裡只負責 Segment 端的 metadata）。
     """
     cues = _cues(script_json)
     return [
@@ -94,6 +97,7 @@ def _segment_metadata_from_script(script_json: Any) -> list[dict[str, Any]]:
             "duration": max(0.0, cue.end - cue.start),
             "start": cue.start,
             "end": cue.end,
+            "words": list(cue.words) if cue.words else None,
         }
         for i, cue in enumerate(cues)
     ]
@@ -119,8 +123,16 @@ async def build_episode(slug: str, row: dict[str, Any]) -> Episode:
     segment_meta = _segment_metadata_from_script(script_j)
     segments: list[Segment] = []
     if audio_keys and len(audio_keys) == len(segment_meta):
+        # 同步批次簽章：mp3 keys + 對應 .words.json sidecar keys 一起簽。
+        # 沒 word_offsets 的 segment 不產生 sidecar key（前端拿 null URL → fallback）。
+        sidecar_keys = [
+            f"{k.removesuffix('.mp3')}.words.json"
+            for k, m in zip(audio_keys, segment_meta, strict=True)
+            if m.get("words")
+        ]
+        all_keys = audio_keys + sidecar_keys
         try:
-            signed = await asyncio.to_thread(r2.presigned_get_urls, audio_keys)
+            signed = await asyncio.to_thread(r2.presigned_get_urls, all_keys)
         except Exception:
             logger.exception("segments 批次簽章失敗 slug=%s", slug)
             signed = {}
@@ -128,6 +140,10 @@ async def build_episode(slug: str, row: dict[str, Any]) -> Episode:
             url = signed.get(key)
             if url is None:
                 continue
+            word_url: str | None = None
+            if meta.get("words"):
+                sidecar_key = f"{key.removesuffix('.mp3')}.words.json"
+                word_url = signed.get(sidecar_key)
             segments.append(
                 Segment(
                     index=meta["index"],
@@ -135,6 +151,7 @@ async def build_episode(slug: str, row: dict[str, Any]) -> Episode:
                     duration=meta["duration"],
                     start=meta["start"],
                     end=meta["end"],
+                    word_offsets_url=word_url,
                 )
             )
 

@@ -16,6 +16,10 @@ interface LyricsViewProps {
   readonly currentTime: number
   readonly onWordClick: (word: string, cue: Cue) => void
   readonly onCueClick?: (cue: Cue) => void
+  /** 點字時嘗試 seek 到該字時間點。回 true 表示已 seek，false 表示沒 word
+   *  boundary（fallback 由 LyricsView 決定是否改走 cue-level click）。
+   *  沒傳就不做任何額外處理（沿用既有「點字只查詞」行為）。 */
+  readonly onWordSeek?: (word: string, cue: Cue) => boolean
   /** 行動版參考資料浮動卡；桌面版由 PlayerRoute footer 另渲一份 */
   readonly references?: readonly SourceReference[]
 }
@@ -28,7 +32,7 @@ interface LyricsViewProps {
  * - 自動捲：activeCueIdx 變動時 scrollIntoView({ block: 'center' })。使用者手動滾動
  *   （wheel / touchmove）時暫停自動捲動，停手 3 秒後自動恢復跟隨當句。
  */
-export function LyricsView({ episodeId, episodeTitle, cues, currentTime, onWordClick, onCueClick, references }: LyricsViewProps) {
+export function LyricsView({ episodeId, episodeTitle, cues, currentTime, onWordClick, onCueClick, onWordSeek, references }: LyricsViewProps) {
   const { isInVocab } = useVocab()
   const art = useMemo(() => getCoverArt(episodeId), [episodeId])
   const activeCueIdx = useMemo(() => findActiveCueIndex(cues, currentTime), [cues, currentTime])
@@ -90,6 +94,13 @@ export function LyricsView({ episodeId, episodeTitle, cues, currentTime, onWordC
           {cues.map((cue, i) => {
             const isActive = i === activeCueIdx
             const tokens = splitTextToWords(cue.text)
+            const handleWord = (word: string) => {
+              // 練習模式 word seek：有 onWordSeek handler 優先叫（PlayerRoute 會在
+              // 內部決定走 word-level 還是 cue-level fallback）。
+              if (onWordSeek && onWordSeek(word, cue)) return
+              // 沒有 word seek handler 或 seek 拒絕（沒 word boundary）：走原本的查詞。
+              onWordClick(word, cue)
+            }
             return (
               <div
                 key={cue.index}
@@ -126,7 +137,7 @@ export function LyricsView({ episodeId, episodeTitle, cues, currentTime, onWordC
                   {renderTokenized(
                     cue.text,
                     tokens,
-                    word => onWordClick(word, cue),
+                    handleWord,
                     isInVocab,
                     { stopPropagation: true, nonVocabHoverClass: 'hover:bg-bg-secondary/60' },
                   )}
