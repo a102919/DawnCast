@@ -553,6 +553,13 @@ export const httpApi: Api = {
     )
   },
 
+  async getDailyOrder(id) {
+    return request<DailyOrder | null>(
+      `/daily-orders/${encodeURIComponent(id)}`,
+      { schema: DailyOrderSchema, nullable: true },
+    )
+  },
+
   async createDailyOrder(input) {
     return request<DailyOrder>('/daily-orders', { method: 'POST', body: input, schema: DailyOrderSchema })
   },

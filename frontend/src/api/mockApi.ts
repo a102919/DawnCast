@@ -208,12 +208,34 @@ function writeChannelSubs(slugs: readonly string[]): void {
   storageSet(CHANNEL_SUBS_KEY, [...slugs])
 }
 
+/** mock 沒有真 worker：queued 超過此毫秒數視為生成完成，read 路徑翻 ready，
+ *  讓 mock 模式能走完整狀態機（下單→pending→queued→ready→played）。 */
+const MOCK_READY_DELAY_MS = 8_000
+
+/** 舊 localStorage 訂單補預設欄位（對齊後端 DB default）＋ lazy 狀態演進。
+ *  純函式不落盤：updatedAt 不動，每次 read 重算，結果決定性。 */
+function normalizeOrder(o: DailyOrder, now: number): DailyOrder {
+  const status =
+    o.status === 'queued' && now - Date.parse(o.updatedAt) > MOCK_READY_DELAY_MS
+      ? 'ready'
+      : o.status
+  return {
+    ...o,
+    status,
+    entryMode: o.entryMode ?? 'topic',
+    lengthTier: o.lengthTier ?? 'medium',
+    ready: status === 'ready' || status === 'played',
+  }
+}
+
 /** 隨時點餐：單一陣列存全部訂單（歷史上允許同一天多筆），沒有分表查詢能力，
  *  直接在記憶體裡 filter/sort，鏡像後端 partial unique index 的「同一時間僅一筆
  *  進行中」語意由 createDailyOrder 自己檢查。 */
 function readDailyOrders(): DailyOrder[] {
   const parsed = storageGet<unknown[]>(DAILY_ORDERS_KEY)
-  return Array.isArray(parsed) ? (parsed as DailyOrder[]) : []
+  if (!Array.isArray(parsed)) return []
+  const now = Date.now()
+  return (parsed as DailyOrder[]).map(o => normalizeOrder(o, now))
 }
 
 function writeDailyOrders(orders: readonly DailyOrder[]): void {
@@ -363,6 +385,10 @@ export const mockApi: Api = {
     return orders.find(o => o.status === 'pending' || o.status === 'queued') ?? null
   },
 
+  async getDailyOrder(id) {
+    return readDailyOrders().find(o => o.id === id) ?? null
+  },
+
   async createDailyOrder(input) {
     const orders = readDailyOrders()
     if (orders.some(o => o.status === 'pending' || o.status === 'queued')) {
@@ -382,24 +408,35 @@ export const mockApi: Api = {
       updatedAt: now,
       entryMode: input.entryMode ?? 'topic',
       lengthTier: input.lengthTier ?? 'medium',
+      ready: false,
     }
     writeDailyOrders([...orders, order])
     return order
   },
 
   async listOrderHistory(limit, before) {
-    const played = readDailyOrders()
-      .filter(o => o.status === 'ready' || o.status === 'played')
+    const done = readDailyOrders()
+      .filter(o => o.status === 'ready' || o.status === 'played' || o.status === 'expired')
       .filter(o => before === undefined || o.createdAt < before)
       .sort((a, b) => (a.createdAt < b.createdAt ? 1 : -1))
-    return played.slice(0, limit ?? 20)
+    return done.slice(0, limit ?? 20)
   },
 
   async markOrderPlayed(id, playedAt) {
     const orders = readDailyOrders()
     const current = orders.find(o => o.id === id)
     if (!current) return null
-    const updated: DailyOrder = { ...current, status: 'played', playedAt, updatedAt: playedAt }
+    // 鏡像後端守衛：只有 ready/played 翻得動；played 冪等保留首次播放時間。
+    if (current.status !== 'ready' && current.status !== 'played') {
+      throw new Error('訂單尚未生成完成，無法標記播放')
+    }
+    const updated: DailyOrder = {
+      ...current,
+      status: 'played',
+      playedAt: current.playedAt ?? playedAt,
+      updatedAt: playedAt,
+      ready: true,
+    }
     writeDailyOrders(orders.map(o => o.id === id ? updated : o))
     return updated
   },
@@ -450,9 +487,15 @@ export const mockApi: Api = {
     return undefined
   },
 
-  // mock 模式沒有真 worker，createOrder 仍會呼叫此處但純 noop
-  async triggerGenerateJob(_orderId) {
-    return undefined
+  // mock 模式沒有真 worker：鏡像 jobs router 的 CAS，把 pending 翻 queued，
+  // 之後由 readDailyOrders 的 lazy 演進在 8 秒後翻 ready（走完整狀態機）。
+  async triggerGenerateJob(orderId) {
+    const orders = readDailyOrders()
+    writeDailyOrders(orders.map(o =>
+      o.id === orderId && o.status === 'pending'
+        ? { ...o, status: 'queued', updatedAt: new Date().toISOString() }
+        : o,
+    ))
   },
 
   async getActivity() {

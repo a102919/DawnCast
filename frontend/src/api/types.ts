@@ -76,12 +76,12 @@ export type DailyOrder = {
   readonly createdAt: string
   readonly updatedAt: string
   readonly playedAt?: string | null
-  /** Phase 4：入口類型，舊 localStorage 訂單會是 undefined，由 provider 補預設 'topic' */
-  readonly entryMode?: EntryMode
-  /** Phase 4：長度 tier，舊 localStorage 訂單會是 undefined，由 provider 補預設 'medium' */
-  readonly lengthTier?: LengthTier
-  /** queued 狀態下內容是否已生成完畢；舊 localStorage 訂單無此欄位 */
-  readonly ready?: boolean
+  /** 入口類型；後端 DB default 'topic'，舊 localStorage 訂單由 mockApi read 路徑補 */
+  readonly entryMode: EntryMode
+  /** 長度 tier；後端 DB default 'medium'，舊 localStorage 訂單由 mockApi read 路徑補 */
+  readonly lengthTier: LengthTier
+  /** status in (ready, played) 的便捷布林（後端計算） */
+  readonly ready: boolean
 }
 
 /** 建立新訂單的輸入：不帶 id/date/status/createdAt 等 server 決定的欄位。
@@ -354,6 +354,8 @@ export interface Api {
   isFavorite(id: string): Promise<boolean>
   // 點餐（隨時可點、佇列制：同一時間僅一筆進行中訂單）
   getActiveOrder(): Promise<DailyOrder | null>
+  /** 單筆訂單現況（Provider 輪詢用；比 /episode 輕，且分辨得出 expired） */
+  getDailyOrder(id: string): Promise<DailyOrder | null>
   createDailyOrder(input: DailyOrderInput): Promise<DailyOrder>
   listOrderHistory(limit?: number, before?: string): Promise<readonly DailyOrder[]>
   markOrderPlayed(id: string, playedAt: string): Promise<DailyOrder | null>
