@@ -230,6 +230,18 @@ describe('HomeRoute 今日推薦', () => {
   })
 })
 
+describe('HomeRoute 立即點播永久 CTA', () => {
+  it('episodes 為空時「立即點播」按鈕仍要渲染（不能因集數狀態消失）', async () => {
+    episodesState.episodes = []
+    const { root, container } = await renderRoute()
+    pendingRoots.push(root)
+
+    const ctaLink = container.querySelector('a[href="/daily"][aria-label="立即點播"]')
+    expect(ctaLink).not.toBeNull()
+    expect(ctaLink?.textContent).toContain('立即點播')
+  })
+})
+
 describe('HomeRoute 頻道區塊', () => {
   it('頻道目錄為空時顯示空狀態提示', async () => {
     listChannels.mockResolvedValueOnce([])
@@ -296,15 +308,5 @@ describe('HomeRoute 頻道區塊', () => {
     expect(container.textContent).toContain('根據你追蹤的頻道')
     expect(container.textContent).toContain('Recommended Ep')
     expect(container.textContent).toContain('科技日報')
-  })
-
-  it('每日訂閱入口卡存在且連到 /daily（從底部導覽移出後的補償入口）', async () => {
-    const { root, container } = await renderRoute()
-    pendingRoots.push(root)
-
-    // 無 delivery 時 HomeHeroFallback 本身也有一條「立即點餐」CTA 連到 /daily，
-    // 所以要在全部 /daily 連結裡找「每日訂閱」這張補償入口卡，不能只抓第一個。
-    const dailyLinks = Array.from(container.querySelectorAll('a[href="/daily"]'))
-    expect(dailyLinks.some(link => link.textContent?.includes('每日訂閱'))).toBe(true)
   })
 })

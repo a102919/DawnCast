@@ -1,5 +1,5 @@
 import { Link } from 'react-router-dom'
-import { Calendar, Play, Sparkles } from 'lucide-react'
+import { Play, Sparkles } from 'lucide-react'
 import { CEFR_COLOR, TOPIC_LABELS } from '../../lib'
 import type { MockEpisode } from '../../lib'
 import { EpisodeCover } from '../shared/EpisodeCover'
@@ -47,22 +47,13 @@ export function HomeHeroFallback({ featured }: HomeHeroFallbackProps) {
         </>
       }
       cta={
-        <>
-          <Link
-            to={`/player/${featured.id}`}
-            className="w-full justify-center px-3 sm:px-4 h-9 sm:h-10 rounded-full bg-bg-secondary text-text-primary text-xs sm:text-sm font-semibold flex items-center gap-1.5 active:scale-[0.97] transition-transform border border-border whitespace-nowrap focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-1"
-          >
-            <Play size={15} fill="currentColor" />
-            <span>先試聽</span>
-          </Link>
-          <Link
-            to="/daily"
-            className="w-full justify-center px-3 sm:px-4 h-9 sm:h-10 rounded-full bg-accent text-white text-xs sm:text-sm font-semibold flex items-center gap-1.5 active:scale-[0.97] transition-transform shadow-sm whitespace-nowrap focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-1"
-          >
-            <Calendar size={15} />
-            <span>立即點播</span>
-          </Link>
-        </>
+        <Link
+          to={`/player/${featured.id}`}
+          className="col-span-2 w-full justify-center px-3 sm:px-4 h-9 sm:h-10 rounded-full bg-accent text-white text-xs sm:text-sm font-semibold flex items-center gap-1.5 active:scale-[0.97] transition-transform shadow-sm whitespace-nowrap focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-1"
+        >
+          <Play size={15} fill="currentColor" />
+          <span>立即收聽</span>
+        </Link>
       }
     />
   )

@@ -1,8 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { AnimatePresence, motion } from 'framer-motion'
-import { Play, Brain, SearchX, CalendarDays, ChevronRight } from 'lucide-react'
-import { Card } from '../components/primitives/Card'
+import { Play, SearchX, CalendarDays } from 'lucide-react'
 import { Chip } from '../components/primitives/Chip'
 import { SectionLabel } from '../components/primitives/SectionLabel'
 import { ErrorBanner } from '../components/primitives/ErrorBanner'
@@ -11,13 +10,12 @@ import { HomeHeroFallback } from '../components/home/HomeHeroFallback'
 import { WeeklyCard } from '../components/home/WeeklyCard'
 import { ChannelsRail } from '../components/home/ChannelsRail'
 import { RecommendedRail } from '../components/home/RecommendedRail'
-import { useDailyOrder, useEpisodes, useVocab } from '../state'
+import { useDailyOrder, useEpisodes } from '../state'
 import { EpisodeRow } from '../components/shared/EpisodeRow'
 import { api } from '../api'
 import { TOPIC_LABELS } from '../lib'
 import type { TopicKey } from '../lib'
 import type { Episode } from '../types/episode'
-import { toIsoDate } from '../lib/dailyOrderDate'
 
 /** 今日推薦最多顯示幾張（featured 不夠時用 published desc 補到這個上限）。 */
 const TODAY_PICKS_LIMIT = 2
@@ -57,11 +55,8 @@ export function HomeRoute() {
   // migration 0025：ready 不再算進行中），但 hero 卡片這一輪還在顯示已送達的
   // 那集，連結仍要指回原本那張訂單。
   const [deliveredOrderId, setDeliveredOrderId] = useState<string | null>(null)
-  const { items: vocabItems } = useVocab()
   const { activeOrder, refresh: refreshOrders } = useDailyOrder()
   const activeOrderId = activeOrder?.id ?? null
-  const today = useMemo(() => toIsoDate(new Date()), [])
-  const dueCount = vocabItems.filter(v => !v.nextReview || v.nextReview <= today).length
 
   // 給「繼續學習」按鈕帶位用：新到首集，沒有就 fallback 留空（按鈕仍渲染但網址無效）
   const continueTargetId = episodes[0]?.id ?? null
@@ -213,38 +208,16 @@ export function HomeRoute() {
             <span>繼續學習</span>
           </button>
         </Link>
-        <Link to="/vocab" className="relative">
+        <Link to="/daily" aria-label="立即點播">
           <button
             type="button"
             className="w-full h-14 rounded-lg bg-bg-secondary border border-border text-text-primary font-medium flex items-center justify-center gap-2 hover:bg-border active:scale-[0.98] transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-1"
           >
-            <Brain size={16} />
-            <span>單字本</span>
+            <CalendarDays size={16} />
+            <span>立即點播</span>
           </button>
-          {dueCount > 0 && (
-            <span
-              aria-label={`可複習 ${dueCount} 張`}
-              className="absolute -top-1.5 -right-1.5 min-w-[20px] h-5 px-1.5 rounded-full bg-accent text-white text-[10px] font-semibold flex items-center justify-center ring-2 ring-bg-primary"
-            >
-              {dueCount}
-            </span>
-          )}
         </Link>
       </div>
-
-      {/* ── 每日訂閱入口：從底部導覽移出（讓位給「頻道」），首頁補一個顯眼入口 ── */}
-      <Link to="/daily">
-        <Card padding="sm" className="flex items-center gap-3 hover:border-accent/40 active:scale-[0.99] transition-[border-color,transform] duration-fast">
-          <div className="w-9 h-9 rounded-full bg-accent/10 text-accent grid place-items-center shrink-0">
-            <CalendarDays size={16} />
-          </div>
-          <div className="flex-1 min-w-0">
-            <div className="text-sm font-medium text-text-primary">每日訂閱</div>
-            <div className="text-xs text-text-secondary">查看訂單行事曆與歷史記錄</div>
-          </div>
-          <ChevronRight size={16} className="text-text-tertiary shrink-0" />
-        </Card>
-      </Link>
 
       {/* ── 你追蹤的頻道 + 根據追蹤頻道的推薦 ── */}
       <ChannelsRail />
