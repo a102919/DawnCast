@@ -225,6 +225,11 @@ export interface paths {
         /**
          * Mark Order Played
          * @description 標記已播放。找不到回 null（對齊 mockApi）。
+         *
+         *     只允許 ready/played → played：無守衛時前端可把 pending/queued 洗成
+         *     played 繞過 one-active 限制（生成中的訂單變孤兒），expired 也不該
+         *     被標成已播放。played 重複標記冪等，coalesce 保留首次播放時間。
+         *     比照 delete_daily_order：條件 UPDATE 判斷成功與否，避免 TOCTOU。
          */
         post: operations["mark_order_played_daily_orders__order_id__played_post"];
         delete?: never;

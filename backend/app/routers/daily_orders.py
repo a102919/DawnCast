@@ -150,26 +150,39 @@ async def get_daily_order(
 async def mark_order_played(
     order_id: str, body: MarkPlayedBody, user_id: str = Depends(get_current_user)
 ) -> ApiResponse[DailyOrder | None]:
-    """標記已播放。找不到回 null（對齊 mockApi）。"""
+    """標記已播放。找不到回 null（對齊 mockApi）。
+
+    只允許 ready/played → played：無守衛時前端可把 pending/queued 洗成
+    played 繞過 one-active 限制（生成中的訂單變孤兒），expired 也不該
+    被標成已播放。played 重複標記冪等，coalesce 保留首次播放時間。
+    比照 delete_daily_order：條件 UPDATE 判斷成功與否，避免 TOCTOU。
+    """
     async with connection() as conn, conn.cursor(row_factory=dict_row) as cur:
         await cur.execute(
             """
             update public.daily_orders
-            set status = 'played', played_at = %s, updated_at = %s
-            where user_id = %s and id = %s
+            set status = 'played', played_at = coalesce(played_at, %s), updated_at = %s
+            where user_id = %s and id = %s and status in ('ready', 'played')
             returning id
             """,
             (body.played_at, body.played_at, user_id, order_id),
         )
         updated = await cur.fetchone()
-        if updated is None:
+        if updated is not None:
+            await cur.execute(_SELECT + " where id = %s", (updated["id"],))
+            row = await cur.fetchone()
             await conn.commit()
-            return ok(None)
-        await cur.execute(_SELECT + " where id = %s", (updated["id"],))
-        row = await cur.fetchone()
+            assert row is not None
+            return ok(_row_to_order(row))
+        await cur.execute(
+            "select status from public.daily_orders where user_id = %s and id = %s",
+            (user_id, order_id),
+        )
+        existing = await cur.fetchone()
         await conn.commit()
-    assert row is not None
-    return ok(_row_to_order(row))
+    if existing is None:
+        return ok(None)
+    raise ConflictError("訂單尚未生成完成，無法標記播放")
 
 
 @router.delete("/{order_id}", response_model=ApiResponse[None])

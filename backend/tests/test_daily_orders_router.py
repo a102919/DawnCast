@@ -167,13 +167,19 @@ class FakeCursor(_BaseFakeCursor):
             self._rows = [{"id": new_id}]
             return
 
-        # markPlayed：UPDATE ... SET status='played' ... WHERE user_id=%s AND id=%s
+        # markPlayed：條件 UPDATE，只有 ready/played 翻得動（守衛＋冪等），
+        # coalesce 保留首次播放時間。
         if "update public.daily_orders" in s and "status = 'played'" in s:
-            played_at, _played_at2, user_id, order_id = params
+            played_at, _updated_at, user_id, order_id = params
             row = ORDERS.get(order_id)
-            if row is not None and row["user_id"] == user_id:
+            if (
+                row is not None
+                and row["user_id"] == user_id
+                and row["status"] in ("ready", "played")
+            ):
                 row["status"] = "played"
-                row["played_at"] = played_at
+                if row["played_at"] is None:
+                    row["played_at"] = played_at
                 self._rows = [{"id": order_id}]
                 self._rowcount = 1
             return
@@ -474,6 +480,7 @@ def test_history_paginated_by_created_at_desc(client: TestClient) -> None:
 
 
 def test_mark_played_updates_status(client: TestClient) -> None:
+    ORDERS[ORDER_A_PENDING]["status"] = "ready"  # 守衛後只有 ready 翻得動
     played_at = "2026-07-16T08:30:00Z"
     res = client.post(
         f"/daily-orders/{ORDER_A_PENDING}/played",
@@ -484,6 +491,35 @@ def test_mark_played_updates_status(client: TestClient) -> None:
     data = res.json()["data"]
     assert data["status"] == "played"
     assert data["playedAt"] == played_at
+
+
+@pytest.mark.parametrize("status", ["pending", "queued", "expired"])
+def test_mark_played_guard_rejects_non_ready(client: TestClient, status: str) -> None:
+    """未生成完成（或已退役）的訂單不得標記播放——無守衛時前端可把
+    active 訂單洗成 played 繞過 one-active 限制，生成中的訂單變孤兒。"""
+    ORDERS[ORDER_A_PENDING]["status"] = status
+    res = client.post(
+        f"/daily-orders/{ORDER_A_PENDING}/played",
+        json={"playedAt": "2026-07-16T08:30:00Z"},
+        headers=auth_header(USER_A),
+    )
+    assert res.status_code == 409
+    assert res.json()["error"]["code"] == "conflict"
+    assert ORDERS[ORDER_A_PENDING]["status"] == status  # 沒被洗掉
+
+
+def test_mark_played_idempotent_keeps_first_played_at(client: TestClient) -> None:
+    """played 重複標記回 200（冪等），且 played_at 保留首次播放時間。"""
+    first_played_at = ORDERS[ORDER_A_PLAYED]["played_at"]
+    res = client.post(
+        f"/daily-orders/{ORDER_A_PLAYED}/played",
+        json={"playedAt": "2026-07-20T09:00:00Z"},
+        headers=auth_header(USER_A),
+    )
+    assert res.status_code == 200
+    data = res.json()["data"]
+    assert data["status"] == "played"
+    assert data["playedAt"] == first_played_at
 
 
 def test_mark_played_returns_null_when_no_row(client: TestClient) -> None:
