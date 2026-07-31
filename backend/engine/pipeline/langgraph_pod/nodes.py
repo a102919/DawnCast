@@ -1428,7 +1428,7 @@ async def _invoke_writer(
         and not any("#OUTLINE" in fb.upper() for fb in base_feedback)
     )
     if reuse_outline:
-        outline = state["outline"]  # type: ignore[assignment]
+        outline = state["outline"]
         logger.info(
             "%s rewrite 第 %d 輪重用上一輪 outline big_topic=%s, 跳過重打",
             usage_node,
@@ -2098,7 +2098,9 @@ def _judge_passed(scores: dict[str, float], threshold: float) -> bool:
     return all(v >= threshold for v in scores.values())
 
 
-def judge_decision(state: PodState, config: RunnableConfig) -> Literal["upsert", "rewrite", "partial_rewrite"]:
+def judge_decision(
+    state: PodState, config: RunnableConfig
+) -> Literal["upsert", "rewrite", "partial_rewrite"]:
     """quality_judge 出來後的 conditional edge。
 
     五軸都過門檻 OR 已達 max iterations → 進 upsert；

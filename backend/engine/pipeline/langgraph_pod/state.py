@@ -75,6 +75,8 @@ class PodState(TypedDict, total=False):
     # P3 partial_rewrite 還會用 previous_segment_scripts 重用未失敗段的腳本。
     outline: ScriptOutline
     previous_segment_scripts: list[list[ScriptLine]]
+    # P3 partial_rewrite：per-segment judge 定位到的失敗段 index，空/缺 = 整輪重寫。
+    affected_segments: list[int]
     script: ScriptJSON
     engine_used: str
     judge_scores: dict[str, float]
