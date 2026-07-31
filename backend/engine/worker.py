@@ -207,7 +207,25 @@ async def _order_reconcile() -> None:
     0. active 太久且無 delivery（migration 0027）：退役 expired。這一步放最前面
        ——被退役的 row 不會被下面的重放／兜底重複處理，CAS 條件式 UPDATE 也保證
        不會跟剛好跑完的 deliver_and_mark_ready 搶同一筆。
+
+    -1. 自癒收斂（最先跑）：有 delivery 但狀態停在 pending/queued 的訂單直接
+       翻 ready——狀態由資料推導，任何寫入路徑漏翻牌最多卡 5 分鐘。先收斂
+       可把這種訂單從後續 expire／墊檔的集合拿掉，log 也乾淨。
     """
+    try:
+        promoted = await app_repo.promote_delivered_orders_to_ready()
+    except Exception:
+        # 收斂失敗不能拖垮整輪 reconcile，下一輪（5 分鐘後）會再試。
+        logger.exception("order_reconcile：自癒收斂步驟失敗，本輪略過")
+    else:
+        # 穩態必須是 0 筆——每筆命中都代表某條寫入路徑漏翻牌，warning 級才會被看到。
+        for o in promoted:
+            logger.warning(
+                "order_reconcile：訂單 %s 已有 delivery 但狀態未翻 ready，已自癒收斂"
+                "（某條寫入路徑漏翻牌，追上游）",
+                o["id"],
+            )
+
     try:
         expired = await app_repo.expire_old_active_orders(EXPIRE_AFTER_SEC)
     except Exception:

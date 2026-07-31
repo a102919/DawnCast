@@ -178,6 +178,36 @@ async def deliver_and_mark_ready(
     return inserted
 
 
+async def promote_delivered_orders_to_ready() -> list[dict[str, Any]]:
+    """自癒收斂：把「已有 delivery 但狀態還停在 pending/queued」的訂單翻 ready。
+
+    狀態機的既往 bug 全是同一型態——加新狀態或新路徑時漏改某條寫入路徑
+    （6910089 漏 ready 判定、12cad3a 漏 upper bound、af1cc12 重用命中漏翻牌）。
+    與其逐條路徑補牌，reconcile 每輪直接從資料推導狀態：deliveries 是事實
+    來源，有交付就該是 ready。任何未來漏翻牌的寫入路徑最多卡 5 分鐘。
+
+    穩態下必須回空——每筆命中都代表某條寫入路徑漏翻牌，caller 要 warning。
+    不納入 expired：左條件剛好被 one-active partial index 覆蓋（條件相同），
+    加 expired 會退化成全表掃描，且 deliver_and_mark_ready 已含 expired
+    復活，寫入路徑上不會產生「expired 且有 delivery」。
+    """
+    async with connection() as conn, conn.cursor(row_factory=dict_row) as cur:
+        await cur.execute(
+            """
+            update public.daily_orders
+               set status = 'ready', updated_at = now()
+             where status in ('pending', 'queued')
+               and exists (
+                 select 1 from public.deliveries d where d.order_id = public.daily_orders.id
+               )
+         returning id::text as id, user_id
+            """,
+        )
+        rows = await cur.fetchall()
+        await conn.commit()
+    return [dict(r) for r in rows]
+
+
 async def list_stuck_pending_orders(older_than_sec: int) -> list[dict[str, Any]]:
     """找 pending 超過門檻卻沒被翻 queued 的訂單（即時觸發 enqueue 失敗）。"""
     async with connection() as conn, conn.cursor(row_factory=dict_row) as cur:

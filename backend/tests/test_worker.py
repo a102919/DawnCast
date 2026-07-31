@@ -38,6 +38,11 @@ async def _fake_expire_empty(older_than_sec: int) -> list[dict[str, Any]]:
     return []
 
 
+async def _fake_promote_empty() -> list[dict[str, Any]]:
+    """promote_delivered_orders_to_ready 的預設 fake：回空 list（穩態，無漏翻牌）。"""
+    return []
+
+
 # ── _orchestrate_order ──────────────────────────────────────────────
 
 
@@ -125,6 +130,9 @@ async def test_order_reconcile_replays_stuck_pending(monkeypatch: pytest.MonkeyP
         worker.app_repo, "list_stuck_queued_orders_without_delivery", fake_list_queued
     )
     monkeypatch.setattr(worker.app_repo, "expire_old_active_orders", _fake_expire_empty)
+    monkeypatch.setattr(
+        worker.app_repo, "promote_delivered_orders_to_ready", _fake_promote_empty
+    )
     monkeypatch.setattr(worker, "queue", q)
 
     await worker._order_reconcile()
@@ -156,6 +164,9 @@ async def test_order_reconcile_skips_enqueue_when_cas_loses(
         worker.app_repo, "list_stuck_queued_orders_without_delivery", fake_list_queued
     )
     monkeypatch.setattr(worker.app_repo, "expire_old_active_orders", _fake_expire_empty)
+    monkeypatch.setattr(
+        worker.app_repo, "promote_delivered_orders_to_ready", _fake_promote_empty
+    )
     monkeypatch.setattr(worker, "queue", q)
 
     await worker._order_reconcile()
@@ -197,6 +208,9 @@ async def test_order_reconcile_delivers_evergreen_fallback_for_stuck_queued(
         worker.app_repo, "deliver_and_mark_ready", fake_deliver_and_mark_ready
     )
     monkeypatch.setattr(worker.app_repo, "expire_old_active_orders", _fake_expire_empty)
+    monkeypatch.setattr(
+        worker.app_repo, "promote_delivered_orders_to_ready", _fake_promote_empty
+    )
     monkeypatch.setattr(worker, "queue", _FakeQueue())
 
     await worker._order_reconcile()
@@ -238,6 +252,9 @@ async def test_order_reconcile_missing_evergreen_episode_does_not_raise(
         worker.app_repo, "deliver_and_mark_ready", fake_deliver_and_mark_ready
     )
     monkeypatch.setattr(worker.app_repo, "expire_old_active_orders", _fake_expire_empty)
+    monkeypatch.setattr(
+        worker.app_repo, "promote_delivered_orders_to_ready", _fake_promote_empty
+    )
     monkeypatch.setattr(worker, "queue", _FakeQueue())
 
     # 不拋例外；找不到墊檔常青集就略過這筆，不呼叫 deliver_and_mark_ready
@@ -275,6 +292,9 @@ async def test_order_reconcile_no_action_when_nothing_stuck(
     monkeypatch.setattr(worker.app_repo, "deliver_and_mark_ready", fail_if_called)
 
     monkeypatch.setattr(worker.app_repo, "expire_old_active_orders", _fake_expire_empty)
+    monkeypatch.setattr(
+        worker.app_repo, "promote_delivered_orders_to_ready", _fake_promote_empty
+    )
     monkeypatch.setattr(worker, "queue", q)
 
     await worker._order_reconcile()
@@ -289,9 +309,14 @@ async def test_order_reconcile_no_action_when_nothing_stuck(
 async def test_order_reconcile_expires_stuck_active_orders_first(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """expire 必須跑在重放 pending / 補 evergreen 之前——被退役的 row 不該被
+    """自癒收斂最先跑（先把有 delivery 的訂單翻 ready，從後續集合拿掉），
+    expire 其次，再來才是重放 pending / 補 evergreen——被退役的 row 不該被
     reconcile 重複處理。門檻傳 EXPIRE_AFTER_SEC（1800s）。"""
     call_order: list[str] = []
+
+    async def fake_promote() -> list[dict[str, Any]]:
+        call_order.append("promote")
+        return []
 
     async def fake_expire(older_than_sec: int) -> list[dict[str, Any]]:
         assert older_than_sec == worker.EXPIRE_AFTER_SEC
@@ -306,6 +331,7 @@ async def test_order_reconcile_expires_stuck_active_orders_first(
         call_order.append("list_queued")
         return []
 
+    monkeypatch.setattr(worker.app_repo, "promote_delivered_orders_to_ready", fake_promote)
     monkeypatch.setattr(worker.app_repo, "expire_old_active_orders", fake_expire)
     monkeypatch.setattr(worker.app_repo, "list_stuck_pending_orders", fake_list_pending)
     monkeypatch.setattr(
@@ -315,7 +341,7 @@ async def test_order_reconcile_expires_stuck_active_orders_first(
 
     await worker._order_reconcile()
 
-    assert call_order == ["expire", "list_pending", "list_queued"]
+    assert call_order == ["promote", "expire", "list_pending", "list_queued"]
 
 
 async def test_order_reconcile_skips_downstream_actions_when_expire_returns_rows(
@@ -347,12 +373,86 @@ async def test_order_reconcile_skips_downstream_actions_when_expire_returns_rows
     monkeypatch.setattr(
         worker.app_repo, "list_stuck_queued_orders_without_delivery", fake_list_queued
     )
+    monkeypatch.setattr(
+        worker.app_repo, "promote_delivered_orders_to_ready", _fake_promote_empty
+    )
     monkeypatch.setattr(worker, "queue", q)
 
     await worker._order_reconcile()
 
     # 沒被退役的 row 才會走下游；這裡 list_* 都空，下游路徑零觸發。
     assert q.sent == []
+
+
+async def test_order_reconcile_promote_hits_do_not_block_downstream(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """自癒收斂命中（有漏翻牌的訂單被翻 ready）只 log warning，
+    後續 expire / 重放 / 墊檔照常跑。"""
+    called: list[str] = []
+
+    async def fake_promote() -> list[dict[str, Any]]:
+        called.append("promote")
+        return [{"id": "o-leak", "user_id": "u9"}]
+
+    async def fake_expire(older_than_sec: int) -> list[dict[str, Any]]:
+        called.append("expire")
+        return []
+
+    async def fake_list_pending(older_than_sec: int) -> list[dict[str, Any]]:
+        called.append("list_pending")
+        return []
+
+    async def fake_list_queued(older_than_sec: int) -> list[dict[str, Any]]:
+        called.append("list_queued")
+        return []
+
+    monkeypatch.setattr(worker.app_repo, "promote_delivered_orders_to_ready", fake_promote)
+    monkeypatch.setattr(worker.app_repo, "expire_old_active_orders", fake_expire)
+    monkeypatch.setattr(worker.app_repo, "list_stuck_pending_orders", fake_list_pending)
+    monkeypatch.setattr(
+        worker.app_repo, "list_stuck_queued_orders_without_delivery", fake_list_queued
+    )
+    monkeypatch.setattr(worker, "queue", _FakeQueue())
+
+    await worker._order_reconcile()
+
+    assert called == ["promote", "expire", "list_pending", "list_queued"]
+
+
+async def test_order_reconcile_promote_failure_does_not_block_downstream(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """自癒收斂拋例外不能拖垮整輪 reconcile——expire 與重放/墊檔是更老的
+    自救路徑，必須照常跑，下一輪（5 分鐘後）會再試收斂。"""
+    called: list[str] = []
+
+    async def fake_promote() -> list[dict[str, Any]]:
+        raise RuntimeError("db down")
+
+    async def fake_expire(older_than_sec: int) -> list[dict[str, Any]]:
+        called.append("expire")
+        return []
+
+    async def fake_list_pending(older_than_sec: int) -> list[dict[str, Any]]:
+        called.append("list_pending")
+        return []
+
+    async def fake_list_queued(older_than_sec: int) -> list[dict[str, Any]]:
+        called.append("list_queued")
+        return []
+
+    monkeypatch.setattr(worker.app_repo, "promote_delivered_orders_to_ready", fake_promote)
+    monkeypatch.setattr(worker.app_repo, "expire_old_active_orders", fake_expire)
+    monkeypatch.setattr(worker.app_repo, "list_stuck_pending_orders", fake_list_pending)
+    monkeypatch.setattr(
+        worker.app_repo, "list_stuck_queued_orders_without_delivery", fake_list_queued
+    )
+    monkeypatch.setattr(worker, "queue", _FakeQueue())
+
+    await worker._order_reconcile()
+
+    assert called == ["expire", "list_pending", "list_queued"]
 
 
 async def test_expire_threshold_is_greater_than_reconcile_window() -> None:

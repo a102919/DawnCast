@@ -54,8 +54,9 @@ async def trigger_order_generate(
 
     order_date = await repo.get_order_date(order_id)
 
-    # enqueue 失敗時 swallow + log：dawncast-order-reconcile 每 5 分鐘會撿走
-    # 卡在 pending 太久的訂單重放，回 5xx 反而誤導前端以為需要重試。
+    # enqueue 失敗時 swallow + log：此時 CAS 已翻 queued，reconcile 的
+    # stuck_queued 墊檔（20 分鐘無 delivery → 補常青集）會兜住；回 5xx
+    # 反而誤導前端以為需要重試（重試會撞 CAS 409）。
     try:
         await queue.send(
             "control", {"task": "orchestrate", "order_id": order_id, "date": order_date}
