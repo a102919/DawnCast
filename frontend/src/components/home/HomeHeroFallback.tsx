@@ -10,7 +10,7 @@ interface HomeHeroFallbackProps {
 }
 
 /**
- * Hero 降級版：今日無 delivery 時顯示。CTA 連到 /daily 觸發點餐流程。
+ * Hero 降級版：沒有 ready 訂單時顯示精選集，CTA 直接連到該集播放頁。
  * 與 TodayHeroCard 同 layout（橫向，封面 112/128 + 文字區）。
  */
 export function HomeHeroFallback({ featured }: HomeHeroFallbackProps) {

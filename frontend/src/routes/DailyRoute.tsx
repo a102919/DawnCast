@@ -6,11 +6,20 @@ import { OrderStatusCard } from '../components/daily/OrderStatusCard'
 import { DailyOrderForm, type DailyOrderFormSubmitResult } from '../components/daily/DailyOrderForm'
 import { OrderHistoryList } from '../components/daily/OrderHistoryList'
 import { Sheet } from '../components/primitives'
+import { ErrorBanner } from '../components/primitives/ErrorBanner'
 
 export function DailyRoute() {
-  const { activeOrder, history, createOrder, cancelOrder, loadMoreHistory } = useDailyOrder()
+  const { activeOrder, history, error, createOrder, cancelOrder, refresh } = useDailyOrder()
   const [openSheet, setOpenSheet] = useState(false)
   const [busy, setBusy] = useState(false)
+
+  // 目前這一餐：active（pending/queued）優先；插槽空了就看最近一筆是不是
+  // ready/expired——這兩態要在主卡上呈現（播放入口／重新點播），played 則
+  // 代表這一餐完結，回到空插槽。
+  const latest = history[0]
+  const latestOrder =
+    activeOrder ??
+    (latest && (latest.status === 'ready' || latest.status === 'expired') ? latest : null)
 
   const handleSubmit = async (result: DailyOrderFormSubmitResult) => {
     setBusy(true)
@@ -51,15 +60,20 @@ export function DailyRoute() {
         <p className="text-xs text-text-tertiary mt-0.5">隨時點，一次一份</p>
       </div>
 
+      {/* 載入／輪詢失敗：跟「沒訂單」分開呈現，並給顯式重試入口 */}
+      {error !== null && (
+        <ErrorBanner variant="inline" message={error} onRetry={() => void refresh()} />
+      )}
+
       {/* 頁面主角：目前這一餐的狀態機 */}
       <OrderStatusCard
-        activeOrder={activeOrder}
+        latestOrder={latestOrder}
         onOrderNew={() => setOpenSheet(true)}
         onCancel={id => void handleCancel(id)}
       />
 
-      {/* 歷史紀錄 */}
-      <OrderHistoryList history={history} onLoadMore={() => void loadMoreHistory()} />
+      {/* 歷史紀錄（資料與解析快取直接吃 DailyOrderProvider） */}
+      <OrderHistoryList />
 
       {/* 點餐表單：只在使用者主動點 CTA 時開啟，每次打開都是建新單 */}
       <Sheet

@@ -1,7 +1,7 @@
 import { Home, BookOpen, Heart, RadioTower } from 'lucide-react'
 
-// 「每日」從底部導覽移出讓位給「頻道」：訂單行事曆/歷史改從首頁的入口卡進入
-// （見 HomeRoute.tsx），/daily 路由本身不受影響。
+// 「每日」從底部導覽移出讓位給「頻道」：點播改從首頁的「立即點播」按鈕進入
+// （見 HomeRoute.tsx 學習入口區），/daily 路由本身不受影響。
 export const NAV_TABS = [
   { path: '/', label: '首頁', Icon: Home },
   { path: '/vocab', label: '單字本', Icon: BookOpen },

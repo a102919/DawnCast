@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from 'react'
 import { api } from '../api'
+import { useDailyOrder } from '../state'
 import type { Episode } from '../types/episode'
 
 export interface UseEpisodeResult {
@@ -18,16 +19,18 @@ export function useEpisode(id: string | undefined): UseEpisodeResult {
   const [episode, setEpisode] = useState<Episode | null>(null)
   const [fetchError, setFetchError] = useState<string | null>(null)
   const [orderId, setOrderId] = useState<string | null>(null)
+  const { resolveOrderEpisode } = useDailyOrder()
 
   const reload = useCallback(async () => {
     setFetchError(null)
     setOrderId(null)
     try {
-      // ?orderId= 連結：DailyRoute 帶訂單 id 過來，先查這筆訂單交付的集數；
+      // ?orderId= 連結：DailyRoute 帶訂單 id 過來，先查這筆訂單交付的集數
+      //（走 DailyOrderProvider 的共用解析快取，首頁/歷史已解析過就不重打）；
       // 找不到（尚未生成完成／不歸屬）fallback 到 listEpisodes()[0]，避免擋使用者。
       const orderIdParam = new URLSearchParams(window.location.search).get('orderId')
       if (orderIdParam) {
-        const delivered = await api.getDeliveredEpisode(orderIdParam)
+        const delivered = await resolveOrderEpisode(orderIdParam)
         if (delivered) {
           setEpisode(delivered)
           setOrderId(orderIdParam)
@@ -49,7 +52,7 @@ export function useEpisode(id: string | undefined): UseEpisodeResult {
     } catch {
       setFetchError('節目資料載入失敗，請重新整理頁面')
     }
-  }, [id])
+  }, [id, resolveOrderEpisode])
 
   useEffect(() => {
     // 非同步資料載入的標準模式：setState 都在 await 之後才發生，

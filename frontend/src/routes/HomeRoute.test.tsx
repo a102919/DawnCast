@@ -12,6 +12,7 @@ import { HomeRoute } from './HomeRoute'
 import type { Episode } from '../types/episode'
 import type { MockEpisode } from '../lib'
 import type { ChannelPublic, DailyOrder, RecommendedEpisode } from '../api'
+import type { OrderEpisodeEntry } from '../state/dailyOrderContextValue'
 
 const EPISODES: readonly MockEpisode[] = [
   { id: 'tech-1', title: 'AI Systems', titleZh: 'AI 系統', topic: 'tech', cefrLevel: 'B1', episode: 1, publishedAt: '2026-07-01' },
@@ -55,9 +56,14 @@ const episodesState: { episodes: readonly MockEpisode[]; error: string | null } 
 }
 const refreshEpisodes = vi.fn(async (): Promise<void> => undefined)
 
-// activeOrder 預設 null（沒有進行中訂單 → 不觸發輪詢，避免 setTimeout 殘留
-// 導致 act() warning）；個別測試可 override 成一筆進行中訂單來測 hero delivery。
-const dailyOrderState: { activeOrder: DailyOrder | null } = { activeOrder: null }
+// 輪詢與解析快取都在 DailyOrderProvider；這裡 mock 掉 provider，hero 由
+// history（最新一筆 ready）＋ orderEpisodes 快取驅動，個別測試 override。
+const dailyOrderState: {
+  activeOrder: DailyOrder | null
+  history: readonly DailyOrder[]
+  orderEpisodes: ReadonlyMap<string, OrderEpisodeEntry>
+} = { activeOrder: null, history: [], orderEpisodes: new Map() }
+const resolveOrderEpisode = vi.fn(async (_orderId: string): Promise<Episode | null> => null)
 
 vi.mock('../state', () => ({
   useActivity: () => ({ listenedEpisodeIds: new Set<string>() }),
@@ -71,7 +77,11 @@ vi.mock('../state', () => ({
   }),
   useDailyOrder: () => ({
     activeOrder: dailyOrderState.activeOrder,
-    history: [],
+    history: dailyOrderState.history,
+    historyExhausted: true,
+    error: null,
+    orderEpisodes: dailyOrderState.orderEpisodes,
+    resolveOrderEpisode,
     createOrder: async () => ({}) as never,
     cancelOrder: async () => undefined,
     markPlayed: async () => null,
@@ -137,6 +147,10 @@ beforeEach(() => {
   listChannels.mockClear()
   listChannels.mockResolvedValue(CHANNELS)
   dailyOrderState.activeOrder = null
+  dailyOrderState.history = []
+  dailyOrderState.orderEpisodes = new Map()
+  resolveOrderEpisode.mockClear()
+  resolveOrderEpisode.mockResolvedValue(null)
   localStorage.clear()
 })
 
@@ -179,26 +193,32 @@ describe('HomeRoute Hero 區塊', () => {
     expect(fallback?.textContent).toContain('精選試聽')
   })
 
-  it('有 delivery 時顯示 hero 元件並標題對應', async () => {
-    dailyOrderState.activeOrder = {
+  it('有 ready 訂單且解析快取命中時顯示 hero 元件並標題對應', async () => {
+    dailyOrderState.history = [{
       id: 'order-1',
       date: '2026-07-16',
       selectedTopics: [],
-      status: 'queued',
+      status: 'ready',
       deliveryTime: '07:00',
       createdAt: '2026-07-16T00:00:00Z',
       updatedAt: '2026-07-16T00:00:00Z',
       entryMode: 'topic',
       lengthTier: 'medium',
       ready: true,
-    }
-    getDeliveredEpisode.mockResolvedValue({
-      id: EPISODES[0]!.id,
-      title: EPISODES[0]!.title,
-      audioUrl: null,
-      segments: [],
-      cues: [],
-    })
+    }]
+    dailyOrderState.orderEpisodes = new Map([[
+      'order-1',
+      {
+        state: 'done',
+        episode: {
+          id: EPISODES[0]!.id,
+          title: EPISODES[0]!.title,
+          audioUrl: null,
+          segments: [],
+          cues: [],
+        } as unknown as Episode,
+      },
+    ]])
     const { root, container } = await renderRoute()
     pendingRoots.push(root)
 
@@ -206,6 +226,8 @@ describe('HomeRoute Hero 區塊', () => {
     expect(hero).not.toBeNull()
     expect(container.querySelector('[data-testid="today-hero-fallback"]')).toBeNull()
     expect(hero?.textContent).toContain('AI Systems')
+    // hero 訂單仍會觸發一次解析（快取命中時是 no-op，但呼叫要在）
+    expect(resolveOrderEpisode).toHaveBeenCalledWith('order-1')
   })
 })
 
