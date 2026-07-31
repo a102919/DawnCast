@@ -35,29 +35,34 @@ function CardRow({ ep, duration, to }: { readonly ep: MockEpisode; readonly dura
             <span className="text-[10px] font-medium">精選試聽</span>
           </div>
         )}
-        {isListened && (
-          <div className="absolute top-2.5 left-2.5 z-10 flex items-center gap-1 px-1.5 py-0.5 rounded-full bg-success/10 border border-success/30 text-success">
-            <CheckCircle2 size={9} />
-            <span className="text-[10px] font-medium">已聽完</span>
-          </div>
-        )}
-        <button
-          type="button"
-          onClick={(e) => {
-            e.preventDefault()
-            e.stopPropagation()
-            void toggle(ep.id)
-          }}
-          aria-label={isFav ? '取消收藏' : '加入收藏'}
-          aria-pressed={isFav}
-          className={`absolute bottom-2.5 right-2.5 z-10 p-1.5 rounded-full transition-[background-color,color,transform] duration-fast active:scale-90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent ${
-            isFav
-              ? 'bg-accent/10 text-accent hover:bg-accent/20'
-              : 'bg-bg-secondary/80 text-text-tertiary hover:text-accent hover:bg-bg-secondary'
-          }`}
-        >
-          <Heart size={12} fill={isFav ? 'currentColor' : 'none'} />
-        </button>
+        <div className="absolute bottom-2.5 right-2.5 z-10 flex items-center gap-1.5">
+          {isListened && (
+            <span
+              role="img"
+              aria-label="已聽完"
+              className="p-1.5 rounded-full bg-success/10 text-success"
+            >
+              <CheckCircle2 size={12} aria-hidden="true" />
+            </span>
+          )}
+          <button
+            type="button"
+            onClick={(e) => {
+              e.preventDefault()
+              e.stopPropagation()
+              void toggle(ep.id)
+            }}
+            aria-label={isFav ? '取消收藏' : '加入收藏'}
+            aria-pressed={isFav}
+            className={`p-1.5 rounded-full transition-[background-color,color,transform] duration-fast active:scale-90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent ${
+              isFav
+                ? 'bg-accent/10 text-accent hover:bg-accent/20'
+                : 'bg-bg-secondary/80 text-text-tertiary hover:text-accent hover:bg-bg-secondary'
+            }`}
+          >
+            <Heart size={12} fill={isFav ? 'currentColor' : 'none'} />
+          </button>
+        </div>
         <div className="flex gap-3">
           <div className="relative">
             <EpisodeCover episodeId={ep.id} topic={ep.topic} coverIcon={ep.coverIcon} size="md" />
