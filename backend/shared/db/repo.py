@@ -133,49 +133,38 @@ async def transition_order_to_queued(user_id: str, order_id: str) -> bool:
 async def deliver_and_mark_ready(
     user_id: str, episode_id: str, deliver_date: str, *, order_id: str
 ) -> bool:
-    """Atomic insert_delivery + 訂單翻 ready，個人點餐交付收尾專用。
+    """個人點餐交付收尾：INSERT delivery；翻牌由 trigger 自動處理。
 
-    兩個寫入必須同進同退——否則前端輪詢會踩到「deliveries 已寫但
-    daily_orders.status 還停在 queued」的不一致窗口，導致使用者卡在
-    「這集正在生成中」直到 DB 真的翻 ready 之前都救不回（重整也沒用）。
-    把兩段 SQL 包進同一個 conn.transaction() 讓 window 收斂成 0。
+    翻牌由 AFTER INSERT trigger public.deliveries_flip_order_ready
+    （migration 0028）接手——INSERT 與翻牌在同一個 transaction，物理上
+    不可能漏翻；任何未來加的寫入路徑（即使繞過本函式直接 INSERT）也
+    自動安全。reconcile 的 promote_delivered_orders_to_ready 仍保留當
+    belt-and-suspenders 兜底（trigger 失效或舊環境未跑 migration）。
 
-    翻牌條件含 expired（遲到交付復活）：單執行緒 worker 排隊超過
-    EXPIRE_AFTER_SEC 時訂單會先被 reconcile 退役，pipeline 之後才完成——
-    此時 delivery 照樣寫入，訂單一併復活成 ready，使用者拿得到內容。
-    expired 不佔 one-active partial index（只涵蓋 pending/queued），
-    即使使用者已另開新單也不會撞唯一鍵；DELETE 只允許 pending，
-    不存在「復活已刪除訂單」的孤兒問題。
+    翻牌語意由 trigger 維護：status IN ('queued','expired') 才翻
+    （對齊原 deliver_and_mark_ready UPDATE 條件）；expired 分支即
+    「遲到交付復活」——單執行緒 worker 排隊可能讓 reconcile 退役早於
+    delivery 寫入，trigger 復活讓使用者拿得到內容。
 
     回傳 inserted 沿用 insert_delivery 語意（True=新寫入、False=ON CONFLICT
     已存在）。order_id 必填——沒有 order_id 的頻道/evergreen 路徑請直接呼叫
-    reuse_repo.insert_delivery()，那條路徑不碰訂單狀態。
+    reuse_repo.insert_delivery()，trigger 的 WHEN clause 自動跳過 NULL。
 
     FK violation（episode 已不存在）不吞，讓它自然往外冒：呼叫端既有的
-    ForeignKeyViolation 例外處理繼續生效，且翻牌會跟著 rollback——
-    比改動前的 partial-fail 行為更乾淨。
+    ForeignKeyViolation 例外處理繼續生效，且 trigger 翻牌會跟著 rollback。
     """
-    async with connection() as conn, conn.transaction():
-        async with conn.cursor(row_factory=dict_row) as cur:
-            await cur.execute(
-                """
-                insert into public.deliveries (user_id, episode_id, deliver_date, order_id)
-                values (%s, %s, %s, %s)
-                on conflict (user_id, episode_id, order_id) do nothing
-                returning id
-                """,
-                (user_id, episode_id, deliver_date, order_id),
-            )
-            row = await cur.fetchone()
-        inserted = row is not None
-        # 條件 UPDATE，queued/expired 才翻、冪等；expired 分支即「遲到交付復活」。
-        async with conn.cursor() as cur:
-            await cur.execute(
-                "update public.daily_orders set status = 'ready', updated_at = now() "
-                "where id = %s and status in ('queued', 'expired')",
-                (order_id,),
-            )
-    return inserted
+    async with connection() as conn, conn.cursor(row_factory=dict_row) as cur:
+        await cur.execute(
+            """
+            insert into public.deliveries (user_id, episode_id, deliver_date, order_id)
+            values (%s, %s, %s, %s)
+            on conflict (user_id, episode_id, order_id) do nothing
+            returning id
+            """,
+            (user_id, episode_id, deliver_date, order_id),
+        )
+        row = await cur.fetchone()
+    return row is not None
 
 
 async def promote_delivered_orders_to_ready() -> list[dict[str, Any]]:
