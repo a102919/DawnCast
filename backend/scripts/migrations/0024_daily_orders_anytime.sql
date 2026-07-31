@@ -52,6 +52,12 @@ create index if not exists idx_deliveries_order
 -- 行為與改動前完全一致，只有帶了真實 order_id 的個人點餐路徑才會依 order_id
 -- 分流出多筆。
 alter table public.deliveries drop constraint if exists deliveries_user_id_episode_id_key;
+-- ponytail: 第二次 deploy 時 0024 整支 fail-fast 在這行（commit 78adbe5 後
+-- prod 已是 partial applied；add constraint 不支援 IF NOT EXISTS，唯一
+-- idempotent 寫法是再 drop 一次。drop if exists 對「已 drop 過」的 constraint
+-- 是 no-op，所以這條 line 對初次部署與重跑都安全，解決
+-- 「2026-07-31 deploy 卡這行 / 0025/0026/0027 全部沒跑」的 prod 慘案）。
+alter table public.deliveries drop constraint if exists deliveries_user_episode_order_key;
 alter table public.deliveries
   add constraint deliveries_user_episode_order_key
   unique nulls not distinct (user_id, episode_id, order_id);
