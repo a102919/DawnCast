@@ -74,7 +74,7 @@ class Settings(CamelModel):
     cefr_level: Literal["A2", "B1", "B2"] = "B1"
 
 
-DailyOrderStatus = Literal["pending", "queued", "ready", "played"]
+DailyOrderStatus = Literal["pending", "queued", "ready", "played", "expired"]
 
 
 class DailyOrder(CamelModel):

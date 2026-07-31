@@ -173,9 +173,11 @@ export interface paths {
         };
         /**
          * List Order History
-         * @description 已生成完成（ready）或已播放（played）的訂單，cursor 分頁（created_at desc）。
+         * @description 已生成完成（ready）、已播放（played）或已退役（expired）的訂單，cursor 分頁。
          *
          *     生成完成即解鎖下一筆訂單，不用等實際播放完——ready 訂單也算「進來歷史」。
+         *     expired 也算「進來歷史」：reconcile 退役的卡死訂單，使用者看得到「這集被
+         *     放棄了」而不是憑空消失，debug 線索也保留在 DB。
          *     註冊順序：必須在 GET /{order_id} 之前，理由同 /active。
          */
         get: operations["list_order_history_daily_orders_history_get"];
@@ -1679,7 +1681,7 @@ export interface components {
              * @default pending
              * @enum {string}
              */
-            status: "pending" | "queued" | "ready" | "played";
+            status: "pending" | "queued" | "ready" | "played" | "expired";
             /**
              * Deliverytime
              * @default 07:00

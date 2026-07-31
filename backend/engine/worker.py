@@ -50,6 +50,10 @@ IDLE_SLEEP_SEC = 2.0
 #   避免把「還在正常跑」的訂單誤判成卡住，才補墊檔常青集。
 STUCK_PENDING_SEC = 120
 STUCK_QUEUED_SEC = 1200
+# active 訂單退役上限（migration 0027）：reconcile 重放 + evergreen 兜底都失敗的
+# 情況下，30 分鐘後退役 expired，GET /active 自動放行、UI 不再卡「正在生成中」。
+# ≫ STUCK_PENDING_SEC + STUCK_QUEUED_SEC ≈ 22 分鐘，給完整兩輪 reconcile 機會。
+EXPIRE_AFTER_SEC = 1800
 # push_daily 整合通知的 body 一次最多列幾集標題；超過時標題仍寫「等 N 集」提示還有更多。
 MAX_BODY_TITLES = 3
 
@@ -198,7 +202,26 @@ async def _order_reconcile() -> None:
     只服務個人點餐，刻意不碰 evergreen.py／undelivered_users——那是跨頻道／
     個人點餐共用的每日 SLA 安全網，動它的「當天」語意會連帶影響頻道使用者的
     兜底行為，是使用者畫的紅線之外。
+
+    0. active 太久且無 delivery（migration 0027）：退役 expired。這一步放最前面
+       ——被退役的 row 不會被下面的重放／兜底重複處理，CAS 條件式 UPDATE 也保證
+       不會跟剛好跑完的 deliver_and_mark_ready 搶同一筆。
     """
+    try:
+        expired = await app_repo.expire_old_active_orders(EXPIRE_AFTER_SEC)
+    except Exception:
+        # expire 失敗不能拖垮整輪 reconcile — 下面 stuck_pending 重放與 stuck_queued
+        # 兜底是更老的自救路徑，必須照常跑。下一輪 reconcile（5 分鐘後）會再試。
+        logger.exception("order_reconcile：expire 步驟失敗，本輪略過退役")
+    else:
+        if expired:
+            ids = [e["id"] for e in expired]
+            sample = ids[:3]
+            logger.warning(
+                "order_reconcile：退役 %d 筆卡死 active 訂單（> %ds，含前 3 筆：%s）",
+                len(expired), EXPIRE_AFTER_SEC, sample,
+            )
+
     stuck_pending = await app_repo.list_stuck_pending_orders(STUCK_PENDING_SEC)
     for o in stuck_pending:
         flipped = await app_repo.transition_order_to_queued(o["user_id"], o["id"])

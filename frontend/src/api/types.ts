@@ -54,7 +54,7 @@ export type Settings = {
   readonly cefrLevel: 'A2' | 'B1' | 'B2'
 }
 
-export type DailyOrderStatus = 'pending' | 'queued' | 'ready' | 'played'
+export type DailyOrderStatus = 'pending' | 'queued' | 'ready' | 'played' | 'expired'
 
 /** 入口類型：使用者在前端三分頁選的入口。
  *  與後端 EntryMode Literal 對齊；skill 是後端保留值，前端 UI 不暴露。 */

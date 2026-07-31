@@ -194,7 +194,7 @@ const SettingsSchema = z.object({
   cefrLevel: z.enum(['A2', 'B1', 'B2']),
 }) satisfies z.ZodType<Settings> & z.ZodType<components['schemas']['Settings']>
 
-const DailyOrderStatusSchema = z.enum(['pending', 'queued', 'ready', 'played']) satisfies z.ZodType<DailyOrderStatus>
+const DailyOrderStatusSchema = z.enum(['pending', 'queued', 'ready', 'played', 'expired']) satisfies z.ZodType<DailyOrderStatus>
 
 const DailyOrderSchema = z.object({
   id: z.string(),

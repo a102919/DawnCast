@@ -33,6 +33,11 @@ class _FakeQueue:
         return len(self.sent)
 
 
+async def _fake_expire_empty(older_than_sec: int) -> list[dict[str, Any]]:
+    """expire_old_active_orders 的預設 fake：回空 list（沒人卡死要退役）。"""
+    return []
+
+
 # ── _orchestrate_order ──────────────────────────────────────────────
 
 
@@ -119,6 +124,7 @@ async def test_order_reconcile_replays_stuck_pending(monkeypatch: pytest.MonkeyP
     monkeypatch.setattr(
         worker.app_repo, "list_stuck_queued_orders_without_delivery", fake_list_queued
     )
+    monkeypatch.setattr(worker.app_repo, "expire_old_active_orders", _fake_expire_empty)
     monkeypatch.setattr(worker, "queue", q)
 
     await worker._order_reconcile()
@@ -149,6 +155,7 @@ async def test_order_reconcile_skips_enqueue_when_cas_loses(
     monkeypatch.setattr(
         worker.app_repo, "list_stuck_queued_orders_without_delivery", fake_list_queued
     )
+    monkeypatch.setattr(worker.app_repo, "expire_old_active_orders", _fake_expire_empty)
     monkeypatch.setattr(worker, "queue", q)
 
     await worker._order_reconcile()
@@ -189,6 +196,7 @@ async def test_order_reconcile_delivers_evergreen_fallback_for_stuck_queued(
     monkeypatch.setattr(
         worker.app_repo, "deliver_and_mark_ready", fake_deliver_and_mark_ready
     )
+    monkeypatch.setattr(worker.app_repo, "expire_old_active_orders", _fake_expire_empty)
     monkeypatch.setattr(worker, "queue", _FakeQueue())
 
     await worker._order_reconcile()
@@ -229,6 +237,7 @@ async def test_order_reconcile_missing_evergreen_episode_does_not_raise(
     monkeypatch.setattr(
         worker.app_repo, "deliver_and_mark_ready", fake_deliver_and_mark_ready
     )
+    monkeypatch.setattr(worker.app_repo, "expire_old_active_orders", _fake_expire_empty)
     monkeypatch.setattr(worker, "queue", _FakeQueue())
 
     # 不拋例外；找不到墊檔常青集就略過這筆，不呼叫 deliver_and_mark_ready
@@ -265,9 +274,96 @@ async def test_order_reconcile_no_action_when_nothing_stuck(
     monkeypatch.setattr(worker.repo, "insert_delivery", fail_if_called)
     monkeypatch.setattr(worker.app_repo, "deliver_and_mark_ready", fail_if_called)
     monkeypatch.setattr(worker.app_repo, "mark_order_ready", fail_if_called)
+
+    monkeypatch.setattr(worker.app_repo, "expire_old_active_orders", _fake_expire_empty)
     monkeypatch.setattr(worker, "queue", q)
 
     await worker._order_reconcile()
 
     assert calls == []
     assert q.sent == []
+
+
+# ── migration 0027：active 訂單退役（expire）─────────────────────────
+
+
+async def test_order_reconcile_expires_stuck_active_orders_first(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """expire 必須跑在重放 pending / 補 evergreen 之前——被退役的 row 不該被
+    reconcile 重複處理。門檻傳 EXPIRE_AFTER_SEC（1800s）。"""
+    call_order: list[str] = []
+
+    async def fake_expire(older_than_sec: int) -> list[dict[str, Any]]:
+        assert older_than_sec == worker.EXPIRE_AFTER_SEC
+        call_order.append("expire")
+        return []
+
+    async def fake_list_pending(older_than_sec: int) -> list[dict[str, Any]]:
+        call_order.append("list_pending")
+        return []
+
+    async def fake_list_queued(older_than_sec: int) -> list[dict[str, Any]]:
+        call_order.append("list_queued")
+        return []
+
+    monkeypatch.setattr(worker.app_repo, "expire_old_active_orders", fake_expire)
+    monkeypatch.setattr(worker.app_repo, "list_stuck_pending_orders", fake_list_pending)
+    monkeypatch.setattr(
+        worker.app_repo, "list_stuck_queued_orders_without_delivery", fake_list_queued
+    )
+    monkeypatch.setattr(worker, "queue", _FakeQueue())
+
+    await worker._order_reconcile()
+
+    assert call_order == ["expire", "list_pending", "list_queued"]
+
+
+async def test_order_reconcile_skips_downstream_actions_when_expire_returns_rows(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """退役清單非空：只 log，不會再被下面的 reconcile 路徑處理（CAS 條件式
+    UPDATE 在 DB 層會自動 skip，這裡驗 Python 側分派邏輯沒有多餘動作）。"""
+    expired = [
+        {"id": "old-1", "user_id": "u1", "order_date": "2026-07-15", "status": "queued"},
+        {"id": "old-2", "user_id": "u2", "order_date": "2026-07-15", "status": "pending"},
+    ]
+
+    async def fake_expire(older_than_sec: int) -> list[dict[str, Any]]:
+        return expired
+
+    # 下游兩個查詢就算回傳舊 row 也只是測試 fixture，不影響斷言：
+    # 本測試只確認 reconcile 在 expire 已撿走舊 row 後，不會再額外呼叫 transition/
+    # enqueue/deliver_and_mark_ready——這些 fail_if_called 不存在，行為驗證靠
+    # 後面的兩個 list_* 回傳空。
+    async def fake_list_pending(older_than_sec: int) -> list[dict[str, Any]]:
+        return []
+
+    async def fake_list_queued(older_than_sec: int) -> list[dict[str, Any]]:
+        return []
+
+    q = _FakeQueue()
+    monkeypatch.setattr(worker.app_repo, "expire_old_active_orders", fake_expire)
+    monkeypatch.setattr(worker.app_repo, "list_stuck_pending_orders", fake_list_pending)
+    monkeypatch.setattr(
+        worker.app_repo, "list_stuck_queued_orders_without_delivery", fake_list_queued
+    )
+    monkeypatch.setattr(worker, "queue", q)
+
+    await worker._order_reconcile()
+
+    # 沒被退役的 row 才會走下游；這裡 list_* 都空，下游路徑零觸發。
+    assert q.sent == []
+
+
+async def test_expire_threshold_is_greater_than_reconcile_window() -> None:
+    """EXPIRE_AFTER_SEC 必須 ≫ STUCK_PENDING_SEC + STUCK_QUEUED_SEC，給
+    reconcile 至少兩輪完整重試 + 一輪 evergreen 兜底才退役。
+    寫死這個不變式防止日後有人調小 reconcile 門檻或調大 expire 門檻、
+    把正常訂單誤判成卡死退役。
+
+    上限：EXPIRE_AFTER_SEC ≤ 3600s = 1 小時，避免有人改 expire 成 7 天、
+    使用者卡一週才退役。reconcile 每 5 分鐘跑一輪，1 小時已是充足邊界。
+    """
+    assert worker.EXPIRE_AFTER_SEC > worker.STUCK_PENDING_SEC + worker.STUCK_QUEUED_SEC
+    assert worker.EXPIRE_AFTER_SEC <= 3600

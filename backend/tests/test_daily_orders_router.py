@@ -208,8 +208,10 @@ class FakeCursor(_BaseFakeCursor):
             self._rows = [_make_row(oid, row) for oid, row in matches[:1]]
             return
 
-        # GET /history：where user_id = %s and status in ('ready','played') [and created_at<%s]
-        if "where user_id = %s and status in ('ready', 'played')" in s:
+        # GET /history：where user_id = %s and status in ('ready','played','expired')
+        # [and created_at<%s]。migration 0027 後 expired 也算歷史
+        # （reconcile 退役的卡死訂單，使用者看得到）
+        if "where user_id = %s and status in ('ready', 'played', 'expired')" in s:
             user_id = params[0]
             before = params[1] if "created_at < %s" in s else None
             limit = params[-1]
@@ -217,7 +219,7 @@ class FakeCursor(_BaseFakeCursor):
                 (oid, row)
                 for oid, row in ORDERS.items()
                 if row["user_id"] == user_id
-                and row["status"] in ("ready", "played")
+                and row["status"] in ("ready", "played", "expired")
                 and (before is None or row["created_at"] < before)
             ]
             matches.sort(key=lambda kv: kv[1]["created_at"], reverse=True)

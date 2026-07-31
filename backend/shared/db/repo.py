@@ -225,6 +225,47 @@ async def list_stuck_queued_orders_without_delivery(older_than_sec: int) -> list
     return [dict(r) for r in rows]
 
 
+async def expire_old_active_orders(older_than_sec: int) -> list[dict[str, Any]]:
+    """把卡死超過門檻的 active 訂單（pending/queued 且無 delivery）退役為 expired。
+
+    治本解：原本 reconcile 只會重試 enqueue／補 evergreen，兩個都可能失敗
+    （worker.py:218-220 pick_evergreen_episode 回 None 直接 continue）。
+    沒有 upper bound 的情況下 row 永遠卡在 active，GET /active 永遠回它，
+    UI 永遠顯示「這集正在生成中」。
+
+    在 _order_reconcile 第一步呼叫：先退役、再做重放／兜底，被退役的 row
+    不會被 reconcile 重複處理。回傳退役清單給 worker log，觀察實際發生率。
+
+    CAS 條件式 UPDATE：只在 pending/queued 翻 expired，不會覆蓋已被別的
+    路徑（手動 cancel、剛好 deliver_and_mark_ready 跑完）翻過的狀態。
+    單一 SQL 完成選取＋翻牌＋回傳，避免並發下 reconcile 兩輪都打中同一筆。
+    """
+    async with connection() as conn, conn.cursor(row_factory=dict_row) as cur:
+        await cur.execute(
+            """
+            update public.daily_orders o
+               set status = 'expired', updated_at = now()
+              from (
+                select id
+                  from public.daily_orders
+                 where status in ('pending', 'queued')
+                   and updated_at < now() - make_interval(secs => %s)
+                   and not exists (
+                     select 1 from public.deliveries d where d.order_id = public.daily_orders.id
+                   )
+                 for update skip locked
+              ) targets
+             where o.id = targets.id
+         returning o.id::text as id, o.user_id,
+                   to_char(o.order_date, 'YYYY-MM-DD') as order_date, o.status
+            """,
+            (older_than_sec,),
+        )
+        rows = await cur.fetchall()
+        await conn.commit()
+    return [dict(r) for r in rows]
+
+
 async def find_delivered_episode(user_id: str, order_id: str) -> dict[str, Any] | None:
     """取某筆訂單交付給該 user 的集數原始 row，找不到回 None。
 

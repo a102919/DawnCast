@@ -111,22 +111,24 @@ async def get_active_order(
 async def list_order_history(
     limit: int = 20, before: str | None = None, user_id: str = Depends(get_current_user)
 ) -> ApiResponse[list[DailyOrder]]:
-    """已生成完成（ready）或已播放（played）的訂單，cursor 分頁（created_at desc）。
+    """已生成完成（ready）、已播放（played）或已退役（expired）的訂單，cursor 分頁。
 
     生成完成即解鎖下一筆訂單，不用等實際播放完——ready 訂單也算「進來歷史」。
+    expired 也算「進來歷史」：reconcile 退役的卡死訂單，使用者看得到「這集被
+    放棄了」而不是憑空消失，debug 線索也保留在 DB。
     註冊順序：必須在 GET /{order_id} 之前，理由同 /active。
     """
     page_size = max(1, min(limit, 100))
     async with connection() as conn, conn.cursor(row_factory=dict_row) as cur:
         if before:
             await cur.execute(
-                _SELECT + " where user_id = %s and status in ('ready', 'played') "
+                _SELECT + " where user_id = %s and status in ('ready', 'played', 'expired') "
                 "and created_at < %s order by created_at desc limit %s",
                 (user_id, before, page_size),
             )
         else:
             await cur.execute(
-                _SELECT + " where user_id = %s and status in ('ready', 'played') "
+                _SELECT + " where user_id = %s and status in ('ready', 'played', 'expired') "
                 "order by created_at desc limit %s",
                 (user_id, page_size),
             )
