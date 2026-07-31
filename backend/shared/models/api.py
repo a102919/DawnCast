@@ -90,9 +90,10 @@ class DailyOrder(CamelModel):
     # Phase 4 新增：入口類型與長度 tier。預設值對齊 migration 0007 給舊列回退路徑。
     entry_mode: EntryMode = "topic"
     length_tier: LengthTier = "medium"
-    # status 四態：pending（剛送出）→ queued（生成中）→ ready（生成完成，已
-    # 解鎖下一筆，見 mark_order_ready）→ played（使用者實際播放完）。ready 欄位
-    # 是 status in (ready, played) 的便捷布林，見 StatusBadge.resolve()。
+    # status：pending（剛送出）→ queued（生成中）→ ready（生成完成，已解鎖
+    # 下一筆，見 deliver_and_mark_ready）→ played（使用者實際播放完）；另有
+    # expired（卡死退役，遲到交付會復活成 ready）。ready 欄位是
+    # status in (ready, played) 的便捷布林。
     ready: bool = False
 
 

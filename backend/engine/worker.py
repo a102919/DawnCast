@@ -69,7 +69,8 @@ class _Shutdown:
         self.requested = True
 
 
-# ── 控制訊息分派（daily_podcast / orchestrate / evergreen / collect_open）
+# ── 控制訊息分派（orchestrate / evergreen / order_reconcile / daily_podcast /
+#    channel_plan / push_daily）
 
 
 def _anchor_date(body: dict[str, Any]) -> str:

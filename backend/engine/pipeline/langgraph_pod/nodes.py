@@ -2547,9 +2547,7 @@ async def insert_deliveries_node(state: PodState, config: RunnableConfig) -> dic
             # 個人點餐路徑走 app_repo.deliver_and_mark_ready：把 delivery 寫入
             # 跟 queued→ready 翻牌收進同一個 transaction，避免前端輪詢踩到
             # 「集數已交付但訂單仍 queued」的不一致窗口（race + 翻牌缺失會把
-            # activeOrder 卡死直到 DB 真翻 ready 前都救不回）。原本的
-            # `repo.mark_order_ready(order_id)` 改放在這條路徑後只能對齊部分
-            # race，根本解是 transactional 合併。
+            # activeOrder 卡死直到 DB 真翻 ready 前都救不回）。
             if order_id is not None:
                 inserted = await app_repo.deliver_and_mark_ready(
                     uid, episode_id, deliver_date, order_id=order_id,

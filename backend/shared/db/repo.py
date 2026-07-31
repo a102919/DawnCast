@@ -130,42 +130,30 @@ async def transition_order_to_queued(user_id: str, order_id: str) -> bool:
         return cur.rowcount > 0
 
 
-async def mark_order_ready(order_id: str) -> None:
-    """生成完成、deliveries 寫入成功後呼叫：queued → ready。
-
-    拿掉「播放完才能點下一筆」的限制，改成「生成完成就能點下一筆」——
-    one-active-per-user 的 partial unique index 只擋 pending/queued，
-    ready 不在裡面，自動解鎖。status != 'queued' 時 no-op（冪等，重投安全）。
-
-    個人點餐交付請改用 deliver_and_mark_ready()：把 delivery 寫入跟 ready 翻牌
-    包進同一個 transaction，避免前端輪詢踩到「集數已交付但訂單仍 queued」
-    的不一致窗口。
-    """
-    async with connection() as conn, conn.cursor() as cur:
-        await cur.execute(
-            "update public.daily_orders set status = 'ready', updated_at = now() "
-            "where id = %s and status = 'queued'",
-            (order_id,),
-        )
-
-
 async def deliver_and_mark_ready(
     user_id: str, episode_id: str, deliver_date: str, *, order_id: str
 ) -> bool:
-    """Atomic insert_delivery + mark_order_ready，個人點餐交付收尾專用。
+    """Atomic insert_delivery + 訂單翻 ready，個人點餐交付收尾專用。
 
     兩個寫入必須同進同退——否則前端輪詢會踩到「deliveries 已寫但
     daily_orders.status 還停在 queued」的不一致窗口，導致使用者卡在
     「這集正在生成中」直到 DB 真的翻 ready 之前都救不回（重整也沒用）。
     把兩段 SQL 包進同一個 conn.transaction() 讓 window 收斂成 0。
 
+    翻牌條件含 expired（遲到交付復活）：單執行緒 worker 排隊超過
+    EXPIRE_AFTER_SEC 時訂單會先被 reconcile 退役，pipeline 之後才完成——
+    此時 delivery 照樣寫入，訂單一併復活成 ready，使用者拿得到內容。
+    expired 不佔 one-active partial index（只涵蓋 pending/queued），
+    即使使用者已另開新單也不會撞唯一鍵；DELETE 只允許 pending，
+    不存在「復活已刪除訂單」的孤兒問題。
+
     回傳 inserted 沿用 insert_delivery 語意（True=新寫入、False=ON CONFLICT
     已存在）。order_id 必填——沒有 order_id 的頻道/evergreen 路徑請直接呼叫
-    reuse_repo.insert_delivery()，那條路徑本來就不需要 mark_order_ready。
+    reuse_repo.insert_delivery()，那條路徑不碰訂單狀態。
 
     FK violation（episode 已不存在）不吞，讓它自然往外冒：呼叫端既有的
-    ForeignKeyViolation 例外處理繼續生效，且 mark_order_ready 會跟著
-    rollback——比改動前的 partial-fail 行為更乾淨。
+    ForeignKeyViolation 例外處理繼續生效，且翻牌會跟著 rollback——
+    比改動前的 partial-fail 行為更乾淨。
     """
     async with connection() as conn, conn.transaction():
         async with conn.cursor(row_factory=dict_row) as cur:
@@ -180,11 +168,11 @@ async def deliver_and_mark_ready(
             )
             row = await cur.fetchone()
         inserted = row is not None
-        # mark_order_ready 內聯：條件 UPDATE，queued 才翻、冪等。
+        # 條件 UPDATE，queued/expired 才翻、冪等；expired 分支即「遲到交付復活」。
         async with conn.cursor() as cur:
             await cur.execute(
                 "update public.daily_orders set status = 'ready', updated_at = now() "
-                "where id = %s and status = 'queued'",
+                "where id = %s and status in ('queued', 'expired')",
                 (order_id,),
             )
     return inserted

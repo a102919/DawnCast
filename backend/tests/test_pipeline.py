@@ -60,7 +60,7 @@ class FakeRepo:
         # insert_delivery 收到的 order_id（migration 0024，個人點餐專屬），
         # 與 self.deliveries 同步 append，index 對齊。
         self.delivery_order_ids: list[str | None] = []
-        # mark_order_ready 收到的 order_id（migration 0025，生成完成即解鎖下一筆）。
+        # deliver_and_mark_ready 翻 ready 的 order_id（測試的 fake 直接 append）。
         self.ready_order_ids: list[str] = []
         # 角度輪替 / avoid_facts 用：測試可預先塞舊集 meta。
         self.prior_meta: list[dict[str, Any]] = []
@@ -97,9 +97,6 @@ class FakeRepo:
         self.deliveries.append((user_id, episode_id, deliver_date))
         self.delivery_order_ids.append(order_id)
         return True
-
-    async def mark_order_ready(self, order_id: str) -> None:
-        self.ready_order_ids.append(order_id)
 
     async def get_episode_meta(self, episode_id: str) -> dict[str, str]:
         # reuse 路徑不驗通知文案，給 dummy 即可走完 notify_user 呼叫
@@ -545,9 +542,6 @@ class _GenRepoSpy:
         self.deliveries.append((user_id, episode_id, deliver_date))
         self.delivery_order_ids.append(order_id)
         return True
-
-    async def mark_order_ready(self, order_id: str) -> None:
-        pass
 
     async def get_episode_meta(self, episode_id: str) -> dict[str, str]:
         # push payload 真正用得到的兩個欄位；測試不驗通知文案所以給 dummy 即可

@@ -273,7 +273,6 @@ async def test_order_reconcile_no_action_when_nothing_stuck(
     monkeypatch.setattr(worker.repo, "pick_evergreen_episode", fail_if_called)
     monkeypatch.setattr(worker.repo, "insert_delivery", fail_if_called)
     monkeypatch.setattr(worker.app_repo, "deliver_and_mark_ready", fail_if_called)
-    monkeypatch.setattr(worker.app_repo, "mark_order_ready", fail_if_called)
 
     monkeypatch.setattr(worker.app_repo, "expire_old_active_orders", _fake_expire_empty)
     monkeypatch.setattr(worker, "queue", q)
