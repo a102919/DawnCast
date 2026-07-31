@@ -156,6 +156,56 @@ async def test_reuse_hit_only_delivers(monkeypatch: pytest.MonkeyPatch) -> None:
     assert q.sent == []  # 命中不排生成
 
 
+async def test_reuse_hit_with_order_id_marks_ready(monkeypatch: pytest.MonkeyPatch) -> None:
+    """點餐命中（帶 order_id）必須走 deliver_and_mark_ready，否則訂單永久卡 queued。
+
+    reconcile 的兩條救援路徑（stuck_queued 墊檔、expire）都以「無 delivery」
+    為前提，只寫 delivery 不翻牌的訂單救不回來——這是 af1cc12 引入的回歸。
+    """
+    repo = FakeRepo(reusable="ep-123")
+    q = FakeQueue()
+    monkeypatch.setattr(reuse, "repo", repo)
+    monkeypatch.setattr(reuse, "queue", q)
+
+    delivered: list[tuple[str, str, str, str]] = []
+
+    async def _fake_deliver_and_mark_ready(
+        user_id: str, episode_id: str, deliver_date: str, *, order_id: str
+    ) -> bool:
+        delivered.append((user_id, episode_id, deliver_date, order_id))
+        return True
+
+    monkeypatch.setattr(reuse.app_repo, "deliver_and_mark_ready", _fake_deliver_and_mark_ready)
+
+    result = await reuse.resolve_for_user(
+        user_id="u1", big_topic="ai", deliver_date="2026-07-31", order_id="order-1"
+    )
+
+    assert result == "ep-123"
+    assert delivered == [("u1", "ep-123", "2026-07-31", "order-1")]
+    assert repo.deliveries == []  # 點餐路徑不得走非 transactional 的 insert_delivery
+    assert q.sent == []
+
+
+async def test_reuse_hit_without_order_id_keeps_channel_path(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """頻道/evergreen 路徑（order_id=None）維持 insert_delivery，不碰訂單狀態。"""
+    repo = FakeRepo(reusable="ep-123")
+    monkeypatch.setattr(reuse, "repo", repo)
+
+    async def _forbidden(*_args: Any, **_kwargs: Any) -> bool:
+        raise AssertionError("order_id=None 不得呼叫 deliver_and_mark_ready")
+
+    monkeypatch.setattr(reuse.app_repo, "deliver_and_mark_ready", _forbidden)
+
+    result = await reuse.resolve_for_user(user_id="u1", big_topic="ai", deliver_date="2026-07-31")
+
+    assert result == "ep-123"
+    assert repo.deliveries == [("u1", "ep-123", "2026-07-31")]
+    assert repo.delivery_order_ids == [None]
+
+
 async def test_reuse_hit_survives_push_failure(monkeypatch: pytest.MonkeyPatch) -> None:
     repo = FakeRepo(reusable="ep-123")
     monkeypatch.setattr(reuse, "repo", repo)

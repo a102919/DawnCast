@@ -26,6 +26,7 @@ from typing import Any
 
 from engine.pipeline import reuse_repo as repo
 from shared.db import queue
+from shared.db import repo as app_repo
 from shared.models import ANGLES
 from shared.push import notify_user
 
@@ -117,8 +118,19 @@ async def resolve_for_user(
 
     if episode_id is not None:
         # 重用命中就是「立刻有東西可聽」，跟新生成一樣要通知。
-        # insert_delivery 的回傳值當去重閘門：重跑 orchestrate 不會重複推。
-        if await repo.insert_delivery(user_id, episode_id, deliver_date, order_id=order_id):
+        # insert 回傳值當去重閘門：重跑 orchestrate 不會重複推。
+        # 點餐路徑（有 order_id）必須走 deliver_and_mark_ready：delivery 寫入
+        # 與訂單翻 ready 同一個 transaction，否則訂單永久卡 queued——
+        # reconcile 的兩條救援路徑都以「無 delivery」為前提，救不到這種卡死。
+        if order_id is not None:
+            inserted = await app_repo.deliver_and_mark_ready(
+                user_id, episode_id, deliver_date, order_id=order_id
+            )
+        else:
+            inserted = await repo.insert_delivery(
+                user_id, episode_id, deliver_date, order_id=None
+            )
+        if inserted:
             # 拿這集的對外資訊（slug + 中文標題）拼通知 payload。
             # get_episode_meta 回 None 表示 episode 已不存在（FK CASCADE
             # 理論上不會發生，但守一下），沒有 slug 就不推。
