@@ -48,6 +48,23 @@ export interface SegmentPlayer {
   playSegment(segmentIdx: number, offsetSec: number, durationSec: number): void
 }
 
+/** Dev 後端 public_base_url 預設 localhost:8000，audio 元素跨原始會被擋；
+ *  把 host 換成當前 origin 讓 vite /mock-r2 proxy 接走。prod 已是同 origin /
+ *  Cloudflare R2 簽章網域，URL 不會命中。URL parse 失敗時原樣回傳，不擋播放。
+ *  ponytail: 邊界層一次改寫，下游所有 engine.* 呼叫不感知。 */
+function toSameOriginAudioUrl(url: string): string {
+  if (typeof window === 'undefined') return url
+  try {
+    const u = new URL(url)
+    if (u.host === 'localhost:8000' || u.host === '127.0.0.1:8000') {
+      u.host = window.location.host
+    }
+    return u.toString()
+  } catch {
+    return url
+  }
+}
+
 export function useSegmentPlayer(): SegmentPlayer {
   const [engine] = useState(() => createAudioEngine())
 
@@ -240,13 +257,26 @@ export function useSegmentPlayer(): SegmentPlayer {
 
   const loadEpisode = useCallback((episode: Episode | null) => {
     stopActive()
-    episodeRef.current = episode
+    // dev 模式下後端回的 audioUrl 是 localhost:8000 完整位址，瀏覽器跨原始會被擋；
+    // loadEpisode 一次改寫成 current origin，後續 preload / startPlayback /
+    // unlock / onceReady 全部吃改寫後 URL，不需各呼叫端個別處理。
+    const normalized = episode
+      ? {
+          ...episode,
+          audioUrl: episode.audioUrl ? toSameOriginAudioUrl(episode.audioUrl) : episode.audioUrl,
+          segments: episode.segments.map((seg) => ({
+            ...seg,
+            audioUrl: toSameOriginAudioUrl(seg.audioUrl),
+          })),
+        }
+      : episode
+    episodeRef.current = normalized
     segIdxRef.current = 0
     pausedAtRef.current = 0
     isPlayingRef.current = false
     setCurrentTime(0)
     setDuration(episode?.cues.at(-1)?.end ?? 0)
-    if (!episode || episode.segments.length === 0) {
+    if (!normalized || normalized.segments.length === 0) {
       dispatch({ type: 'LOAD_CLEARED' })
       return
     }

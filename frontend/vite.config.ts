@@ -85,6 +85,13 @@ export default defineConfig({
         target: 'http://localhost:8000',
         changeOrigin: true,
       },
+      // 本機 R2 mock：backend segment mp3 完整 URL 是 http://localhost:8000/mock-r2/...，
+      // 前端 <audio src> 直連會被 Chromium 視為跨原始拒絕。
+      // 走 vite proxy 變 same-origin，CORS / PNA 都跳過。
+      '/mock-r2': {
+        target: 'http://localhost:8000',
+        changeOrigin: true,
+      },
     },
   },
 })
