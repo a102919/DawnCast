@@ -69,6 +69,9 @@ export function useSegmentPlayer(): SegmentPlayer {
 
   // startMain 透過 ref 持有，避免自動接播的 closure 抓舊版本。
   const startMainRef = useRef<(segIdx: number, offsetSec: number) => void>(() => undefined)
+  // TEMP perf: 自動接播時把 onended (t0) → onceReady (t1) 的時戳傳給 engine.startPlayback，
+  // 配 play().then() 的 t3 在 audioEngine 印分段 gap 數字。量完 iOS 數字就移除。
+  const gapMarkRef = useRef<{ segIdx: number; t0: number; t1: number } | null>(null)
 
   const stopActive = useCallback(() => {
     const a = activeRef.current
@@ -90,8 +93,14 @@ export function useSegmentPlayer(): SegmentPlayer {
     const nextSeg = episodeRef.current?.segments[segIdx + 1]
     if (nextSeg) engine.preload(nextSeg.audioUrl)
 
+    // TEMP perf: 讀出 gapMark 立刻清掉——startMain 也被 play() / seekTo() 手動呼叫，
+    // 那兩個路徑沒有上一段 ended→canplay 的時戳，gapMark 應該是 null，
+    // 殘留舊值會讓手動 play 也誤印 inter-segment gap。
+    const gapMark = gapMarkRef.current ?? undefined
+    gapMarkRef.current = null
+
     const handle = engine.startPlayback(
-      { url: seg.audioUrl, globalStartSec: seg.start, offsetSec, rate: rateRef.current },
+      { url: seg.audioUrl, globalStartSec: seg.start, offsetSec, rate: rateRef.current, gapMark },
       () => {
         // 檔案「真」播完觸發——瀏覽器已經保證最後一個 sample 出聲，邊界切字物理上不可能發生。
         const ep = episodeRef.current
@@ -103,6 +112,8 @@ export function useSegmentPlayer(): SegmentPlayer {
           dispatch({ type: 'PLAYBACK_STOPPED' })
           return
         }
+        // TEMP perf: 抓 onended 觸發時戳 t0（=上一段檔案真的播完），給 audioEngine 印 inter-segment gap。
+        const t0 = performance.now()
         // 確保下一段一定 preload 過（在這之前使用者可能手動切了進度，預載已被
         // 跳過的更後段；這裡補一次保險）。
         const nextUrl = ep.segments[next].audioUrl
@@ -116,6 +127,9 @@ export function useSegmentPlayer(): SegmentPlayer {
         // 使用者已 pause 就不要自動接播（避免 race 把暫停蓋掉）。
         if (!isPlayingRef.current) return
         void engine.onceReady(nextUrl).then((ok) => {
+          // TEMP perf: 抓 canplay 解析時戳 t1，配 t0 一起傳給下一次的 startMain。
+          const t1 = performance.now()
+          gapMarkRef.current = { segIdx: next, t0, t1 }
           if (!ok || !isPlayingRef.current) return
           // 二次檢查 segIdxRef：seek 後 useEffect 可能已切到別段，不再接播。
           if (segIdxRef.current !== next) return

@@ -41,6 +41,9 @@ export interface StartPlaybackArgs {
   /** 有值＝試聽（走試聽專用元素、限定播放長度）；無值＝主播放（播到檔尾）。 */
   readonly durationSec?: number
   readonly rate: number
+  /** TEMP perf: 上次 ended→canplay 的時戳，startPlayback 用來印 inter-segment gap log。
+   *  只在主播放（自動接播）路徑填；試聽不填。量完 iOS 數字就移除。 */
+  readonly gapMark?: { readonly segIdx: number; readonly t0: number; readonly t1: number }
 }
 
 export interface PlaybackHandle {
@@ -257,6 +260,9 @@ export function createAudioEngine(): AudioEngine {
     }
 
     el.onended = () => { if (live()) onEnded() }
+    // TEMP perf: capture 進入 startPlayback 的時戳 t2，與 gapMark 一起在 play().then() 印出
+    const t2 = performance.now()
+    const gapMark = args.gapMark
     if (args.durationSec !== undefined) {
       // 試聽限長：真的出聲（playing）後才起算，才不會把載入等待時間吃進試聽長度。
       const stopAt = args.offsetSec + args.durationSec
@@ -272,7 +278,22 @@ export function createAudioEngine(): AudioEngine {
       el.addEventListener('pause', () => { if (timer !== null) window.clearTimeout(timer) }, { once: true })
     }
 
-    void el.play().catch((err) => {
+    void el.play()
+      .then(() => {
+        // TEMP perf: 印 inter-segment gap 分段數字（iOS Safari onended→下一段出聲拆三段）。
+        if (live() && gapMark) {
+          const t3 = performance.now()
+          console.debug('[perf] inter-segment gap', {
+            toSeg: gapMark.segIdx,
+            url: args.url.split('/').pop(),
+            ended_to_canplay_ms: Math.round(gapMark.t1 - gapMark.t0),
+            canplay_to_play_ms: Math.round(t2 - gapMark.t1),
+            play_startup_ms: Math.round(t3 - t2),
+            total_ms: Math.round(t3 - gapMark.t0),
+          })
+        }
+      })
+      .catch((err) => {
       // ponytail: 印出真實錯誤以便 iOS Safari 排查。正常 reject（NotAllowedError
       // / AbortError / NotSupportedError）會被 onPlayRejected 處理，但 silent reject
       // 沒訊息就找不到 root cause。上線後這個 console.error 可以保留：iOS 用戶量
