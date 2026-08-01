@@ -64,8 +64,8 @@ export function WordCardPanel({ isOpen, word, entry, lookupError, onRetry, activ
   const addVocabButtonState =
     addVocabButtonStates.find((state) => state.when) ?? addVocabButtonStates[addVocabButtonStates.length - 1]
 
-  // 就地重播該句原音：player 沒載該集就補抓（單字本情境），再從該句 segment
-  // 的 AudioBuffer 播整句（duckAndPlaySegment 路徑）。詞卡不關、主播放進度不動。
+  // 就地重播該句原音：player 沒載該集就補抓（單字本情境），再用試聽元素
+  // playClip 播該句的 [cue.start, cue.end) 片段。詞卡不關、主播放進度不動。
   const handleReplayCue = async () => {
     if (!activeCue) return
     try {
@@ -74,8 +74,8 @@ export function WordCardPanel({ isOpen, word, entry, lookupError, onRetry, activ
         ep = await api.getEpisode(episodeId)
         player.setCurrentEpisode(ep)
       }
-      // 舊集可能沒有 per-segment 音檔（segments 空），靜默不播體感像壞掉，給明確回饋
-      if (ep.segments.length === 0) {
+      // 舊集 / 尚未 backfill 完成可能沒有整集音檔，靜默不播體感像壞掉，給明確回饋
+      if (!ep.audioUrl) {
         toast('這集沒有原音檔，無法重聽')
         return
       }
@@ -87,7 +87,7 @@ export function WordCardPanel({ isOpen, word, entry, lookupError, onRetry, activ
         : Math.max(0, findActiveCueIndex(ep.cues, activeCue.start))
       const cue = ep.cues[idx]
       if (!cue) return
-      player.playSegment(idx, 0, cue.end - cue.start)
+      player.playClip(cue.start, cue.end - cue.start)
     } catch {
       toast.error('載入原音失敗，請重試')
     }
@@ -117,10 +117,10 @@ export function WordCardPanel({ isOpen, word, entry, lookupError, onRetry, activ
     }
   }
 
-  // 關閉詞卡：「重聽這句」的段落預覽不算進全域 isPlaying（見 useSegmentPlayer 內
-  // duckAndPlaySegment 的註解），沒人主動叫停就會留在背景播完整句。pause() 對
-  // stopActive 是 idempotent（沒東西在播時安全 no-op），一律先停用它再交還 onClose，
-  // 呼叫端（useWordLookup.close）之後照舊決定要不要恢復原本被蓋掉的主播放。
+  // 關閉詞卡：「重聽這句」走試聽元素（playClip），不算進全域 isPlaying，沒人主動
+  // 叫停就會留在背景播完整句。player.pause() 只動主播放元素，對試聽是安全 no-op，
+  // 一律先呼叫它再交還 onClose，呼叫端（useWordLookup.close）之後照舊決定要不要
+  // 恢復原本被蓋掉的主播放。
   const handleClose = () => {
     player.pause()
     onClose()

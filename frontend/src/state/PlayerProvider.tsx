@@ -25,9 +25,9 @@ export interface PlayerProviderProps {
 
 /** Provider 包 useSegmentPlayer + 進度持久化 + lastPlayed 雲端同步。
  *
- * 取代舊 <audio> ref-based 邏輯：hook 內已管 AudioContext + AudioBuffer cache，這層
- * 只剩 React 狀態鏡像 + 跨分頁存檔 flush + activity.lastPlayed 同步。
- * 保留 currentEpisode state 讓 MiniPlayer / GlobalAudioHost / PlayerRoute 都能讀。 */
+ * hook 內已管單一 <audio> 引擎（見 audioEngine.ts），這層只剩 React 狀態鏡像 +
+ * 跨分頁存檔 flush + activity.lastPlayed 同步。保留 currentEpisode state 讓
+ * MiniPlayer / GlobalAudioHost / PlayerRoute 都能讀。 */
 export function PlayerProvider({ children, lastPlayedEpisodeId, lastPlayedPosition, setLastPlayed }: PlayerProviderProps) {
   const player = useSegmentPlayer()
   // useSegmentPlayer() 每次 render 回傳新物件字面量；player 本身拿來當 useCallback
@@ -54,7 +54,7 @@ export function PlayerProvider({ children, lastPlayedEpisodeId, lastPlayedPositi
   const setCurrentEpisode = useCallback((episode: Episode | null) => {
     // 同集重推（例：首頁→再點回同一集 / PlayerRoute 重 fetch 拿到新物件參考）：
     // 只認 id，不認物件參考。id 相同就是「同一集」，跳過 loadEpisode 避免打斷正在播放的音訊
-    // （loadEpisode 會把 currentTime 砍回 0 並把 segIdx 重置）；換到不同集才需要真的重載。
+    // （loadEpisode 會把 currentTime 砍回 0 並重設引擎 src）；換到不同集才需要真的重載。
     const isSameEpisode = episode !== null && episode.id === currentEpisodeIdRef.current
     setCurrentEpisodeState(prev => (prev && episode && prev.id === episode.id ? prev : episode))
     currentEpisodeIdRef.current = episode?.id ?? null
@@ -116,7 +116,9 @@ export function PlayerProvider({ children, lastPlayedEpisodeId, lastPlayedPositi
   const loadEpisode = useCallback((ep: Episode | null) => {
     playerRef.current.loadEpisode(ep)
   }, [])
-  const getSegmentPlayer = useCallback(() => playerRef.current, [])
+  const playClip = useCallback((startSec: number, durationSec: number) => {
+    playerRef.current.playClip(startSec, durationSec)
+  }, [])
   const getCurrentTime = useCallback(() => playerRef.current.currentTime, [])
 
   useMediaSession({
@@ -148,8 +150,7 @@ export function PlayerProvider({ children, lastPlayedEpisodeId, lastPlayedPositi
     setMuted: player.setMuted,
     loadProgress,
     setCurrentEpisode,
-    playSegment: player.playSegment,
-    getSegmentPlayer,
+    playClip,
   }
 
   return (

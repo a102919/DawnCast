@@ -42,7 +42,7 @@ export function PlayerRoute() {
   const hasNotifiedDueRef = useRef(false)
   const dueNotifiedEpisodeIdRef = useRef<string | null>(null)
 
-  const { currentTime, isPlaying, duration, seekTo, seekToWord, play, pause, loadProgress, setPlaybackRate, loadState, currentEpisode, setCurrentEpisode, getSegmentPlayer } = usePlayer()
+  const { currentTime, isPlaying, duration, seekTo, seekToWord, play, pause, loadProgress, setPlaybackRate, loadState, currentEpisode, setCurrentEpisode } = usePlayer()
   const { settings } = useSettings()
   const { markPlayed } = useDailyOrder()
   const { addListenMinutes, addLookupCount, markListened } = useActivity()
@@ -83,16 +83,12 @@ export function PlayerRoute() {
     [episode, currentTime],
   )
 
-  // iOS Safari gesture unlock：必須在 click handler 同步路徑內 ctx.resume() 才有效。
-  // 包成 helper 讓所有「play」入口（cue click / next / replay / cue loop toggle）都走同一條路徑。
-  const playWithUnlock = useCallback(() => {
-    void getSegmentPlayer().unlock()
-    void play()
-  }, [play, getSegmentPlayer])
-
-  const cueLoop = useCueLoop({ episode, currentTime, activeCueIdx, isPlaying, seekTo, play, playWithUnlock })
+  // 整集單一 <audio> 元素後，所有 play() 呼叫本來就在使用者手勢的同步路徑內
+  // （cue click / next / replay / cue loop toggle），不再需要額外的 unlock 儀式；
+  // useCueLoop / useWordLookup 的 playWithUnlock 參數名沿用，值直接傳 play。
+  const cueLoop = useCueLoop({ episode, currentTime, activeCueIdx, isPlaying, seekTo, play, playWithUnlock: play })
   const { retarget: retargetCueLoop } = cueLoop
-  const wordLookup = useWordLookup({ isPlaying, pause, playWithUnlock, addLookupCount })
+  const wordLookup = useWordLookup({ isPlaying, pause, playWithUnlock: play, addLookupCount })
 
   const handleWordClick = async (word: string, cue: Cue) => {
     if (!settings.popupEnabled) return
@@ -125,8 +121,8 @@ export function PlayerRoute() {
   const handleCueClick = useCallback((cue: Cue) => {
     retargetCueLoop(cue)
     seekTo(cue.start)
-    playWithUnlock()
-  }, [retargetCueLoop, seekTo, playWithUnlock])
+    play()
+  }, [retargetCueLoop, seekTo, play])
 
   useEffect(() => {
     if (episode && episode.id !== dueNotifiedEpisodeIdRef.current) {

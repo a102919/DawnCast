@@ -1,9 +1,8 @@
 import { describe, expect, it } from 'vitest'
 import {
-  playerReducer, toPublicFields, findSegmentForTime, clampOffset,
+  playerReducer, toPublicFields,
   type MainPlayerState, type MainPlayerAction,
 } from './playerIntent'
-import type { Segment } from '../types/episode'
 
 const STATES: readonly MainPlayerState['kind'][] = ['idle', 'loading', 'error', 'paused', 'playing']
 const ACTIONS: readonly MainPlayerAction['type'][] = [
@@ -60,57 +59,5 @@ describe('playerReducer fuzz：任何 action 序列都不丟例外，且 invaria
         if (fields.isPlaying) expect(fields.loadState).toBe('ready')
       }
     }
-  })
-})
-
-function makeSegments(n: number): Segment[] {
-  const segs: Segment[] = []
-  let t = 0
-  for (let i = 0; i < n; i++) {
-    segs.push({ index: i, audioUrl: `https://cdn/${i}.mp3`, duration: 1, start: t, end: t + 1 })
-    t += 1.1
-  }
-  return segs
-}
-
-describe('findSegmentForTime', () => {
-  const segs = makeSegments(4) // start/end: [0,1] [1.1,2.1] [2.2,3.2] [3.3,4.3]
-
-  it('落在某個 segment 區間內', () => {
-    expect(findSegmentForTime(segs, 0.5)).toBe(0)
-    expect(findSegmentForTime(segs, 1.5)).toBe(1)
-    expect(findSegmentForTime(segs, segs[3]!.start)).toBe(3)
-  })
-
-  it('落在兩段之間的間隙：歸給前一段', () => {
-    expect(findSegmentForTime(segs, 1.05)).toBe(0)
-  })
-
-  it('超出最後一段：夾在最後一個 idx', () => {
-    expect(findSegmentForTime(segs, 999)).toBe(3)
-  })
-
-  it('負數/開頭：第 0 段', () => {
-    expect(findSegmentForTime(segs, -5)).toBe(0)
-  })
-
-  it('空陣列：回傳 0', () => {
-    expect(findSegmentForTime([], 1)).toBe(0)
-  })
-})
-
-describe('clampOffset', () => {
-  const seg: Segment = { index: 0, audioUrl: 'x', duration: 2, start: 10, end: 12 }
-
-  it('落在區間內', () => {
-    expect(clampOffset(11, seg)).toBe(1)
-  })
-
-  it('小於 start：夾到 0', () => {
-    expect(clampOffset(5, seg)).toBe(0)
-  })
-
-  it('大於 end：夾到 duration', () => {
-    expect(clampOffset(20, seg)).toBe(2)
   })
 })

@@ -13,19 +13,15 @@ interface ReplayAudioButtonProps {
   readonly lineNo?: number
 }
 
-/** 從 PlayerProvider 的 useSegmentPlayer 抽樣播：player 知道現在載入的 episode、
- *  decoded segments，主音 ducking 後播這一段，保證跟 cue 對齊。
- * 不再走獨立的 new Audio() + audioUrlCache，因為：
- * - 整集 mp3 已不生產（Phase A 之後），原 url 端點 deprecated。
- * - per-segment AudioBuffer 已是 truth source，從 source.start 抽樣等於「從
- *   該行的真實音檔」播，發音/語氣跟主集完全一致。 */
+/** 從 PlayerProvider 的 useSegmentPlayer 抽樣播：player 知道現在載入的 episode，
+ *  用試聽元素從整集音檔的對應時間點播 0.6 秒，保證跟 cue 對齊、發音跟主集完全一致。 */
 export function ReplayAudioButton({ episodeSlug, timestamp, lineNo }: ReplayAudioButtonProps) {
   const player = usePlayer()
-  const playSegment = player.playSegment
+  const playClip = player.playClip
   const currentEpisode = player.currentEpisode
 
   // 重播時若 player 還沒載到該 episode → 走 api.getEpisode 補抓並 setCurrentEpisode，
-  // 然後 wait loadState 變 ready 再 playSegment。
+  // 再算出該行 cue 對應的整集時間點 playClip。
   const handleClick = async () => {
     try {
       let ep = currentEpisode
@@ -43,7 +39,7 @@ export function ReplayAudioButton({ episodeSlug, timestamp, lineNo }: ReplayAudi
       const cue = cues[idx]
       if (!cue) return
       const offsetSec = Math.max(0, Math.min(timestamp - cue.start, cue.end - cue.start))
-      playSegment(idx, offsetSec, 0.6)
+      playClip(cue.start + offsetSec, 0.6)
     } catch (e) {
       if (e instanceof AppError) {
         console.warn('[ReplayAudioButton] 載入失敗', e.message)

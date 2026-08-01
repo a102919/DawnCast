@@ -26,8 +26,8 @@ export type SourceReference = {
 
 /** 單行 mp3 對前端契約：index + 已簽章 audioUrl + 真實時長 + 在該集的時間區段。
  *
- * 新方案下音檔以 segments 陣列承載，前端 Web Audio API 串接播；
- * audioUrl 對 episode 為 nullable 是為了向後相容舊 client（1 版本後移除）。
+ * 過渡期契約：後端已改產整集單一 mp3（Episode.audioUrl），前端播放不再讀這個
+ * 欄位；後端仍雙寫一段時間讓舊 client 相容，下一版停產後這個型別會跟著刪除。
  */
 export type Segment = {
   readonly index: number
@@ -44,9 +44,9 @@ export type Segment = {
 export type Episode = {
   readonly id: string
   readonly title: string
-  /** 整集 mp3 簽章 URL。新方案下恆為 null；保留欄位給 1 版本向後相容。
-   *  舊 client 仍讀此欄位時，後端會回 audio_r2_key 簽章好的 URL；Phase G 後
-   *  此欄位完全移除，前端 consumer 必須讀 segments 並走 useSegmentPlayer hook。 */
+  /** 整集 mp3 簽章 URL：句間停頓已烤進音檔，時間軸與音檔零誤差。null 表示這集
+   *  還沒有可播的整集音檔（舊集尚未 backfill、或後端產生失敗），
+   *  useSegmentPlayer.loadEpisode 會轉成 error state。 */
   readonly audioUrl: string | null
   readonly segments: readonly Segment[]
   readonly cues: readonly Cue[]

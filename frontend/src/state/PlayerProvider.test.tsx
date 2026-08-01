@@ -23,7 +23,6 @@ vi.mock('./useSegmentPlayer', () => ({
     duration: 0,
     playbackRate: 1,
     muted: false,
-    unlock: vi.fn(),
     loadEpisode,
     play: vi.fn(),
     pause: vi.fn(),
@@ -31,7 +30,7 @@ vi.mock('./useSegmentPlayer', () => ({
     seekToWord: vi.fn(() => false),
     setPlaybackRate: vi.fn(),
     setMuted: vi.fn(),
-    playSegment: vi.fn(),
+    playClip: vi.fn(),
   }),
 }))
 

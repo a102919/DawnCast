@@ -1,81 +1,54 @@
-/** 原生 <audio> 引擎：三個常駐 HTMLAudioElement（主播放輪替 A/B + 試聽專用）。
+/** 原生 <audio> 播放引擎：兩顆常駐元素——mainEl（主播放）+ previewEl（試聽，載同一
+ * episode URL、音量固定調低）。
  *
- * 取代舊 Web Audio 鏈（AudioBufferSourceNode → SoundTouch worklet → gain →
- * MediaStreamAudioDestinationNode → 隱藏 <audio>）。那條鏈的每一環都有不可控延遲：
- * SoundTouch 要吃滿處理窗才出聲（句首被吃）、輸入結束殘留 tail 不保證 flush（句尾被吃）、
- * source.onended 代表「餵料完」不是「喇叭播完」——句子邊界切字是結構性的，修不完。
- * 原生 <audio> 的 ended 事件＝檔案真正播完，邊界切字物理上不可能發生；而舊鏈存在的
- * 兩個理由——變速不變調、iOS 背景 session——瀏覽器都原生提供：
- * playbackRate + preservesPitch（現代瀏覽器預設保留音高），真實 <audio> 元素本身
- * 就是合法的 media session（鎖屏/動態島直接認得）。
+ * 整集後端已合併成單一 mp3（停頓烤進音檔、cues 時間軸與音檔零誤差），前端不再需要
+ * 「逐行 mp3 + mainA/mainB 輪替接播」模擬連續播放——句子切換 = `el.currentTime = cue.start`，
+ * 原生 <audio> 的 ended 事件就是整集真正播完，不存在段落邊界切字問題。連帶消失的是
+ * 舊架構為了模擬連續播放而生的一整組 iOS workaround：unlock 解鎖儀式＋無聲 WAV
+ * （所有 play() 現在都天然落在 user gesture 內，沒有「自動接播不在 gesture 內」這件事）、
+ * warmup 冷啟預熱、preload/A-B 輪替、token/handle WeakMap 世代比對。
  *
- * 主播放用 A/B 兩個元素輪替：播第 i 段時把第 i+1 段的 URL 丟進閒置元素 preload，
- * 句間 0.3s/0.7s 的既有停頓足夠遮住切換。試聽（單字/整句抽樣）走第三個專用元素，
- * 音量固定 DUCK_LEVEL，不碰主播放元素的 src/position——「試聽不干擾主播放游標」
- * 由元素隔離保證，不靠旗標。
- *
- * iOS Safari：媒體元素的播放授權是「每個元素」在 user gesture 內呼叫過 play() 才拿到。
- * 自動接播下一段（gap timer 觸發的 play()）不在 gesture 內，所以 unlock() 要在使用者
- * 點播放的同步呼叫堆疊內，把三個元素都 play()+pause() 一輪拿授權（沒 src 的先塞
- * 無聲 WAV）。授權拿到後終身有效。
- *
- * iOS 上 el.volume 唯讀（靜默忽略）：音量交給硬體鍵，程式面只保留 muted（iOS 可設）。
- * 試聽的 DUCK_LEVEL 在 iOS 上會降級成原音量，可接受。
- *
- * iOS Safari 額外限制：`<audio>` 元素必須在 DOM 內才會真的出聲。`new Audio()`
- * 拿到的 detached 元素即使 play() 也會被瀏覽器 silent reject（desktop 不受限
- * 但實機很重要）。createAudioEngine() 內建隱形 container，把三個元素 append
- * 進去；測試環境（happy-dom/jsdom）沒 document.body 時降級成 detached 模式。
+ * 仍要處理的 iOS Safari 限制：
+ * 1. `<audio>` 元素必須在 DOM 內才會真的出聲，`new Audio()` 拿到的 detached 元素
+ *    play() 會被瀏覽器 silent reject（見 attachToDOM）。
+ * 2. metadata 還沒到（readyState < HAVE_METADATA）前設 currentTime 會被部分瀏覽器
+ *    吞掉，loadedmetadata 觸發後要補設一次。用遞增的 generation 整數識別「這次補設
+ *    是不是還對應目前這次 load」，load() 換集數會讓舊 generation 的補設 callback
+ *    自然失效——單一 mainEl 不需要 WeakMap 做 identity 比對。
+ * 3. play() 的 promise 還沒 resolve/reject 前呼叫 pause() 會被瀏覽器判定為「這次
+ *    播放授權被中斷」（AbortError），實機上偶發連帶撤銷後續播放權限；pause 一律
+ *    等 play() 這次呼叫落定才真的動元素（pending-play guard）。
+ * 4. el.volume 在 iOS 上唯讀（靜默忽略），音量控制只能碰 muted；previewEl 建立時
+ *    仍設一次較低 volume 當 best-effort（桌面有效，iOS 降級成原音量，可接受）。
  */
 
 export const DUCK_LEVEL = 0.3
 
-/** iOS 解鎖用最短無聲 WAV（8 samples @ 8kHz）。 */
-const SILENT_WAV =
-  'data:audio/wav;base64,UklGRiwAAABXQVZFZm10IBAAAAABAAEAQB8AAEAfAAABAAgAZGF0YQgAAACAgICAgICAgA=='
-
-export interface StartPlaybackArgs {
-  readonly url: string
-  readonly globalStartSec: number
-  readonly offsetSec: number
-  /** 有值＝試聽（走試聽專用元素、限定播放長度）；無值＝主播放（播到檔尾）。 */
-  readonly durationSec?: number
-  readonly rate: number
-  /** TEMP perf: 上次 ended→canplay 的時戳，startPlayback 用來印 inter-segment gap log。
-   *  只在主播放（自動接播）路徑填；試聽不填。量完 iOS 數字就移除。 */
-  readonly gapMark?: { readonly segIdx: number; readonly t0: number; readonly t1: number }
-}
-
-export interface PlaybackHandle {
-  readonly el: HTMLAudioElement
-  readonly globalStartSec: number
-  readonly offsetSec: number
+export interface MainEventHandlers {
+  readonly onTimeUpdate: () => void
+  readonly onSeeked: () => void
+  readonly onPlay: () => void
+  readonly onPause: () => void
+  readonly onEnded: () => void
 }
 
 export interface AudioEngine {
-  /** 必須在 user gesture 的同步呼叫堆疊內執行（見檔案頂端 iOS 說明）。
-   *  帶 targetUrl 時會對該 URL 所在的 element 做 play/pause 同步解鎖（iOS 17 必要）。 */
-  unlock(targetUrl?: string): void
-  /** 把 URL 丟進閒置元素開始載入；resolve true＝可播、false＝載入失敗。
-   *  同一個 URL 已在某元素上就緒時直接 resolve，不重載。 */
-  preload(url: string): Promise<boolean>
-  startPlayback(args: StartPlaybackArgs, onEnded: () => void, onPlayRejected: () => void): PlaybackHandle
-  /** 回傳停止當下的全域播放位置（秒），呼叫端拿去存 pausedAt。 */
-  stop(handle: PlaybackHandle): number
-  setRate(handle: PlaybackHandle, rate: number): void
-  currentPositionSec(handle: PlaybackHandle): number
+  /** 換集數：重設 src 並讓 generation 前進，讓任何過期的補設 seek 失效。 */
+  load(url: string): void
+  play(): Promise<void>
+  pause(): void
+  seek(sec: number): void
+  setRate(rate: number): void
   setMuted(m: boolean): void
-  /** 查某 URL 對應 element 的 readyState（HAVE_FUTURE_DATA=3 代表可播）。
-   *  給 useSegmentPlayer.onended 在切下一段前確認下一段已 canplay，避免 setTimeout
-   *  模擬 gap 帶來的 frame-boundary 26ms 誤差。 */
-  getReadyState(url: string): number
-  /** 等某 URL 對應 element 進入 readyState >= 3 才 resolve。idempotent：
-   *  如果該 element 已經 ready，promise 立刻 resolve；如果多個 caller 同時等同一個
-   *  URL，共享同一個 promise（不會重複註冊 canplay listener）。 */
-  onceReady(url: string): Promise<boolean>
+  currentTime(): number
+  duration(): number
+  /** 試聽：previewEl seek 到 startSec 開始播，`playing` 事件（真的出聲，非 loading
+   *  等待）後起算 durationSec 限長自動停止。不動主播放的 src / currentTime / 狀態。 */
+  playClip(startSec: number, durationSec: number): void
 }
 
-/** preservesPitch 未進所有 TS lib/瀏覽器版本，連同 webkit 前綴一起設。 */
+/** preservesPitch 未進所有 TS lib / 瀏覽器版本，連同 webkit 前綴一起設，
+ *  否則變速會變聲音（chipmunk 效果）。 */
 function setPreservesPitch(el: HTMLAudioElement): void {
   const anyEl = el as HTMLAudioElement & { preservesPitch?: boolean; webkitPreservesPitch?: boolean }
   anyEl.preservesPitch = true
@@ -83,8 +56,8 @@ function setPreservesPitch(el: HTMLAudioElement): void {
 }
 
 /** 隱形容器：給 audio 元素一個 DOM 落腳處（iOS Safari 必要）；不影響 layout、不
- *  阻擋點擊、不被輔助技術讀到。測試環境 fake Audio 沒 Element prototype 時
- *  降級成 detached（host 仍會 append 進 body，但 fake 不進 host）。 */
+ *  阻擋點擊、不被輔助技術讀到。測試環境（happy-dom/jsdom）沒 document.body 時
+ *  降級成 detached（host 仍會建立，但 fake Audio 不是真 Element，不會被 append）。 */
 function attachToDOM(els: readonly HTMLAudioElement[]): void {
   const body = typeof document !== 'undefined' ? document.body : null
   if (!body) return
@@ -102,276 +75,114 @@ function attachToDOM(els: readonly HTMLAudioElement[]): void {
   body.appendChild(host)
 }
 
-export function createAudioEngine(): AudioEngine {
-  const makeEl = (volume: number): HTMLAudioElement => {
-    const el = new Audio()
-    el.preload = 'auto'
-    el.volume = volume
-    setPreservesPitch(el)
-    return el
-  }
-  const mainA = makeEl(1)
-  const mainB = makeEl(1)
-  const previewEl = makeEl(DUCK_LEVEL)
-  const all = [mainA, mainB, previewEl] as const
-  attachToDOM(all)
+export function createAudioEngine(handlers: MainEventHandlers): AudioEngine {
+  const mainEl = new Audio()
+  mainEl.preload = 'auto'
+  setPreservesPitch(mainEl)
 
-  let activeMainEl: HTMLAudioElement | null = null
-  let muted = false
-  /** 每次 startPlayback 換一個 token；元素被新播放接手後，舊 handle 掛的延遲
-   *  callback（loadedmetadata 補 seek、試聽定時停止）憑 token 判斷自己已過期。 */
-  const tokens = new WeakMap<HTMLAudioElement, symbol>()
-  const handleTokens = new WeakMap<PlaybackHandle, symbol>()
-  /** 哪些元素已完成 iOS 解鎖。解鎖過的不重複觸發，避免 race condition。 */
-  const unlockedSet = new WeakSet<HTMLAudioElement>()
+  const previewEl = new Audio()
+  previewEl.preload = 'auto'
+  previewEl.volume = DUCK_LEVEL
+  setPreservesPitch(previewEl)
 
-  function pickMainEl(url: string): HTMLAudioElement {
-    // 已經載入這 URL 的元素接著用（preload 過、避免重 fetch）。
-    if (mainA.src && mainA.src.includes(url)) return mainA
-    if (mainB.src && mainB.src.includes(url)) return mainB
-    // 接播必須換另一個元素，否則同一段 ended 接下一段時 src 蓋上去、記憶體
-    // 仍指向「剛播完」的元素，play() 從新 src 啟動仍會在同一個 hardware path
-    // —— 不同元素讓兩個 src 在背景同時存在，瀏覽器切換更流暢。
-    return activeMainEl === mainA ? mainB : mainA
-  }
+  attachToDOM([mainEl, previewEl])
 
-  // per-URL onceReady 共享 promise cache：避免多個 caller 同時等同一個 URL
-  // 重複註冊 canplay listener。元素 src 被換掉（其他 segment 接手）時清掉。
-  const readyPromises = new Map<string, Promise<boolean>>()
+  mainEl.addEventListener('timeupdate', handlers.onTimeUpdate)
+  mainEl.addEventListener('seeked', handlers.onSeeked)
+  mainEl.addEventListener('play', handlers.onPlay)
+  mainEl.addEventListener('pause', handlers.onPause)
+  mainEl.addEventListener('ended', handlers.onEnded)
 
-  function getReadyState(url: string): number {
-    for (const el of [mainA, mainB]) {
-      if (el.src && el.src.includes(url)) return el.readyState
-    }
-    return 0
-  }
+  /** load() 換集數就前進一格；補設 seek 的 loadedmetadata callback 憑這個數字判斷
+   *  自己是不是還對應「目前這次」load，過期（使用者已經切了下一集）就不執行。 */
+  let generation = 0
+  /** play() 呼叫中、promise 尚未落定：pause() 必須等它落定才真的動元素（見檔頭 3）。 */
+  let pendingPlay: Promise<void> | null = null
+  let previewStopTimer: number | null = null
+  /** 上一次 playClip 掛的 once('playing') listener：若它還沒觸發就被新的試聽取代，
+   *  必須先拆掉，否則它會在新試聽的 playing 事件一起開火，用舊 stopAt 提早停掉新試聽。 */
+  let previewPlayingListener: (() => void) | null = null
 
-  function onceReady(url: string): Promise<boolean> {
-    // 已經 ready 就直接 resolve，不重新註冊 listener。
-    if (getReadyState(url) >= 3) return Promise.resolve(true)
-    const cached = readyPromises.get(url)
-    if (cached) return cached
-    const promise = new Promise<boolean>((resolve) => {
-      const el = pickMainEl(url)
-      const onReady = () => { cleanup(); readyPromises.delete(url); resolve(true) }
-      const onError = () => { cleanup(); readyPromises.delete(url); resolve(false) }
-      const cleanup = () => {
-        el.removeEventListener('canplaythrough', onReady)
-        el.removeEventListener('canplay', onReady)
-        el.removeEventListener('error', onError)
-      }
-      // 先註冊 listener 再設 src：fake/mock audio engine 的 src setter 會同步觸發
-      // canplay 事件，listener 沒先掛上就漏接，promise 永遠卡住。
-      el.addEventListener('canplaythrough', onReady, { once: true })
-      el.addEventListener('canplay', onReady, { once: true })
-      el.addEventListener('error', onError, { once: true })
-      if (!el.src.includes(url)) el.src = url
-      // src setter 可能已經同步觸發 canplay 過了（race），再驗一次 readyState。
-      if (el.readyState >= 3) { onReady() }
-    })
-    readyPromises.set(url, promise)
-    return promise
-  }
-
-  function unlock(targetUrl?: string): void {
-    // iOS Safari 解鎖（per-element，flowy.fm 實戰文）：
-    //   1. 解鎖是 per-element：每個會被 play() 的元素都要各別解鎖一次，沒有 page-level 效果。
-    //   2. 必須在 user gesture 的 sync stack 內觸發 play()。
-    //   3. promise resolve 前**絕對不要** sync pause()——會把 element 標記為 paused，
-    //      iOS 認定這次解鎖無效。pause + currentTime=0 一律放 .then() 內。
-    //   4. silent WAV 16 bytes、play() promise 瞬間 resolve，不會真的出聲、不會播完。
-    //   5. 解鎖後 element 的 src 仍可換成真實 URL，後續 play() 終身不再被 reject。
-    //
-    // 解鎖目標：所有「未在播、尚未解鎖、src 為空」的元素。src 已有真實 URL 的元素跳過
-    // ——unlock 的副作用（清 src、設 SILENT_WAV）會被後續 startPlayback 的 src 設值覆蓋，
-    // 但 promise resolve 後跑的 src 還原動作若搶在 startPlayback 之後，會把 mainA 的
-    // src 洗回 SILENT_WAV 或空，跳過 src 已有內容的元素就不會踩到這個 race。
-    //
-    // targetUrl 暫保留在介面：若 iOS 未來放寬規則允許對真實 URL 預解鎖，這個參數就是入口。
-    void targetUrl
-    for (const el of all) {
-      if (!el.paused) continue
-      if (unlockedSet.has(el)) continue
-      if (el.src) continue
-      // 設 SILENT_WAV 觸發 16-byte 解鎖。promise resolve 後才 pause，避免 race。
-      el.src = SILENT_WAV
-      const p = el.play()
-      if (p && typeof p.then === 'function') {
-        p.then(() => {
-          el.pause()
-          el.currentTime = 0
-          // 清掉 SILENT_WAV 的 src——但只在 src 還停留 SILENT_WAV 時清。startPlayback
-          // 已 sync 把 src 換成真實 URL 的情況下，這裡不要再動（避免覆蓋掉真實播放）。
-          if (el.src === SILENT_WAV) {
-            try { el.removeAttribute('src') } catch { el.src = '' }
-          }
-          unlockedSet.add(el)
-          console.debug('[audioEngine] unlock ok', { el: el === mainA ? 'mainA' : el === mainB ? 'mainB' : 'preview' })
-        }).catch((err) => {
-          // AbortError 不是授權失敗：unlock 的 .then() 內做 pause() / 清 src，
-          // 瀏覽器會 abort in-flight 的 play()——這是預期副作用。HMR / 連續 reload
-          // 觸發新 createAudioEngine、attachToDOM 拔舊 host 時同樣會 abort。
-          // 真授權失敗是 NotAllowedError（沒 user gesture），那才需要關心。
-          if (err?.name === 'AbortError') {
-            console.debug('[audioEngine] unlock aborted (no-op)', { el: el === mainA ? 'mainA' : el === mainB ? 'mainB' : 'preview' })
-          } else {
-            console.error('[audioEngine] unlock rejected', { err: String(err), name: err?.name })
-          }
-          // 解鎖失敗（page 還沒任何 gesture、play() 被 NotAllowedError reject）：
-          // 同樣只在 src 還停留 SILENT_WAV 時清。
-          if (el.src === SILENT_WAV) {
-            try { el.removeAttribute('src') } catch { el.src = '' }
-          }
-        })
-      }
-    }
-  }
-
-  /** iOS Safari audio output path 在 src 第一次 play() 時冷啟 ~1500ms，是 podcast
-   * segment 邊界 2-3s 空白的主嫌（線上 prod [perf] play_startup_ms 實測）。
-   * 解法：在 preload 的 canplay listener 內對同一 element 做一輪 muted play→pause
-   * 把 audio path 預熱。unlock() 已給元素終身授權，preload 階段的 play() 不會被
-   * NotAllowedError 拒絕。warmup promise resolve 時若偵測到 startPlayback 已
-   * sync 設了新 playback token（WeakMap snapshot 比對），表示已被新播放接手、
-   * 撤退避免打斷。AbortError 是 startPlayback 的 play() 搶先 abort 的副作用。 */
-  function warmup(el: HTMLAudioElement): void {
-    const playbackTokenAtWarmup = tokens.get(el)
-    // 預熱期間靜音：buffered audio 會被真播 1~2 frame，不靜音會被喇叭播出來
-    el.muted = true
-    el.currentTime = 0
-    const p = el.play()
-    if (!p || typeof p.then !== 'function') return
-    p.then(() => {
-      // startPlayback 已 sync 設了新 token → 撤退，不打斷正在播放的新播放
-      if (tokens.get(el) !== playbackTokenAtWarmup) return
-      el.pause()
-      el.currentTime = 0
-      el.muted = muted
-    }).catch((err) => {
-      // AbortError：startPlayback 的 play() 搶先 abort warmup 的 play()，預期副作用
-      if (err?.name === 'AbortError') return
-      // 其他（NotAllowedError 在 unlock 後不會發生，但若發生就安靜失敗）
-      console.debug('[audioEngine] warmup no-op', { name: err?.name })
-    })
-  }
-
-  function preload(url: string): Promise<boolean> {
-    const el = pickMainEl(url)
-    if (el.src.includes(url) && el.readyState >= 3) return Promise.resolve(true)
-    return new Promise((resolve) => {
-      const ok = () => {
-        cleanup()
-        // canplay 觸發 = 元素就緒 = 趁還沒被 startPlayback 接手，把 audio path 熱起來
-        warmup(el)
-        resolve(true)
-      }
-      const bad = () => { cleanup(); resolve(false) }
-      const cleanup = () => {
-        el.removeEventListener('canplay', ok)
-        el.removeEventListener('error', bad)
-      }
-      el.addEventListener('canplay', ok)
-      el.addEventListener('error', bad)
-      el.src = url
-    })
-  }
-
-  function startPlayback(args: StartPlaybackArgs, onEnded: () => void, onPlayRejected: () => void): PlaybackHandle {
-    const isPreview = args.durationSec !== undefined
-    const el = isPreview ? previewEl : pickMainEl(args.url)
-    // 記下「目前 active 是誰」給下次接播用，pickMainEl 看到 mainA 已經在播
-    // 就走 mainB，避免同一段 src 蓋上去讓播放路徑競爭。
-    if (!isPreview) activeMainEl = el
-
-    const token = Symbol('playback')
-    tokens.set(el, token)
-    const live = () => tokens.get(el) === token
-
-    if (!el.src.includes(args.url)) el.src = args.url
-    el.defaultPlaybackRate = args.rate
-    el.playbackRate = args.rate
-    el.muted = muted
-
-    // metadata 還沒到之前設 currentTime，部分瀏覽器會吞掉——metadata 到了再補一次。
-    el.currentTime = args.offsetSec
-    // happy-dom 沒給 HTMLMediaElement.HAVE_METADATA 常數，hard-code 1（HTML 標準）：
-    // HAVE_NOTHING=0, HAVE_METADATA=1, HAVE_CURRENT_DATA=2, HAVE_FUTURE_DATA=3, HAVE_ENOUGH_DATA=4
+  /** metadata 還沒到就設 currentTime 可能被瀏覽器吞掉，loadedmetadata 後補設一次。
+   *  mainEl 補設要看 generation 有沒有過期；previewEl 是短生命週期的試聽動作，
+   *  不共用 mainEl 的世代（切換主集數不該打斷正在放的試聽）。 */
+  function seekWithMetadataGuard(el: HTMLAudioElement, sec: number): void {
+    el.currentTime = sec
     if (el.readyState < 1) {
-      el.addEventListener('loadedmetadata', () => { if (live()) el.currentTime = args.offsetSec }, { once: true })
-    }
-
-    el.onended = () => { if (live()) onEnded() }
-    // TEMP perf: capture 進入 startPlayback 的時戳 t2，與 gapMark 一起在 play().then() 印出
-    const t2 = performance.now()
-    const gapMark = args.gapMark
-    if (args.durationSec !== undefined) {
-      // 試聽限長：真的出聲（playing）後才起算，才不會把載入等待時間吃進試聽長度。
-      const stopAt = args.offsetSec + args.durationSec
-      let timer: number | null = null
-      el.addEventListener('playing', () => {
-        if (!live()) return
-        timer = window.setTimeout(() => {
-          if (!live()) return
-          el.pause()
-          onEnded()
-        }, Math.max(0, ((stopAt - el.currentTime) / args.rate) * 1000))
+      const genAtCall = generation
+      el.addEventListener('loadedmetadata', () => {
+        if (el === mainEl && genAtCall !== generation) return
+        el.currentTime = sec
       }, { once: true })
-      el.addEventListener('pause', () => { if (timer !== null) window.clearTimeout(timer) }, { once: true })
     }
-
-    void el.play()
-      .then(() => {
-        // TEMP perf: 印 inter-segment gap 分段數字（iOS Safari onended→下一段出聲拆三段）。
-        if (live() && gapMark) {
-          const t3 = performance.now()
-          console.debug('[perf] inter-segment gap', {
-            toSeg: gapMark.segIdx,
-            url: args.url.split('/').pop(),
-            ended_to_canplay_ms: Math.round(gapMark.t1 - gapMark.t0),
-            canplay_to_play_ms: Math.round(t2 - gapMark.t1),
-            play_startup_ms: Math.round(t3 - t2),
-            total_ms: Math.round(t3 - gapMark.t0),
-          })
-        }
-      })
-      .catch((err) => {
-      // ponytail: 印出真實錯誤以便 iOS Safari 排查。正常 reject（NotAllowedError
-      // / AbortError / NotSupportedError）會被 onPlayRejected 處理，但 silent reject
-      // 沒訊息就找不到 root cause。上線後這個 console.error 可以保留：iOS 用戶量
-      // 少、debug window 小，正式環境看到 error 反而是 bug 訊號。
-      console.error('[audioEngine] play() rejected', { url: args.url, err: String(err), name: err?.name })
-      if (live()) onPlayRejected()
-    })
-    const handle: PlaybackHandle = { el, globalStartSec: args.globalStartSec, offsetSec: args.offsetSec }
-    handleTokens.set(handle, token)
-    return handle
   }
 
-  function positionOf(handle: PlaybackHandle): number {
-    // metadata 未到時 currentTime 可能還是 0，位置不能倒退到 offset 之前。
-    return handle.globalStartSec + Math.max(handle.el.currentTime, handle.offsetSec)
+  function load(url: string): void {
+    generation++
+    mainEl.src = url
+    // previewEl 載同一個 episode URL（試聽是對整集檔內任意區段 seek 抽樣）；
+    // 同 URL 走 HTTP cache，不會重拉整檔。換集時順手停掉還在放的舊集試聽。
+    if (previewStopTimer !== null) { window.clearTimeout(previewStopTimer); previewStopTimer = null }
+    previewEl.pause()
+    previewEl.src = url
   }
 
-  function stop(handle: PlaybackHandle): number {
-    const pos = positionOf(handle)
-    // 元素已被更新的 startPlayback 接手：這個 handle 過期了，不能動元素（會誤殺新播放）。
-    if (tokens.get(handle.el) !== handleTokens.get(handle)) return pos
-    tokens.set(handle.el, Symbol('stopped'))
-    handle.el.onended = null
-    handle.el.pause()
-    if (handle.el === activeMainEl) activeMainEl = null
-    return pos
+  function play(): Promise<void> {
+    const p = mainEl.play()
+    pendingPlay = p
+    void p.catch(() => undefined).finally(() => { if (pendingPlay === p) pendingPlay = null })
+    return p
   }
 
-  function setRate(handle: PlaybackHandle, rate: number): void {
-    handle.el.defaultPlaybackRate = rate
-    handle.el.playbackRate = rate
+  function pause(): void {
+    if (pendingPlay) {
+      const inFlight = pendingPlay
+      void inFlight.then(() => mainEl.pause()).catch(() => undefined)
+      return
+    }
+    mainEl.pause()
+  }
+
+  function setRate(rate: number): void {
+    mainEl.defaultPlaybackRate = rate
+    mainEl.playbackRate = rate
+    previewEl.defaultPlaybackRate = rate
+    previewEl.playbackRate = rate
   }
 
   function setMuted(m: boolean): void {
-    muted = m
-    for (const el of all) el.muted = m
+    mainEl.muted = m
+    previewEl.muted = m
   }
 
-  return { unlock, preload, startPlayback, stop, setRate, currentPositionSec: positionOf, setMuted, getReadyState, onceReady }
+  function playClip(startSec: number, durationSec: number): void {
+    if (previewStopTimer !== null) { window.clearTimeout(previewStopTimer); previewStopTimer = null }
+    if (previewPlayingListener !== null) {
+      previewEl.removeEventListener('playing', previewPlayingListener)
+    }
+    previewEl.pause()
+    seekWithMetadataGuard(previewEl, startSec)
+    const stopAt = startSec + durationSec
+    const onPlaying = (): void => {
+      previewPlayingListener = null
+      const rate = previewEl.playbackRate || 1
+      const remainMs = Math.max(0, ((stopAt - previewEl.currentTime) / rate) * 1000)
+      previewStopTimer = window.setTimeout(() => { previewEl.pause() }, remainMs)
+    }
+    previewPlayingListener = onPlaying
+    previewEl.addEventListener('playing', onPlaying, { once: true })
+    void previewEl.play().catch(() => undefined)
+  }
+
+  return {
+    load,
+    play,
+    pause,
+    seek: (sec: number) => seekWithMetadataGuard(mainEl, sec),
+    setRate,
+    setMuted,
+    currentTime: () => mainEl.currentTime,
+    duration: () => mainEl.duration,
+    playClip,
+  }
 }

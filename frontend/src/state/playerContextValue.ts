@@ -1,6 +1,6 @@
 import { createContext } from 'react'
 import type { Episode } from '../types/episode'
-import type { SegmentLoadState, SegmentPlayer } from './useSegmentPlayer'
+import type { SegmentLoadState } from './useSegmentPlayer'
 
 /** Provider 對外暴露：狀態鏡像 + hook 方法轉發。hook 實體只在 Provider 內一份。 */
 export type PlayerContextValue = {
@@ -22,10 +22,9 @@ export type PlayerContextValue = {
   setMuted(m: boolean): void
   loadProgress(episodeId: string): { readonly currentTime: number; readonly exists: boolean }
   setCurrentEpisode(episode: Episode | null): void
-  /** 單字抽樣（給 PronounceButton / WordCardPanel / ReplayAudioButton 用）。 */
-  playSegment(segmentIdx: number, offsetSec: number, durationSec: number): void
-  /** 對外 hook 暴露（給元件直接呼叫 decode / seek 等進階操作）。 */
-  getSegmentPlayer(): SegmentPlayer
+  /** 試聽抽樣（給 PronounceButton / WordCardPanel / ReplayAudioButton 用），
+   *  不影響主播放游標。 */
+  playClip(startSec: number, durationSec: number): void
 }
 
 export const PlayerContext = createContext<PlayerContextValue | null>(null)

@@ -30,8 +30,8 @@ function mockEpisodeFor(id: string): Episode {
   return {
     id,
     title: `Episode ${id}`,
-    audioUrl: null,
-    segments: [{ index: 0, audioUrl: 'https://example.test/000.mp3', duration: 1, start: 0, end: 1 }],
+    audioUrl: 'https://example.test/episode.mp3',
+    segments: [],
     cues: [{ index: 0, speaker: 'Alex', text: 'Hello', zh: '你好', start: 0, end: 1 }],
   }
 }
@@ -72,7 +72,7 @@ let popupEnabled = false
 const seekTo = vi.fn()
 const play = vi.fn()
 const pause = vi.fn()
-const playSegment = vi.fn()
+const playClip = vi.fn()
 const loadProgress = vi.fn(() => ({ currentTime: 0, exists: false }))
 
 // PlayerRoute 直接呼叫的 state hooks 全部換成靜態假值：這個測試只關心「URL 的
@@ -93,11 +93,7 @@ vi.mock('../state', () => ({
     setVolume: vi.fn(),
     loadProgress,
     setCurrentEpisode: vi.fn(),
-    playSegment,
-    getSegmentPlayer: () => ({
-      unlock: vi.fn(async () => undefined),
-      playSegment: vi.fn(),
-    }),
+    playClip,
   }),
   useSettings: () => ({
     settings: {
@@ -209,7 +205,7 @@ beforeEach(() => {
   seekTo.mockClear()
   play.mockClear()
   pause.mockClear()
-  playSegment.mockClear()
+  playClip.mockClear()
   loadProgress.mockClear()
   playerCurrentTime = 0
   playerIsPlaying = false
@@ -318,7 +314,7 @@ describe('PlayerRoute：點單字時的播放控制', () => {
     expect(play).toHaveBeenCalledTimes(1)
   })
 
-  it('重聽這句：就地 playSegment 播該句，不 seek、不關詞卡、不動主播放', async () => {
+  it('重聽這句：就地 playClip 播該句，不 seek、不關詞卡、不動主播放', async () => {
     popupEnabled = true
     playerIsPlaying = true
     lookupDict.mockResolvedValueOnce(MOCK_DICT_ENTRY)
@@ -330,8 +326,8 @@ describe('PlayerRoute：點單字時的播放控制', () => {
     expect(pause).toHaveBeenCalledTimes(1)
 
     await click(getButton(container, '重聽這句'))
-    // mock cue：index 0、start 0、end 1 → 從段內 0 秒播 1 秒
-    expect(playSegment).toHaveBeenCalledWith(0, 0, 1)
+    // mock cue：index 0、start 0、end 1 → playClip(cue.start, cue.end - cue.start)
+    expect(playClip).toHaveBeenCalledWith(0, 1)
     expect(seekTo).not.toHaveBeenCalled()
     expect(play).not.toHaveBeenCalled()
     // 詞卡沒被關（按鈕仍在畫面上）

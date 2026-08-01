@@ -1,16 +1,12 @@
 /** 主播放意圖狀態機：純函式、零 DOM、零非同步。
  *
- * 只接收「已確定還算數」的 transition——跨 await 的過期判斷（要不要 dispatch 這個
- * action）全部在 useSegmentPlayer.ts 的 guard() 那層處理掉，reducer 完全不碰
- * 取消/世代比對這類語意，才能保持 100% 同步、可窮舉測試。
- *
- * pendingPlay（loading 中按播放要排隊）刻意不放進這裡，維持呼叫端的 plain ref——
- * 這是會被「另一個 async 續體、跨 render 呼叫」讀取的資料，放進 reducer state
- * 一樣會重演 stale closure 問題，只是換了個容器名字。
+ * isPlaying/loadState 只接收「已確定還算數」的 transition——實際播放狀態的事實
+ * 來源是 audioEngine 的 mainEl（play/pause/ended 事件），這裡的 reducer 只負責把
+ * 事件收斂成 5 個離散狀態，不碰過期判斷 / 世代比對這類語意，才能保持 100% 同步、
+ * 可窮舉測試。
  */
 
 import type { SegmentPlayer } from './useSegmentPlayer'
-import type { Segment } from '../types/episode'
 
 export type MainPlayerState =
   | { readonly kind: 'idle' }
@@ -59,23 +55,4 @@ export function toPublicFields(state: MainPlayerState): Pick<SegmentPlayer, 'loa
     case 'paused': return { loadState: 'ready', isPlaying: false }
     case 'playing': return { loadState: 'ready', isPlaying: true }
   }
-}
-
-/** seekTo 用的 binary search：找出 globalSec 落在哪個 segment。segments 依 start 遞增排序。 */
-export function findSegmentForTime(segments: readonly Segment[], globalSec: number): number {
-  let lo = 0, hi = segments.length - 1, idx = 0
-  while (lo <= hi) {
-    const mid = (lo + hi) >> 1
-    const seg = segments[mid]
-    if (!seg) break
-    if (globalSec < seg.start) hi = mid - 1
-    else if (globalSec > seg.end) { idx = mid; lo = mid + 1 }
-    else { idx = mid; break }
-  }
-  return idx
-}
-
-/** 全域秒數換算成落在該 segment 內的 offset，夾在 [0, seg.duration] 之間。 */
-export function clampOffset(globalSec: number, seg: Segment): number {
-  return Math.max(0, Math.min(globalSec - seg.start, seg.duration))
 }

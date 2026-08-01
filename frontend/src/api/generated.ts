@@ -1741,9 +1741,9 @@ export interface components {
          * Episode
          * @description 前端播放頁需要的集數內容。segments 由服務層一次簽章後填入。
          *
-         *     audio_url：新方案下整集 mp3 不再產，audio_url 對 episode 永遠為 None（保留
-         *     欄位給 1 版本向後相容——舊 client 可能還在讀，frontend 用 audioUrl?: string |
-         *     null 容錯；Phase G 後才完全移除）。
+         *     audio_url：整集 mp3 的簽章 URL（audio_r2_key 非空且非 segments 路徑時才有值，
+         *     見 episode_assembly.build_episode）。雙寫過渡期 audioUrl 與 segments 會同時
+         *     存在；前端切到單一 <audio> 元素後 segments 停產（見播放器重構 Phase 4）。
          */
         Episode: {
             /** Id */
