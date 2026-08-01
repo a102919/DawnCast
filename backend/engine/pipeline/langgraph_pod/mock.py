@@ -222,8 +222,7 @@ class MockRepo:
             raise RuntimeError(f"mock: episode {episode_id} not found")
         if audio_key is not None:
             row.audio_key = audio_key
-        if audio_keys is not None:
-            row.audio_keys = list(audio_keys)
+        # Phase 4：segments 停產，audio_keys 參數保留向後相容但不寫入。
         if srt_key is not None:
             row.srt_key = srt_key
         row.script_json = script_json

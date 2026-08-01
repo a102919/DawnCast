@@ -251,11 +251,13 @@ async def update_episode_keys(
     """渲染完成後回填媒體 key 與內容。script_json 內含 cues（前端播放頁吃這個）。
 
     audio_key：整集 episode.mp3 的 R2 key，直接寫 audio_r2_key（coalesce，
-    None 表示保留既有值）。audio_keys：逐行 segment mp3 keys（雙寫過渡期，
-    見 tasks/lessons.md podcast 播放器重構筆記），寫 audio_r2_keys。兩欄各自
-    獨立、互不推導——舊版「audio_r2_key 寫 audio_keys[0]」的向後相容行為已
-    移除：那會讓 audio_r2_key 誤標成 segments 路徑，播放頁簽章時要靠
-    `"/segments/" not in key` 才能分辨，新集直接給正確的整集 key 沒有這個問題。
+    None 表示保留既有值）。
+
+    audio_keys：逐行 segment mp3 keys。Phase 4 後整集 mp3 接管前端播放，
+    segments 路徑停產——upload_artifacts 不再上傳 segment 物件，
+    update_episode_keys 也略過 audio_r2_keys 欄位（DB 欄位保留以免 migration，
+    永遠為空 list；歷史資料讓它自然殘留）。參數仍保留供向後相容，呼叫端
+    （update_episode_keys_node）現在傳 None。
 
     sources：可選；非 None 時覆寫 episodes.sources。傳 None 表示保留既有值
     （避免 update_episode_keys_node 在還沒拿到 retrieve_sources 結果時誤清空）。
@@ -272,13 +274,11 @@ async def update_episode_keys(
     gen_metrics_json: str | None = (
         json.dumps(gen_metrics, ensure_ascii=False) if gen_metrics is not None else None
     )
-    audio_keys_json = json.dumps(audio_keys, ensure_ascii=False) if audio_keys is not None else None
     async with connection() as conn, conn.cursor(row_factory=dict_row) as cur:
         await cur.execute(
             """
             update public.episodes
             set audio_r2_key = coalesce(%s, audio_r2_key),
-                audio_r2_keys = coalesce(%s::jsonb, audio_r2_keys),
                 srt_r2_key = %s,
                 script_json = %s::jsonb,
                 extracted_facts = %s::jsonb,
@@ -290,7 +290,6 @@ async def update_episode_keys(
             """,
             (
                 audio_key,
-                audio_keys_json,
                 srt_key,
                 json.dumps(payload, ensure_ascii=False),
                 json.dumps(extracted_facts, ensure_ascii=False)

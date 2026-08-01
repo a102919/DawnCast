@@ -724,7 +724,7 @@ def test_get_episode_references_empty_when_sources_null(client: TestClient) -> N
 
 
 def test_get_episode_returns_signed_segments_aligned_with_cues(client: TestClient) -> None:
-    """新集 audio_r2_keys + script_json.cues → segments 一次簽齊、index/start/end 對齊 cues。"""
+    """Phase 4：segments 永遠空 list，audioUrl 為整集 mp3 簽章。"""
     cues: list[dict[str, Any]] = []
     t = 0.0
     for i in range(5):
@@ -779,17 +779,10 @@ def test_get_episode_returns_signed_segments_aligned_with_cues(client: TestClien
         res = client.get("/episodes/ep-free", headers=auth_header(USER_A))
         assert res.status_code == 200
         payload = res.json()["data"]
-        segs = payload["segments"]
-        cset = payload["cues"]
-        assert len(segs) == 5
-        assert len(segs) == len(cset)
-        for s, c in zip(segs, cset, strict=True):
-            assert s["audioUrl"].startswith("https://signed.example/episodes/ep-free/segments/")
-            assert s["index"] == c["index"]
-            assert s["start"] == c["start"]
-            assert s["end"] == c["end"]
-        # audio_r2_key（"media/ep-free.mp3"）不含 "/segments/"，視為整集 mp3
-        # 重新啟用簽章，即使 segments 雙寫也同時存在（過渡期兩者並存）。
+        # Phase 4：segments 永遠空 list，前端只看 audioUrl + cues.words
+        assert payload["segments"] == []
+        assert len(payload["cues"]) == 5
+        # audio_r2_key（"media/ep-free.mp3"）不含 "/segments/"，視為整集 mp3 簽章。
         assert payload["audioUrl"] == "https://signed.example/media/ep-free.mp3"
     finally:
         monkeypatch_setattr.undo()

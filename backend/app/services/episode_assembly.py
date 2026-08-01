@@ -1,13 +1,16 @@
-"""集數組裝共用 service：DB row → 對外 Episode（含 segments 批次簽章）。
+"""集數組裝共用 service：DB row → 對外 Episode（含 audio_url 簽章）。
 
 GET /episodes/{slug} 與 GET /daily-orders/{date}/episode 共用同一份組裝邏輯，
 原本 daily_orders router 直接 `from app.routers.episodes import build_episode`
 跨 router 互相 import；集中搬到這個共用模組後，兩個 router 都改依賴這裡，
 不再互相 import 對方的 router 檔案。
 
-build_episode 為 async：presigned_get_url(s) 底層是同步 boto3 呼叫，包進
+build_episode 為 async：presigned_get_url 底層是同步 boto3 呼叫，包進
 asyncio.to_thread 丟到 thread pool 執行，避免佔住 event loop（同一 process
 內其他 request 會被這個同步呼叫卡住）。
+
+Phase 4：segments 欄位永遠回空 list。前端 Phase 3 後只用 audioUrl，segments
+只是契約留位避免 OpenAPI 變動（Segment model 在 P4+1 才刪，見 plan）。
 """
 
 from __future__ import annotations
@@ -17,7 +20,7 @@ import logging
 from typing import Any
 from urllib.parse import urlparse
 
-from shared.models import Cue, Episode, Segment, SourceReference
+from shared.models import Cue, Episode, SourceReference
 from shared.storage import r2
 
 logger = logging.getLogger(__name__)
@@ -80,80 +83,16 @@ def _references_from_sources(sources_json: Any) -> list[SourceReference]:
     return out
 
 
-def _segment_metadata_from_script(script_json: Any) -> list[dict[str, Any]]:
-    """從 script_json.cues 算每行 segment 對齊 metadata（duration, start, end）。
-
-    新方案下每行 mp3 對應一個 segment，duration 從該行 cue 實際時長推得。
-    如果 script_json 沒有 cues（舊集沒存），回空 list——此時 segments 留空，
-    前端走 audioUrl fallback（雖然 audioUrl 為 null，舊 client 會 graceful 失敗）。
-
-    word_offsets：從 script_json.cues[i].words 帶出（前端 Cue.words 已經有了，
-    這裡只負責 Segment 端的 metadata）。
-    """
-    cues = _cues(script_json)
-    return [
-        {
-            "index": i,
-            "duration": max(0.0, cue.end - cue.start),
-            "start": cue.start,
-            "end": cue.end,
-            "words": list(cue.words) if cue.words else None,
-        }
-        for i, cue in enumerate(cues)
-    ]
-
-
 async def build_episode(slug: str, row: dict[str, Any]) -> Episode:
-    """把 DB row 組成對外 Episode（含 segments 批次簽章）。
+    """把 DB row 組成對外 Episode（Phase 4：segments 永遠空 list，audio_url 必簽）。
 
-    GET /{slug} 與 /daily-orders/{date}/episode 共用同一份組裝邏輯，避免
-    兩條路徑各自組 Episode 時漏簽 segments（後者曾經漏掉，導致該路徑進來的
-    集數完全播不了但無任何錯誤訊息——segments 空 list 對前端是合法的「舊集
-    未 backfill」狀態，不會報錯，只是靜音）。
+    GET /{slug} 與 /daily-orders/{date}/episode 共用同一份組裝邏輯。
 
-    async：segments / legacy audioUrl 簽章都是同步 boto3 呼叫，一律包進
-    asyncio.to_thread 丟到 thread pool 執行，呼叫端要 await。
+    async：audioUrl 簽章是同步 boto3 呼叫，包進 asyncio.to_thread 丟到 thread
+    pool 執行，呼叫端要 await。
     """
     script_j = row.get("script_json")
     cover_icon_val = script_j.get("cover_icon") if isinstance(script_j, dict) else None
-
-    # 簽章 segments：audio_r2_keys 為 jsonb list（per-line mp3 keys）。
-    # 對齊 script_json.cues 順序，前端用 index 跟 Cue 對齊。
-    audio_keys: list[str] = list(row.get("audio_r2_keys") or [])
-    segment_meta = _segment_metadata_from_script(script_j)
-    segments: list[Segment] = []
-    if audio_keys and len(audio_keys) == len(segment_meta):
-        # 同步批次簽章：mp3 keys + 對應 .words.json sidecar keys 一起簽。
-        # 沒 word_offsets 的 segment 不產生 sidecar key（前端拿 null URL → fallback）。
-        sidecar_keys = [
-            f"{k.removesuffix('.mp3')}.words.json"
-            for k, m in zip(audio_keys, segment_meta, strict=True)
-            if m.get("words")
-        ]
-        all_keys = audio_keys + sidecar_keys
-        try:
-            signed = await asyncio.to_thread(r2.presigned_get_urls, all_keys)
-        except Exception:
-            logger.exception("segments 批次簽章失敗 slug=%s", slug)
-            signed = {}
-        for key, meta in zip(audio_keys, segment_meta, strict=True):
-            url = signed.get(key)
-            if url is None:
-                continue
-            word_url: str | None = None
-            if meta.get("words"):
-                sidecar_key = f"{key.removesuffix('.mp3')}.words.json"
-                word_url = signed.get(sidecar_key)
-            segments.append(
-                Segment(
-                    index=meta["index"],
-                    audio_url=url,
-                    duration=meta["duration"],
-                    start=meta["start"],
-                    end=meta["end"],
-                    word_offsets_url=word_url,
-                )
-            )
 
     # audio_r2_key 復用：非 segments 路徑（整集 mp3，含新集雙寫產物與 Gen-1
     # 舊集既有整集檔）才簽 audioUrl。"/segments/" 出現在 key 裡表示這個欄位
@@ -176,7 +115,7 @@ async def build_episode(slug: str, row: dict[str, Any]) -> Episode:
         cover_icon=cover_icon_val,
         is_free=row["is_free"],
         audio_url=audio_url,
-        segments=segments,
+        segments=[],  # Phase 4：停產；前端已切換至 audioUrl + Cue.words
         cues=_cues(script_j),
         references=_references_from_sources(row.get("sources")),
     )
