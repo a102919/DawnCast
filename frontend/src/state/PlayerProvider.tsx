@@ -119,7 +119,17 @@ export function PlayerProvider({ children, lastPlayedEpisodeId, lastPlayedPositi
   const getSegmentPlayer = useCallback(() => playerRef.current, [])
   const getCurrentTime = useCallback(() => playerRef.current.currentTime, [])
 
-  useMediaSession({ episode: currentEpisode, isPlaying: player.isPlaying, getCurrentTime, play, pause, seekTo })
+  useMediaSession({
+    episode: currentEpisode,
+    isPlaying: player.isPlaying,
+    currentTime: player.currentTime,
+    duration: player.duration,
+    playbackRate: player.playbackRate,
+    getCurrentTime,
+    play,
+    pause,
+    seekTo,
+  })
 
   const value: PlayerContextValue = {
     currentTime: player.currentTime,
