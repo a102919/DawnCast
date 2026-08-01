@@ -208,7 +208,15 @@ export function createAudioEngine(): AudioEngine {
           unlockedSet.add(el)
           console.debug('[audioEngine] unlock ok', { el: el === mainA ? 'mainA' : el === mainB ? 'mainB' : 'preview' })
         }).catch((err) => {
-          console.error('[audioEngine] unlock rejected', { err: String(err), name: err?.name })
+          // AbortError 不是授權失敗：unlock 的 .then() 內做 pause() / 清 src，
+          // 瀏覽器會 abort in-flight 的 play()——這是預期副作用。HMR / 連續 reload
+          // 觸發新 createAudioEngine、attachToDOM 拔舊 host 時同樣會 abort。
+          // 真授權失敗是 NotAllowedError（沒 user gesture），那才需要關心。
+          if (err?.name === 'AbortError') {
+            console.debug('[audioEngine] unlock aborted (no-op)', { el: el === mainA ? 'mainA' : el === mainB ? 'mainB' : 'preview' })
+          } else {
+            console.error('[audioEngine] unlock rejected', { err: String(err), name: err?.name })
+          }
           // 解鎖失敗（page 還沒任何 gesture、play() 被 NotAllowedError reject）：
           // 同樣只在 src 還停留 SILENT_WAV 時清。
           if (el.src === SILENT_WAV) {
@@ -219,11 +227,44 @@ export function createAudioEngine(): AudioEngine {
     }
   }
 
+  /** iOS Safari audio output path 在 src 第一次 play() 時冷啟 ~1500ms，是 podcast
+   * segment 邊界 2-3s 空白的主嫌（線上 prod [perf] play_startup_ms 實測）。
+   * 解法：在 preload 的 canplay listener 內對同一 element 做一輪 muted play→pause
+   * 把 audio path 預熱。unlock() 已給元素終身授權，preload 階段的 play() 不會被
+   * NotAllowedError 拒絕。warmup promise resolve 時若偵測到 startPlayback 已
+   * sync 設了新 playback token（WeakMap snapshot 比對），表示已被新播放接手、
+   * 撤退避免打斷。AbortError 是 startPlayback 的 play() 搶先 abort 的副作用。 */
+  function warmup(el: HTMLAudioElement): void {
+    const playbackTokenAtWarmup = tokens.get(el)
+    // 預熱期間靜音：buffered audio 會被真播 1~2 frame，不靜音會被喇叭播出來
+    el.muted = true
+    el.currentTime = 0
+    const p = el.play()
+    if (!p || typeof p.then !== 'function') return
+    p.then(() => {
+      // startPlayback 已 sync 設了新 token → 撤退，不打斷正在播放的新播放
+      if (tokens.get(el) !== playbackTokenAtWarmup) return
+      el.pause()
+      el.currentTime = 0
+      el.muted = muted
+    }).catch((err) => {
+      // AbortError：startPlayback 的 play() 搶先 abort warmup 的 play()，預期副作用
+      if (err?.name === 'AbortError') return
+      // 其他（NotAllowedError 在 unlock 後不會發生，但若發生就安靜失敗）
+      console.debug('[audioEngine] warmup no-op', { name: err?.name })
+    })
+  }
+
   function preload(url: string): Promise<boolean> {
     const el = pickMainEl(url)
     if (el.src.includes(url) && el.readyState >= 3) return Promise.resolve(true)
     return new Promise((resolve) => {
-      const ok = () => { cleanup(); resolve(true) }
+      const ok = () => {
+        cleanup()
+        // canplay 觸發 = 元素就緒 = 趁還沒被 startPlayback 接手，把 audio path 熱起來
+        warmup(el)
+        resolve(true)
+      }
       const bad = () => { cleanup(); resolve(false) }
       const cleanup = () => {
         el.removeEventListener('canplay', ok)

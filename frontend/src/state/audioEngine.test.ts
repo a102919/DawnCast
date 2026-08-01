@@ -113,6 +113,27 @@ describe('audioEngine', () => {
     }
   })
 
+  it('unlock 遇到 AbortError 不印 console.error（unlock .then() 的 pause / 清 src 副作用不算授權失敗）', async () => {
+    const { els } = setupGlobalMock()
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined)
+    const debugSpy = vi.spyOn(console, 'debug').mockImplementation(() => undefined)
+    const engine = createAudioEngine()
+    // createAudioEngine 同步建出三個 Audio 元素；unlock 內第一個元素的 play() 會被中斷，
+    // 模擬 iOS Safari：in-flight play() 被 .then() 的 pause / currentTime=0 / 清 src 中斷。
+    const abortErr = Object.assign(new Error('aborted'), { name: 'AbortError' })
+    ;(els[0]!.play as ReturnType<typeof vi.fn>).mockImplementationOnce(() => Promise.reject(abortErr))
+    engine.unlock()
+    await Promise.resolve()
+    await Promise.resolve()
+    // 真正的授權失敗才該走 console.error；AbortError 屬於預期副作用，降級 debug。
+    const errorLogs = errSpy.mock.calls.filter(c => String(c[0] ?? '').includes('unlock rejected'))
+    expect(errorLogs).toHaveLength(0)
+    const debugLogs = debugSpy.mock.calls.filter(c => String(c[0] ?? '').includes('unlock aborted'))
+    expect(debugLogs.length).toBeGreaterThan(0)
+    errSpy.mockRestore()
+    debugSpy.mockRestore()
+  })
+
   it('preload：src 設進元素並等 canplay 時 resolve true', async () => {
     const { els } = setupGlobalMock()
     const engine = createAudioEngine()
@@ -139,6 +160,81 @@ describe('audioEngine', () => {
     el.src = 'https://cdn/0.mp3'
     el.readyState = HAVE_FUTURE_DATA
     await expect(engine.preload('https://cdn/0.mp3')).resolves.toBe(true)
+  })
+
+  it('preload 完成後對 element 做 warmup（canplay → play → pause → currentTime=0）', async () => {
+    const { els } = setupGlobalMock()
+    const engine = createAudioEngine()
+    await engine.preload('https://cdn/0.mp3')
+    // warmup 的 play() promise 排在 preload promise resolve 之後的 microtask
+    await Promise.resolve()
+    await Promise.resolve()
+    const el = els[0]!
+    expect(el.play).toHaveBeenCalledTimes(1)            // warmup 那一次
+    expect(el.pause).toHaveBeenCalledTimes(1)            // warmup pause
+    expect(el.currentTime).toBe(0)                       // warmup reset
+    // 預熱期間靜音，避免 1~2 frame 的 audio 被喇叭輸出
+    expect(el.muted).toBe(false)                         // warmup .then() 還原成 engine muted=false
+  })
+
+  it('preload 之後 startPlayback：play() 至少被呼叫兩次（warmup + 正式）', async () => {
+    const { els } = setupGlobalMock()
+    const engine = createAudioEngine()
+    await engine.preload('https://cdn/0.mp3')
+    await Promise.resolve()
+    await Promise.resolve()
+    engine.startPlayback(
+      { url: 'https://cdn/0.mp3', globalStartSec: 0, offsetSec: 0, rate: 1 },
+      vi.fn(), vi.fn(),
+    )
+    await Promise.resolve()
+    await Promise.resolve()
+    expect(els[0]!.play.mock.calls.length).toBeGreaterThanOrEqual(2)
+  })
+
+  it('warmup 在 startPlayback 接手後撤退：startPlayback 的 currentTime 不被 warmup 改動', async () => {
+    const { els } = setupGlobalMock()
+    const engine = createAudioEngine()
+    // preload 觸發 canplay 後，warmup 的 then/catch 排在 microtask；先搶在 microtask flush
+    // 前 startPlayback 設 token + currentTime=0.5，warmup resolve 時 token 已變 → 撤退
+    engine.preload('https://cdn/1.mp3')
+    engine.startPlayback(
+      { url: 'https://cdn/1.mp3', globalStartSec: 0, offsetSec: 0.5, rate: 1 },
+      vi.fn(), vi.fn(),
+    )
+    await Promise.resolve()
+    await Promise.resolve()
+    await Promise.resolve()
+    // startPlayback 把 currentTime 設成 0.5；warmup 撤退沒動它
+    expect(els[0]!.currentTime).toBe(0.5)
+  })
+
+  it('warmup play() 被 NotAllowedError：debug log、不影響主播放', async () => {
+    const { els } = setupGlobalMock()
+    const engine = createAudioEngine()
+    const debugSpy = vi.spyOn(console, 'debug').mockImplementation(() => undefined)
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined)
+    const notAllowed = Object.assign(new Error('nope'), { name: 'NotAllowedError' })
+    ;(els[0]!.play as ReturnType<typeof vi.fn>).mockImplementationOnce(() => Promise.reject(notAllowed))
+    await engine.preload('https://cdn/2.mp3')
+    await Promise.resolve()
+    await Promise.resolve()
+    // 主播放仍能跑（startPlayback 的 play() 不被 warmup 失敗污染）
+    engine.startPlayback(
+      { url: 'https://cdn/2.mp3', globalStartSec: 0, offsetSec: 0, rate: 1 },
+      vi.fn(), vi.fn(),
+    )
+    await Promise.resolve()
+    await Promise.resolve()
+    // 兩次 play：第一次 warmup（reject）、第二次 startPlayback 正式
+    expect(els[0]!.play).toHaveBeenCalledTimes(2)
+    // 不印 console.error
+    expect(errSpy).not.toHaveBeenCalled()
+    // 印 warmup no-op debug
+    const warmupDebug = debugSpy.mock.calls.filter(c => String(c[0] ?? '').includes('warmup no-op'))
+    expect(warmupDebug.length).toBeGreaterThan(0)
+    debugSpy.mockRestore()
+    errSpy.mockRestore()
   })
 
   it('startPlayback：主播放設 src/currentTime/playbackRate 並 play', async () => {
