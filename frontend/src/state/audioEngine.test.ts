@@ -239,6 +239,60 @@ describe('audioEngine', () => {
     expect(els[0]!.currentTime).toBe(0.3)
   })
 
+  it('startPlayback 帶 gapMark：play() resolve 後印 [perf] inter-segment gap 含三段時戳', async () => {
+    const { els } = setupGlobalMock()
+    const engine = createAudioEngine()
+    const debug = vi.spyOn(console, 'debug').mockImplementation(() => undefined)
+    // 模擬真實 flow：onended 在 t0 觸發 → 等 50ms canplay → startPlayback 在 t1 之後
+    // 立刻被呼叫。用真實 setTimeout 製造時間差，確保 engine 內 t2 ≥ t1。
+    const t0 = performance.now()
+    await new Promise(r => setTimeout(r, 50))
+    const t1 = performance.now()
+    engine.startPlayback(
+      { url: 'https://cdn/5.mp3', globalStartSec: 10, offsetSec: 0, rate: 1, gapMark: { segIdx: 5, t0, t1 } },
+      vi.fn(),
+      vi.fn(),
+    )
+    // 等 play().then() microtask flush
+    await Promise.resolve()
+    await Promise.resolve()
+    const gapLog = debug.mock.calls.find(c => c[0] === '[perf] inter-segment gap')
+    expect(gapLog).toBeDefined()
+    const payload = gapLog?.[1] as {
+      toSeg: number
+      url: string
+      ended_to_canplay_ms: number
+      canplay_to_play_ms: number
+      play_startup_ms: number
+      total_ms: number
+    }
+    expect(payload.toSeg).toBe(5)
+    expect(payload.url).toBe('5.mp3')
+    expect(payload.ended_to_canplay_ms).toBeGreaterThanOrEqual(45)  // setTimeout(50) 允許 ±5ms 漂移
+    expect(payload.ended_to_canplay_ms).toBeLessThan(100)
+    expect(payload.canplay_to_play_ms).toBeGreaterThanOrEqual(0)
+    expect(payload.play_startup_ms).toBeGreaterThanOrEqual(0)
+    expect(payload.total_ms).toBe(payload.ended_to_canplay_ms + payload.canplay_to_play_ms + payload.play_startup_ms)
+    debug.mockRestore()
+    void els
+  })
+
+  it('startPlayback 沒帶 gapMark：不印 [perf] log（手動 play / seekTo 不該誤印）', async () => {
+    setupGlobalMock()
+    const engine = createAudioEngine()
+    const debug = vi.spyOn(console, 'debug').mockImplementation(() => undefined)
+    engine.startPlayback(
+      { url: 'https://cdn/0.mp3', globalStartSec: 0, offsetSec: 0, rate: 1 },
+      vi.fn(),
+      vi.fn(),
+    )
+    await Promise.resolve()
+    await Promise.resolve()
+    const gapLog = debug.mock.calls.find(c => c[0] === '[perf] inter-segment gap')
+    expect(gapLog).toBeUndefined()
+    debug.mockRestore()
+  })
+
   it('primary API surface: AudioEngine 出口型別一致', () => {
     const engine: AudioEngine = createAudioEngine()
     expect(typeof engine.unlock).toBe('function')
