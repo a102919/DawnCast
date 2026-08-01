@@ -127,9 +127,7 @@ async def resolve_for_user(
                 user_id, episode_id, deliver_date, order_id=order_id
             )
         else:
-            inserted = await repo.insert_delivery(
-                user_id, episode_id, deliver_date, order_id=None
-            )
+            inserted = await repo.insert_delivery(user_id, episode_id, deliver_date, order_id=None)
         if inserted:
             # 拿這集的對外資訊（slug + 中文標題）拼通知 payload。
             # get_episode_meta 回 None 表示 episode 已不存在（FK CASCADE

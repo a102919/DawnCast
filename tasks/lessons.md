@@ -347,3 +347,35 @@ curl 直接打 8000 帶 `/api/episodes` 是 200（用 prefix 加完的版本）�
 2. 「call args 正確」不等於「內容正確」——這次補了 whisper 轉錄音檔比對句子，才把資料層排除、鎖定 runtime。
 
 **規則**：跨 DB 往返的浮點值永遠不可拿來做等值/邊界比對；有精確整數索引（sourceLineNo）就用索引，時間戳只當顯示用 metadata。
+
+## 2026-07-31 — 狀態旗標若可從另一表推導，INSERT trigger 強制原子比 reconcile 兜底穩
+
+**症狀**：使用者 UI 卡「這集正在生成中」19 分鐘。DB 查發現 `deliveries.order_id` row 早就寫入、`daily_orders.status` 卻卡 `queued`。原本 `deliver_and_mark_ready` 已用 `conn.transaction()` 把 INSERT + UPDATE 包成原子，照理不可能漏翻。
+
+**根因**：commit `5272ca7` 寫的 `promote_delivered_orders_to_ready` 兜底救了這次，但**只是 5 分鐘補牌，不是治本**。`daily_orders.status='ready'` 是個**冗餘狀態**——真相住在 `deliveries.order_id` 存在與否，但寫入路徑把兩件事分開更新。任何未來加的寫入路徑（測試 helper、admin script、partial commit、promote 路徑）都可能在 INSERT 進 deliveries 後忘了翻 daily_orders.status。reconcile 救得了這次，救不了下一條漏翻路徑。
+
+**修法（commit c3748aa）**：AFTER INSERT trigger 把翻牌綁進 INSERT 本身，物理上不可能漏翻：
+
+```sql
+create trigger deliveries_flip_order_ready
+  after insert on public.deliveries
+  for each row
+  when (NEW.order_id is not null)
+  execute function deliveries_flip_order_ready();
+```
+
+WHEN clause 把頻道 / evergreen（order_id NULL）排除掉。`deliver_and_mark_ready` 簡化為只剩 INSERT（trigger 接手翻牌），呼叫端介面不變。reconcile 的 `promote_delivered_orders_to_ready` 仍保留當 belt-and-suspenders 兜底（trigger 失效或舊環境未跑 migration 時）。
+
+**驗證**：
+1. trigger SQL 行為測試 4 情境全過（queued→ready、played 不翻、pending 不翻、order_id NULL 跳過）
+2. bc927df7 跑完整 pipeline 後 status=ready，worker log 沒 `order_reconcile 命中 bc927df7` → 證明是 trigger 翻的，不是 reconcile
+3. 第二次 reconcile 注入穩態 0 命中（promote SQL 找不到任何「有 delivery 但 status 不對」的 row）
+4. `uv run poe lint / type-check / test` 全綠（449 passed）
+
+**規則**：
+- **「狀態由資料推導，不要存 flags」**：當 status 欄位的真假完全可從其他表的存在/屬性推導出來，就不該存這個欄位。要嘛移除（API 端計算），要嘛 trigger 自動同步——不要靠「每個寫入路徑都記得翻牌」這種人類契約。
+- **trigger 比 reconcile 強是因為「物理上不可能漏」**：reconcile 是 5 分鐘補牌（OK 這次漏，下次救），trigger 是同一個 transaction 內自動跑（這次不可能漏）。前者靠人類記得每條路徑翻牌、後者靠 schema 強制。任何「必須同步的雙 table 寫入」都應該用 trigger 而不是 convention。
+- **trigger function 用 WHEN clause 而非 IF**：例如 `WHEN (NEW.order_id IS NOT NULL)` 把「什麼時候觸發」表達成 trigger-level，function 內只剩純邏輯（UPDATE）。讀 trigger definition 一行就看懂條件、不必跳進 function body。
+- **保留 reconcile 兜底不是冗餘**：trigger + reconcile 是兩層防護。trigger 強但不變 schema（truncate、重灌、舊環境不跑 migration 時就失效），reconcile 弱但能 catch up。**belt-and-suspenders 永遠比單層強**，特別是寫入路徑橫跨多個 module（`insert_deliveries_node` + `reuse_repo.insert_delivery` + reconcile fallback）時。
+- **驗 trigger 真的有跑不是靠「reconcile 沒命中」**：worker log 時間軸是關鍵證據——pipeline 完成 timestamp 在前、reconcile timestamp 在後，bc927df7 中間沒有 `order_reconcile` log 行 → 唯一翻牌來源是 trigger。「沒命中 reconcile」是必要條件不是充分條件（reconcile 可能在 pipeline 完成後才跑、且 idempotent），必須確認 reconcile 真的有機會跑卻沒介入。
+- **新增 DELETE-on-failure 補償時重新評估 trigger 影響**：`update_episode_keys_node` 的 DELETE-on-failure 砍 row 後下一個 node INSERT deliveries 會 FK violation；trigger 雖在 INSERT 後跑但 FK violation 會讓整個 transaction rollback，trigger 也不會 fire。ForeignKeyViolation 仍要 catch（見 2026-07-20 lesson），但 trigger 不會救這個情境——FK 違反時根本走不到 trigger。

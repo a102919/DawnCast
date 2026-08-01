@@ -19,7 +19,7 @@ from app.main import app
 #   1. cd backend && uv run poe export-openapi
 #   2. cd frontend && npm run gen:api-types && npm run typecheck（抓前端沒跟上的地方）
 #   3. 把下面這行的 hash 換成新值（跑一次這支測試，錯誤訊息會印出正確值）
-_EXPECTED_SCHEMA_HASH = "befdd996950bf60b2180931fdb84db97f4ef670edc7cc014551f952dcb2e9275"
+_EXPECTED_SCHEMA_HASH = "0c2f1afb34a4fdd887dae5b7a64a5409d88f8865717433db79d89ff4dbe6b01c"
 
 
 def test_openapi_schema_matches_snapshot() -> None:

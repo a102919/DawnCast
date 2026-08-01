@@ -175,6 +175,14 @@ def _trim_silence(src: Path, dst: Path) -> None:
                 "libmp3lame",
                 "-b:a",
                 "128k",
+                # 不寫 LAME/Xing gapless tag：整集 concat（engine.media.audio）靠
+                # ffprobe format=duration 對每個 segment 逐檔記帳算佈局，這個 tag
+                # 會讓 format=duration 回報「跳過 encoder priming 樣本後的聽感時長」
+                # 而非 frame 物理時長；segment 在 concat 時序上除了第一行都不是
+                # 檔案序列的首檔，priming 樣本會被當真實內容播出，兩者不一致就是
+                # 逐行累積的時間軸飄移根源。關掉這個 tag 才能讓 duration 各自可加總。
+                "-write_xing",
+                "0",
                 str(intermediate),
             ],
             capture_output=True,

@@ -70,6 +70,31 @@ def put_object(key: str, data: bytes, content_type: str) -> None:
         raise StorageError("物件上傳失敗") from exc
 
 
+def object_exists(key: str) -> bool:
+    """HEAD 物件是否存在於 bucket。
+
+    給 backfill_full_episode 判斷 Gen-1 舊集（audio_r2_key 非空且不含 /segments/）
+    指向的整集 mp3 是否真的還在 R2——欄位有值不代表物件存在。404 回 False（合法
+    結果，不是錯誤）；其餘失敗（權限/網路）視為無法判斷，raise StorageError 讓
+    呼叫端另外處理，不能誤判成「不存在」。
+    """
+    if _dev_fallback():
+        return (_mock_root() / key).is_file()
+    settings = get_settings()
+    try:
+        _client().head_object(Bucket=settings.r2_bucket, Key=key)
+        return True
+    except ClientError as exc:
+        code = exc.response.get("Error", {}).get("Code")
+        if code in ("404", "NoSuchKey", "NotFound"):
+            return False
+        logger.error("R2 head_object 失敗 key=%s: %s", key, exc)
+        raise StorageError("物件存在性檢查失敗") from exc
+    except BotoCoreError as exc:
+        logger.error("R2 head_object 失敗 key=%s: %s", key, exc)
+        raise StorageError("物件存在性檢查失敗") from exc
+
+
 def get_object(key: str) -> bytes:
     """下載物件 bytes。給 backfill 從舊 audio_r2_key 撈整集 mp3 用。
 

@@ -18,6 +18,7 @@ import pytest
 
 from engine.media import render_episode
 from engine.media import tts as tts_mod
+from engine.media.audio import plan_layout
 from engine.media.subtitles import build_timeline, cues_to_json, write_srt, write_vtt
 from engine.media.tts import (
     MINIMAX_VOICES,
@@ -62,47 +63,51 @@ def test_build_timeline_累積游標含停頓() -> None:
         _seg(0, "Alex", "hello", "哈囉", 2.0),
         _seg(1, "Sarah", "world", "世界", 3.0),
     ]
-    cues = build_timeline(segs, pause_sec=0.3)
+    layout = plan_layout(segs, short_gap=0.3, long_gap=0.3)
+    cues = build_timeline(segs, layout)
     assert [(c.start, c.end) for c in cues] == [(0.0, 2.0), (2.3, 5.3)]
     assert [c.index for c in cues] == [1, 2]
     assert [c.speaker for c in cues] == ["Alex", "Sarah"]
 
 
 def test_build_timeline_chapter邊界用長停頓() -> None:
-    """下一段標 pause_before=True → 前一段之後用 long_pause_sec，不是 pause_sec。"""
+    """下一段標 pause_before=True → 前一段之後用 long_gap，不是 short_gap。"""
     segs = [
         _seg(0, "Nova", "chapter one", "第一章", 2.0),
         _seg(1, "Nova", "chapter two", "第二章", 3.0, pause_before=True),
     ]
-    cues = build_timeline(segs, pause_sec=0.3, long_pause_sec=0.7)
+    layout = plan_layout(segs, short_gap=0.3, long_gap=0.7)
+    cues = build_timeline(segs, layout)
     assert [(c.start, c.end) for c in cues] == [(0.0, 2.0), (2.7, 5.7)]
 
 
-def test_build_timeline_不再scale以mp3物理時長校正() -> None:
-    """新方案下 build_timeline 不再吃 target_duration、不做 _align_to_duration 等比縮放。
+def test_build_timeline_只讀layout不再自算cursor() -> None:
+    """build_timeline 改吃 plan_layout 的輸出，cursor 累積邏輯只在 plan_layout 算一次。
 
-    每行 mp3 由前端 Web Audio API 自行串接播，cue 時間軸即 ground truth，
+    整集 mp3 由 concat_episode frame-level stream copy 產生，drift=0 是數學保證，
     不需要再用最終 mp3 物理時長反向校正（舊 LAME frame alignment overhead
-    飄移從源頭消失）。target_duration 參數已從 build_timeline 簽章移除。
+    飄移從源頭消失）。
     """
     segs = [
         _seg(0, "Alex", "hi", "嗨", 2.0),
         _seg(1, "Sarah", "world", "世界", 3.0),
     ]
-    cues = build_timeline(segs, pause_sec=0.3)
-    # 原始 cursor 累積：seg[0]=2.0, pause=0.3, seg[1]=3.0 → cues[-1].end=5.3
+    layout = plan_layout(segs, short_gap=0.3, long_gap=0.3)
+    cues = build_timeline(segs, layout)
+    # 原始 cursor 累積：seg[0]=2.0, gap=0.3, seg[1]=3.0 → cues[-1].end=5.3
     assert [(c.start, c.end) for c in cues] == [(0.0, 2.0), (2.3, 5.3)]
 
 
 def test_build_timeline_長停頓邊界仍有效() -> None:
-    """拿掉 target_duration 後 long_pause_sec 邊界處理仍正常（別被簡化破壞）。"""
+    """long_gap 邊界處理透過 plan_layout 正常運作（別被簡化破壞）。"""
     segs = [
         _seg(0, "Nova", "chapter one", "第一章", 2.0),
         _seg(1, "Nova", "chapter two", "第二章", 3.0, pause_before=True),
         _seg(2, "Nova", "chapter three", "第三章", 1.5, pause_before=True),
     ]
-    cues = build_timeline(segs, pause_sec=0.3, long_pause_sec=0.9)
-    # seg[0]=2.0, long_pause=0.9 → seg[1].start=2.9, seg[1]=3.0, long_pause=0.9 → seg[2].start=6.8
+    layout = plan_layout(segs, short_gap=0.3, long_gap=0.9)
+    cues = build_timeline(segs, layout)
+    # seg[0]=2.0, long_gap=0.9 → seg[1].start=2.9, seg[1]=3.0, long_gap=0.9 → seg[2].start=6.8
     assert [(c.start, c.end) for c in cues] == [(0.0, 2.0), (2.9, 5.9), (6.8, 8.3)]
 
 
@@ -198,9 +203,7 @@ async def test_minimax_line_synth_帶合法_emotion_進voice_setting(
 ) -> None:
     monkeypatch.setattr(tts_mod, "_trim_silence", lambda src, dst: dst.write_bytes(b"mp3"))
     monkeypatch.setattr(tts_mod, "_probe_duration", lambda p: 1.0)
-    monkeypatch.setattr(
-        tts_mod, "_fetch_word_boundary", lambda client, url: []
-    )
+    monkeypatch.setattr(tts_mod, "_fetch_word_boundary", lambda client, url: [])
 
     captured: list[dict[str, object]] = []
 
@@ -231,9 +234,7 @@ async def test_minimax_line_synth_無效_emotion不帶進voice_setting(
     """LLM 拼錯值或沒標（None）都要退化成現況行為：不帶 emotion key。"""
     monkeypatch.setattr(tts_mod, "_trim_silence", lambda src, dst: dst.write_bytes(b"mp3"))
     monkeypatch.setattr(tts_mod, "_probe_duration", lambda p: 1.0)
-    monkeypatch.setattr(
-        tts_mod, "_fetch_word_boundary", lambda client, url: []
-    )
+    monkeypatch.setattr(tts_mod, "_fetch_word_boundary", lambda client, url: [])
 
     captured: list[dict[str, object]] = []
 
@@ -466,3 +467,4 @@ async def test_時間軸對照ground_truth(tmp_path: Path, monkeypatch: pytest.M
     assert artifacts.segments and all(
         seg.audio_path.exists() and seg.audio_path.stat().st_size > 0 for seg in artifacts.segments
     )
+    assert artifacts.mp3_path.exists() and artifacts.mp3_path.stat().st_size > 0

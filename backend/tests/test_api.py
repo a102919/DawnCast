@@ -788,7 +788,9 @@ def test_get_episode_returns_signed_segments_aligned_with_cues(client: TestClien
             assert s["index"] == c["index"]
             assert s["start"] == c["start"]
             assert s["end"] == c["end"]
-        assert payload["audioUrl"] is None
+        # audio_r2_key（"media/ep-free.mp3"）不含 "/segments/"，視為整集 mp3
+        # 重新啟用簽章，即使 segments 雙寫也同時存在（過渡期兩者並存）。
+        assert payload["audioUrl"] == "https://signed.example/media/ep-free.mp3"
     finally:
         monkeypatch_setattr.undo()
 

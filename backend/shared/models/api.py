@@ -155,9 +155,9 @@ class SourceReference(CamelModel):
 class Episode(CamelModel):
     """前端播放頁需要的集數內容。segments 由服務層一次簽章後填入。
 
-    audio_url：新方案下整集 mp3 不再產，audio_url 對 episode 永遠為 None（保留
-    欄位給 1 版本向後相容——舊 client 可能還在讀，frontend 用 audioUrl?: string |
-    null 容錯；Phase G 後才完全移除）。
+    audio_url：整集 mp3 的簽章 URL（audio_r2_key 非空且非 segments 路徑時才有值，
+    見 episode_assembly.build_episode）。雙寫過渡期 audioUrl 與 segments 會同時
+    存在；前端切到單一 <audio> 元素後 segments 停產（見播放器重構 Phase 4）。
     """
 
     id: str  # 對外用 slug
@@ -168,9 +168,7 @@ class Episode(CamelModel):
     cover_icon: str | None = None
     is_free: bool = False
     audio_url: str | None = None
-    # 新路徑：每行 mp3 一個 segment，前端 Web Audio API 串接播。空 list 表示
-    # 舊集未 backfill（Phase H 才處理）——前端 fallback 整集 mp3，但 audioUrl
-    # 已是 None，需要讀 segments 判斷模式。Phase H 跑完後新集一律非空。
+    # 逐行 mp3 segment（雙寫過渡期保留，前端切換後停產）。
     segments: list[Segment] = Field(default_factory=list)
     cues: list[Cue] = Field(default_factory=list)
     # 來源引用：來自 DB episodes.sources（jsonb），router 過濾 http/https URL 後填入。

@@ -238,7 +238,9 @@ async def _order_reconcile() -> None:
             sample = ids[:3]
             logger.warning(
                 "order_reconcile：退役 %d 筆卡死 active 訂單（> %ds，含前 3 筆：%s）",
-                len(expired), EXPIRE_AFTER_SEC, sample,
+                len(expired),
+                EXPIRE_AFTER_SEC,
+                sample,
             )
 
     stuck_pending = await app_repo.list_stuck_pending_orders(STUCK_PENDING_SEC)
@@ -262,7 +264,10 @@ async def _order_reconcile() -> None:
             logger.warning("order_reconcile：找不到墊檔常青集，order_id=%s 仍卡住", o["id"])
             continue
         await app_repo.deliver_and_mark_ready(
-            o["user_id"], episode_id, o["order_date"], order_id=o["id"],
+            o["user_id"],
+            episode_id,
+            o["order_date"],
+            order_id=o["id"],
         )
         logger.warning("order_reconcile：訂單 %s 逾時，補墊檔常青集 %s", o["id"], episode_id)
 

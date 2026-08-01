@@ -348,9 +348,11 @@ class MockQueue:
 
 @dataclass
 class MockRenderer:
-    """模擬 render_episode：產 per-line mp3 placeholder + cues 從 script 計算。
+    """模擬 render_episode：產 per-line mp3 placeholder + 整集 mp3 placeholder
+    + cues 從 script 計算。不真實跑 ffmpeg concat（純 mock 測 pipeline 邏輯，
+    concat 正確性由 test_audio_concat.py 用真 ffmpeg 驗證）。
 
-    用 tempfile 寫實際檔案讓 audio_path 真實存在（pod 寫到 workdir）。
+    用 tempfile 寫實際檔案讓 audio_path / mp3_path 真實存在（pod 寫到 workdir）。
     回傳 SegmentArtifact list（鏡像 production render_episode 新 schema）。
     """
 
@@ -358,7 +360,7 @@ class MockRenderer:
 
     def render(
         self, script_payload: dict[str, Any]
-    ) -> tuple[list[SegmentArtifact], str, list[dict[str, Any]]]:
+    ) -> tuple[list[SegmentArtifact], str, list[dict[str, Any]], Path]:
         self.workdir.mkdir(parents=True, exist_ok=True)
         segments: list[SegmentArtifact] = []
         cues: list[dict[str, Any]] = []
@@ -381,7 +383,9 @@ class MockRenderer:
             )
             t += line_dur + pause
         srt = self._to_srt(cues)
-        return segments, srt, cues
+        mp3_path = self.workdir / "episode.mp3"
+        mp3_path.write_bytes(b"\x00" * 256)  # mock placeholder，不是真的合法 mp3
+        return segments, srt, cues, mp3_path
 
     @staticmethod
     def _to_srt(cues: list[dict[str, Any]]) -> str:

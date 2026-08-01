@@ -692,14 +692,15 @@ async def test_generate_job_happy_path(monkeypatch: pytest.MonkeyPatch) -> None:
     # episode 分類以最終稿的 category 為唯一來源。
     assert repo_spy.inserted["topic"] == "tech"
     assert repo_spy.inserted["big_topic"] == "科技"
-    # R2 key 格式：per-line segments + episode.srt（不再有整集 episode.mp3）。
+    # R2 key 格式：per-line segments（雙寫過渡期）+ episode.srt + 整集 episode.mp3。
     # 動態從實際 segments 數量推導 expected keys，避免 fixture 變動影響斷言：
-    # seg_keys 必須是連續 0..N-1 編號 + 1 個 srt。
+    # seg_keys 必須是連續 0..N-1 編號 + 1 個 srt + 1 個整集 mp3。
     keys = {u[0] for u in uploads}
     seg_keys = sorted(k for k in keys if "/segments/" in k and k.endswith(".mp3"))
     n = len(seg_keys)
     expected_keys = {f"episodes/ep-new-id/segments/{i:03d}.mp3" for i in range(n)}
     expected_keys.add("episodes/ep-new-id/episode.srt")
+    expected_keys.add("episodes/ep-new-id/episode.mp3")
     assert keys == expected_keys
     # content-type 正確
     types = {u[0].rsplit(".", 1)[1]: u[2] for u in uploads}

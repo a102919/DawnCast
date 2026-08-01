@@ -155,16 +155,17 @@ async def build_episode(slug: str, row: dict[str, Any]) -> Episode:
                 )
             )
 
-    # ponytail: 整集 mp3 不再產，audioUrl 永遠 None；保留欄位給向後相容。
+    # audio_r2_key 復用：非 segments 路徑（整集 mp3，含新集雙寫產物與 Gen-1
+    # 舊集既有整集檔）才簽 audioUrl。"/segments/" 出現在 key 裡表示這個欄位
+    # 還殘留舊版「寫 audio_keys[0]」的污染值（見 reuse_repo.update_episode_keys
+    # docstring），不能拿去簽——那把某一行 segment 誤當整集音檔回給前端。
     audio_url: str | None = None
-    legacy_key = row.get("audio_r2_key")
-    if legacy_key and not segments:
-        # 舊集未 backfill：用舊 audio_r2_key 簽章回 audioUrl 給仍吃舊路徑的 client。
-        # 1 版本後 Phase G 移除。
+    audio_key = row.get("audio_r2_key")
+    if audio_key and "/segments/" not in audio_key:
         try:
-            audio_url = await asyncio.to_thread(r2.presigned_get_url, legacy_key)
+            audio_url = await asyncio.to_thread(r2.presigned_get_url, audio_key)
         except Exception:
-            logger.exception("legacy audio_r2_key 簽章失敗 slug=%s", slug)
+            logger.exception("audio_r2_key 簽章失敗 slug=%s", slug)
 
     return Episode(
         id=row["slug"],

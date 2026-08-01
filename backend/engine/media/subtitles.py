@@ -1,11 +1,12 @@
-"""字幕：從 SynthSegment 算時間軸，產 SRT / VTT / JSON 字串。
+"""字幕：從 SynthSegment + LayoutEntry 算時間軸，產 SRT / VTT / JSON 字串。
 
-時間軸在記憶體一次算完（cursor += dur + pause），下游全吃 Cue list，
-不再 glob mp3 後整批 ffprobe。前端依 Cue list 自行做同步高亮，不再生 mp4。
+cue.start/end 直接抄 audio.LayoutEntry（cursor 累積邏輯只在 plan_layout 算一次），
+下游全吃 Cue list，不再 glob mp3 後整批 ffprobe。前端依 Cue list 自行做同步高亮，
+不再生 mp4。
 
-不再做 _align_to_duration 等比縮放：新方案下音檔由前端 Web Audio API
-逐行串接播，每行 mp3 是它自己的真實時長，cue 時間軸即 ground truth，
-不需要再用最終 mp3 物理時長反向校正。
+不再做 _align_to_duration 等比縮放：整集 mp3 由 concat_episode frame-level
+stream copy 產生，drift=0 是數學保證（見 audio.py 模組 docstring），不需要
+再用最終 mp3 物理時長反向校正。
 """
 
 from __future__ import annotations
@@ -14,50 +15,36 @@ from collections.abc import Sequence
 
 from shared.models import Cue, WordOffset
 
+from .audio import LayoutEntry
 from .tts import SynthSegment
 
 
-def build_timeline(
-    segs: Sequence[SynthSegment],
-    pause_sec: float,
-    *,
-    long_pause_sec: float | None = None,
-) -> list[Cue]:
-    """依序為每段指派 start/end 時間戳（cursor += dur + pause），回傳 Cue list。
-
-    long_pause_sec 必須跟前端播放器插入的靜音長度一致（音檔已不再合併成整集 mp3，
-    pause_before 邊界的長靜音改由前端在 source.onended 後 setTimeout 模擬），
-    否則字幕時間軸會跟前端實際播放脫鉤。
+def build_timeline(segs: Sequence[SynthSegment], layout: Sequence[LayoutEntry]) -> list[Cue]:
+    """依 layout（plan_layout 的輸出）為每段填 start/end 時間戳，回傳 Cue list。
 
     word_offsets：從 SynthSegment.word_offsets 帶進 Cue.words（詞級字幕；練習模式
     word click 用）。edge-tts fallback 給空 list（不存）。
     """
-    long_pause = pause_sec if long_pause_sec is None else long_pause_sec
     cues: list[Cue] = []
-    cursor = 0.0
-    for idx, seg in enumerate(segs):
-        start = cursor
-        end = start + seg.duration
+    for seg, entry in zip(segs, layout, strict=True):
         # 轉成 API 端的 WordOffset（共用 dataclass 是 tts.WordOffset，但 Cue 期待
         # shared.models.api.WordOffset；兩個欄位相同但型別系統視為不同）。
         words: list[WordOffset] | None = (
             [WordOffset(word=w.word, start=w.start_sec, end=w.end_sec) for w in seg.word_offsets]
-            if seg.word_offsets else None
+            if seg.word_offsets
+            else None
         )
         cues.append(
             Cue(
-                index=idx + 1,
+                index=entry.index + 1,
                 speaker=seg.speaker,
                 text=seg.text,
                 zh=seg.zh,
-                start=round(start, 3),
-                end=round(end, 3),
+                start=entry.start,
+                end=entry.end,
                 words=words,
             )
         )
-        nxt = segs[idx + 1] if idx + 1 < len(segs) else None
-        pause = long_pause if (nxt is not None and nxt.pause_before) else pause_sec
-        cursor = end + pause
     return cues
 
 

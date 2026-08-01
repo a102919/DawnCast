@@ -273,22 +273,25 @@ async def test_pod_happy_path(pod_mocks: PodMocks) -> None:
     # 分類以最終稿為準；輸入 big_topic 是「科技」，Quantum 稿仍應寫成 science。
     assert episode.topic == "science"
     assert len(repo.deliveries) == 2  # u1, u2
-    # R2 物件 = N 個 segments + 1 srt。動態從 outline 算 segments 數（_make_passing_chat
-    # 預設 3 但 outline 結構會擴展成更多 line），不寫死避免 fixture 變動壞。
+    # R2 物件 = N 個 segments + 1 srt + 1 整集 episode.mp3（雙寫）。動態從 outline
+    # 算 segments 數（_make_passing_chat 預設 3 但 outline 結構會擴展成更多
+    # line），不寫死避免 fixture 變動壞。
     script_line_count = episode.script_json["script"].__len__() if episode.script_json else 0
-    assert len(r2.objects) == script_line_count + 1
+    assert len(r2.objects) == script_line_count + 2
     assert chat._call_count == 5  # 1 outline + 3 segments + 1 judge
-    # 每行 mp3 真的走「episodes/{uuid}/segments/{idx:03d}.mp3」路徑上傳，
-    # 且最後一個 key 是 srt；DB row 也真的收到對應長度的 audio_keys list（向後相容
-    # audio_r2_key 也帶第一個）。回歸鎖：若有人改回整集 mp3，這裡會立刻炸。
+    # 每行 mp3 走「episodes/{uuid}/segments/{idx:03d}.mp3」路徑上傳（雙寫過渡期
+    # 保留），整集另外走「episodes/{uuid}/episode.mp3」；DB row 的 audio_r2_key
+    # 直接是整集 key（不再從 audio_keys[0] 推導，見 reuse_repo.update_episode_keys）。
     segment_keys = [k for k in r2.objects if "/segments/" in k]
     srt_keys = [k for k in r2.objects if k.endswith(".srt")]
+    mp3_keys = [k for k in r2.objects if k.endswith("/episode.mp3")]
     assert len(segment_keys) == script_line_count
     assert len(srt_keys) == 1
+    assert len(mp3_keys) == 1
     for idx, key in enumerate(sorted(segment_keys)):
         assert key.endswith(f"/segments/{idx:03d}.mp3"), key
     assert episode.audio_keys == sorted(segment_keys)
-    assert episode.audio_key == sorted(segment_keys)[0]  # legacy back-compat field
+    assert episode.audio_key == mp3_keys[0]
 
 
 # ── 2. judge 不及格 → rewrite → 及格 ──────────────────────
@@ -525,10 +528,10 @@ async def test_idempotent_second_call_skips_render(pod_mocks: PodMocks) -> None:
         queue=queue,
         renderer=renderer,
     )
-    # 第一次：N 個 segments + 1 srt（動態算 segments 數）
+    # 第一次：N 個 segments + 1 srt + 1 整集 episode.mp3（動態算 segments 數）
     ep1 = repo.get_episode(eid1)
     line_count_1 = ep1.script_json["script"].__len__() if ep1 and ep1.script_json else 0
-    assert len(r2.objects) == line_count_1 + 1
+    assert len(r2.objects) == line_count_1 + 2
     # 第二次同 body：already_rendered=True → 跳過 render + upload
     eid2 = await run_pod(
         _body(),
@@ -540,7 +543,7 @@ async def test_idempotent_second_call_skips_render(pod_mocks: PodMocks) -> None:
     )
     assert eid1 == eid2
     # 第二次沒新增 R2 物件
-    assert len(r2.objects) == line_count_1 + 1
+    assert len(r2.objects) == line_count_1 + 2
     # MockRepo insert_delivery 模擬 ON CONFLICT DO NOTHING → 同 (user, ep, date)
     # 第二次不會新增。所以最終只有 2 筆（u1, u2 各一）。
     assert len(repo.deliveries) == 2

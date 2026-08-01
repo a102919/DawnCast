@@ -650,7 +650,7 @@ def _build_segment_messages(
         "- Spell out numbers the way a native speaker SAYS them: 38,900 is "
         '"thirty-eight thousand nine hundred", never "thirty eight nine hundred".\n'
         "- Use natural spoken contractions consistently (it's / that's / let's / "
-        "don't), never stiff uncontracted forms like \"let us\" or \"that is not\" "
+        'don\'t), never stiff uncontracted forms like "let us" or "that is not" '
         "in casual dialogue — keep the SAME register across every segment.\n\n"
         "# BILINGUAL\n"
         "- Every line MUST have `zh` in natural Taiwan Mandarin (台灣正體中文), "
@@ -2023,7 +2023,7 @@ async def _identify_affected_segments(
         f"{script.model_dump_json(indent=2)}\n\n"
         f"Identify which segment indices (0-indexed, in [0, {n_segments - 1}]) "
         f"are the main cause of the low scores.\n"
-        f"Return ONLY JSON: {{\"affected_segments\": [int, ...]}}"
+        f'Return ONLY JSON: {{"affected_segments": [int, ...]}}'
     )
 
     call_start = time.monotonic()
@@ -2063,9 +2063,7 @@ async def _identify_affected_segments(
         if not isinstance(affected_raw, list):
             return []
         return [
-            int(i)
-            for i in affected_raw
-            if isinstance(i, (int, float)) and 0 <= int(i) < n_segments
+            int(i) for i in affected_raw if isinstance(i, (int, float)) and 0 <= int(i) < n_segments
         ]
     except Exception as exc:
         logger.warning("per-segment judge 解析失敗: %s", exc)
@@ -2327,13 +2325,14 @@ async def render_episode_node(state: PodState, config: RunnableConfig) -> dict[s
         if not isinstance(renderer, MockRenderer):
             raise TypeError("renderer 不是 MockRenderer")
         script_payload = script.model_dump()
-        segments, srt, cues = renderer.render(script_payload)
+        segments, srt, cues, mp3_path = renderer.render(script_payload)
         return {
             "artifacts": EpisodeArtifacts(
                 segments=segments,
                 srt=srt,
                 vtt="",  # mock 不產
                 cues=[Cue(**c) for c in cues],
+                mp3_path=mp3_path,
             ),
         }
 
@@ -2423,16 +2422,19 @@ async def upload_artifacts_node(state: PodState, config: RunnableConfig) -> dict
 
     prefix = f"episodes/{episode_id}"
     srt_key = f"{prefix}/episode.srt"
+    mp3_key = f"{prefix}/episode.mp3"
 
     is_production = r2 is None  # mock 路徑會注入 MockR2；production 沒有才走真 R2
 
     storage_failed = False
+    mp3_uploaded = False
     audio_keys: list[str] = []
 
-    # 逐行 segment 上傳：新路徑沒有「整集 mp3」，每行一個 mp3 各自上 R2。
-    # 前端 Web Audio API 串接播，字幕 cue 與 segment 一一對應，數學上對齊。
+    # 雙寫：整集 mp3（新路徑，前端逐步切換用）+ 逐行 segment（舊路徑，過渡期保留）。
     try:
         if r2 is not None:
+            r2.put_object(mp3_key, art.mp3_path.read_bytes(), "audio/mpeg")
+            mp3_uploaded = True
             for seg in art.segments:
                 key = f"{prefix}/segments/{seg.index:03d}.mp3"
                 r2.put_object(key, seg.audio_path.read_bytes(), "audio/mpeg")
@@ -2449,6 +2451,8 @@ async def upload_artifacts_node(state: PodState, config: RunnableConfig) -> dict
         else:
             from shared.storage import r2 as real_r2  # noqa: PLC0415
 
+            real_r2.put_object(mp3_key, art.mp3_path.read_bytes(), "audio/mpeg")
+            mp3_uploaded = True
             for seg in art.segments:
                 key = f"{prefix}/segments/{seg.index:03d}.mp3"
                 real_r2.put_object(key, seg.audio_path.read_bytes(), "audio/mpeg")
@@ -2468,6 +2472,7 @@ async def upload_artifacts_node(state: PodState, config: RunnableConfig) -> dict
             len(audio_keys),
         )
         audio_keys = []
+        mp3_uploaded = False
         storage_failed = True
 
     # render_episode_node 用 make_job_workdir()（不會自動清）產出這些檔案，
@@ -2477,6 +2482,7 @@ async def upload_artifacts_node(state: PodState, config: RunnableConfig) -> dict
 
     return {
         "audio_keys": audio_keys,
+        "mp3_key": mp3_key if mp3_uploaded and not storage_failed else None,
         "srt_key": srt_key if not storage_failed else None,
         "storage_failed": storage_failed,
     }
@@ -2504,7 +2510,7 @@ async def update_episode_keys_node(state: PodState, config: RunnableConfig) -> d
     # repo 是 MockRepo 或 shared.db.repo 模組，surface 相同——直接呼叫，不做 hasattr 分派。
     await repo.update_episode_keys(
         state["episode_id"],
-        audio_key=state.get("audio_keys", [None])[0] if state.get("audio_keys") else None,
+        audio_key=state.get("mp3_key"),
         audio_keys=state.get("audio_keys"),
         srt_key=state.get("srt_key"),
         script_json=script.model_dump(by_alias=False),
@@ -2550,11 +2556,17 @@ async def insert_deliveries_node(state: PodState, config: RunnableConfig) -> dic
             # activeOrder 卡死直到 DB 真翻 ready 前都救不回）。
             if order_id is not None:
                 inserted = await app_repo.deliver_and_mark_ready(
-                    uid, episode_id, deliver_date, order_id=order_id,
+                    uid,
+                    episode_id,
+                    deliver_date,
+                    order_id=order_id,
                 )
             else:
                 inserted = await repo.insert_delivery(
-                    uid, episode_id, deliver_date, order_id=order_id,
+                    uid,
+                    episode_id,
+                    deliver_date,
+                    order_id=order_id,
                 )
         except ForeignKeyViolation:
             # 上游補償（update_episode_keys_node 的 DELETE-on-failure 或 worker

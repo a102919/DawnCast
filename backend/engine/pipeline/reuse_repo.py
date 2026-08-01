@@ -250,9 +250,12 @@ async def update_episode_keys(
 ) -> None:
     """渲染完成後回填媒體 key 與內容。script_json 內含 cues（前端播放頁吃這個）。
 
-    audio_key / audio_keys：新方案用 audio_keys（list[str]，每行 mp3 一個 key）；
-    舊 audio_key 欄位保留寫 audio_keys[0] 給向後相容（admin / 部分 router 仍會讀）。
-    兩者皆 None 時不更新（測試 / escape hatch）。
+    audio_key：整集 episode.mp3 的 R2 key，直接寫 audio_r2_key（coalesce，
+    None 表示保留既有值）。audio_keys：逐行 segment mp3 keys（雙寫過渡期，
+    見 tasks/lessons.md podcast 播放器重構筆記），寫 audio_r2_keys。兩欄各自
+    獨立、互不推導——舊版「audio_r2_key 寫 audio_keys[0]」的向後相容行為已
+    移除：那會讓 audio_r2_key 誤標成 segments 路徑，播放頁簽章時要靠
+    `"/segments/" not in key` 才能分辨，新集直接給正確的整集 key 沒有這個問題。
 
     sources：可選；非 None 時覆寫 episodes.sources。傳 None 表示保留既有值
     （避免 update_episode_keys_node 在還沒拿到 retrieve_sources 結果時誤清空）。
@@ -270,15 +273,6 @@ async def update_episode_keys(
         json.dumps(gen_metrics, ensure_ascii=False) if gen_metrics is not None else None
     )
     audio_keys_json = json.dumps(audio_keys, ensure_ascii=False) if audio_keys is not None else None
-    # audio_r2_key 舊欄位：寫 audio_keys[0] 給向後相容（admin / 部分 router 仍讀）。
-    # audio_keys 為空 list 或 None 時 audio_r2_key 也保持 None。
-    legacy_audio_key: str | None
-    if audio_keys:
-        legacy_audio_key = audio_keys[0]
-    elif audio_key is not None:
-        legacy_audio_key = audio_key
-    else:
-        legacy_audio_key = None
     async with connection() as conn, conn.cursor(row_factory=dict_row) as cur:
         await cur.execute(
             """
@@ -295,7 +289,7 @@ async def update_episode_keys(
             where id = %s
             """,
             (
-                legacy_audio_key,
+                audio_key,
                 audio_keys_json,
                 srt_key,
                 json.dumps(payload, ensure_ascii=False),
@@ -653,5 +647,3 @@ async def pick_evergreen_episode(big_topic: str | None) -> str | None:
         )
         row = await cur.fetchone()
     return str(row["id"]) if row else None
-
-

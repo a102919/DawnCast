@@ -130,9 +130,7 @@ async def test_order_reconcile_replays_stuck_pending(monkeypatch: pytest.MonkeyP
         worker.app_repo, "list_stuck_queued_orders_without_delivery", fake_list_queued
     )
     monkeypatch.setattr(worker.app_repo, "expire_old_active_orders", _fake_expire_empty)
-    monkeypatch.setattr(
-        worker.app_repo, "promote_delivered_orders_to_ready", _fake_promote_empty
-    )
+    monkeypatch.setattr(worker.app_repo, "promote_delivered_orders_to_ready", _fake_promote_empty)
     monkeypatch.setattr(worker, "queue", q)
 
     await worker._order_reconcile()
@@ -164,9 +162,7 @@ async def test_order_reconcile_skips_enqueue_when_cas_loses(
         worker.app_repo, "list_stuck_queued_orders_without_delivery", fake_list_queued
     )
     monkeypatch.setattr(worker.app_repo, "expire_old_active_orders", _fake_expire_empty)
-    monkeypatch.setattr(
-        worker.app_repo, "promote_delivered_orders_to_ready", _fake_promote_empty
-    )
+    monkeypatch.setattr(worker.app_repo, "promote_delivered_orders_to_ready", _fake_promote_empty)
     monkeypatch.setattr(worker, "queue", q)
 
     await worker._order_reconcile()
@@ -193,9 +189,7 @@ async def test_order_reconcile_delivers_evergreen_fallback_for_stuck_queued(
     # 兜底路徑走 deliver_and_mark_ready（transactional 合併 insert + mark_ready）。
     deliver_calls: list[tuple[tuple[Any, ...], dict[str, Any]]] = []
 
-    async def fake_deliver_and_mark_ready(
-        *args: Any, **kwargs: Any
-    ) -> bool:
+    async def fake_deliver_and_mark_ready(*args: Any, **kwargs: Any) -> bool:
         deliver_calls.append((args, kwargs))
         return True
 
@@ -204,13 +198,9 @@ async def test_order_reconcile_delivers_evergreen_fallback_for_stuck_queued(
         worker.app_repo, "list_stuck_queued_orders_without_delivery", fake_list_queued
     )
     monkeypatch.setattr(worker.repo, "pick_evergreen_episode", fake_pick_evergreen)
-    monkeypatch.setattr(
-        worker.app_repo, "deliver_and_mark_ready", fake_deliver_and_mark_ready
-    )
+    monkeypatch.setattr(worker.app_repo, "deliver_and_mark_ready", fake_deliver_and_mark_ready)
     monkeypatch.setattr(worker.app_repo, "expire_old_active_orders", _fake_expire_empty)
-    monkeypatch.setattr(
-        worker.app_repo, "promote_delivered_orders_to_ready", _fake_promote_empty
-    )
+    monkeypatch.setattr(worker.app_repo, "promote_delivered_orders_to_ready", _fake_promote_empty)
     monkeypatch.setattr(worker, "queue", _FakeQueue())
 
     await worker._order_reconcile()
@@ -237,9 +227,7 @@ async def test_order_reconcile_missing_evergreen_episode_does_not_raise(
 
     deliver_calls: list[Any] = []
 
-    async def fake_deliver_and_mark_ready(
-        *args: Any, **kwargs: Any
-    ) -> bool:
+    async def fake_deliver_and_mark_ready(*args: Any, **kwargs: Any) -> bool:
         deliver_calls.append((args, kwargs))
         return True
 
@@ -248,13 +236,9 @@ async def test_order_reconcile_missing_evergreen_episode_does_not_raise(
         worker.app_repo, "list_stuck_queued_orders_without_delivery", fake_list_queued
     )
     monkeypatch.setattr(worker.repo, "pick_evergreen_episode", fake_pick_evergreen)
-    monkeypatch.setattr(
-        worker.app_repo, "deliver_and_mark_ready", fake_deliver_and_mark_ready
-    )
+    monkeypatch.setattr(worker.app_repo, "deliver_and_mark_ready", fake_deliver_and_mark_ready)
     monkeypatch.setattr(worker.app_repo, "expire_old_active_orders", _fake_expire_empty)
-    monkeypatch.setattr(
-        worker.app_repo, "promote_delivered_orders_to_ready", _fake_promote_empty
-    )
+    monkeypatch.setattr(worker.app_repo, "promote_delivered_orders_to_ready", _fake_promote_empty)
     monkeypatch.setattr(worker, "queue", _FakeQueue())
 
     # 不拋例外；找不到墊檔常青集就略過這筆，不呼叫 deliver_and_mark_ready
@@ -292,9 +276,7 @@ async def test_order_reconcile_no_action_when_nothing_stuck(
     monkeypatch.setattr(worker.app_repo, "deliver_and_mark_ready", fail_if_called)
 
     monkeypatch.setattr(worker.app_repo, "expire_old_active_orders", _fake_expire_empty)
-    monkeypatch.setattr(
-        worker.app_repo, "promote_delivered_orders_to_ready", _fake_promote_empty
-    )
+    monkeypatch.setattr(worker.app_repo, "promote_delivered_orders_to_ready", _fake_promote_empty)
     monkeypatch.setattr(worker, "queue", q)
 
     await worker._order_reconcile()
@@ -373,9 +355,7 @@ async def test_order_reconcile_skips_downstream_actions_when_expire_returns_rows
     monkeypatch.setattr(
         worker.app_repo, "list_stuck_queued_orders_without_delivery", fake_list_queued
     )
-    monkeypatch.setattr(
-        worker.app_repo, "promote_delivered_orders_to_ready", _fake_promote_empty
-    )
+    monkeypatch.setattr(worker.app_repo, "promote_delivered_orders_to_ready", _fake_promote_empty)
     monkeypatch.setattr(worker, "queue", q)
 
     await worker._order_reconcile()
