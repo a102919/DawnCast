@@ -732,7 +732,7 @@ def _to_lc_messages(msgs: list[dict[str, str]]) -> list[Any]:
     return out
 
 
-def _usage_from_ai_msg(ai_msg: Any) -> dict[str, object]:
+def _usage_from_ai_msg(ai_msg: Any) -> dict[str, int]:
     """從 chat.py 塞進 AIMessage.usage_metadata 的量抽出來；缺欄位時回 0。"""
     meta = getattr(ai_msg, "usage_metadata", None) or {}
     return {
@@ -741,6 +741,38 @@ def _usage_from_ai_msg(ai_msg: Any) -> dict[str, object]:
         "cache_creation_tokens": int(meta.get("cache_creation_input_tokens", 0)),
         "cache_read_tokens": int(meta.get("cache_read_input_tokens", 0)),
     }
+
+
+def _record_llm_usage(
+    collector: MetricsCollector | None,
+    ai_msg: Any,
+    *,
+    node: str,
+    call: str,
+    call_start: float,
+    attempt: int = 1,
+    segment_index: int | None = None,
+) -> dict[str, int]:
+    """讀 ai_msg.usage_metadata，寫一筆 collector.record_llm_call；回傳 usage 供呼叫端累加。
+
+    每個 chat.ainvoke() 呼叫點都該接這一行，取代手動組 record_llm_call 的樣板——
+    漏貼樣板就是 cost 對某個節點隱形的根因（_normalize_line_lengths 曾經漏記，
+    _generate_segment 曾經漏記 cache 欄位，都是同一種手動複製貼上失誤）。
+    """
+    usage = _usage_from_ai_msg(ai_msg)
+    if collector is not None:
+        collector.record_llm_call(
+            node=node,
+            call=call,
+            attempt=attempt,
+            duration_ms=int((time.monotonic() - call_start) * 1000),
+            input_tokens=usage["input_tokens"],
+            output_tokens=usage["output_tokens"],
+            cache_creation_tokens=usage["cache_creation_tokens"],
+            cache_read_tokens=usage["cache_read_tokens"],
+            segment_index=segment_index,
+        )
+    return usage
 
 
 def _fallback_research_questions(state: PodState) -> list[ResearchQuestion]:
@@ -781,7 +813,7 @@ async def decompose_research_node(state: PodState, config: RunnableConfig) -> di
         f"Big topic: {state['big_topic']}\n"
         f"Angle: {state.get('angle') or '定義'}"
     )
-    usage: dict[str, object] | None = None
+    usage: dict[str, int] | None = None
     call_start = time.monotonic()
     try:
         msg = await chat.ainvoke(
@@ -790,17 +822,9 @@ async def decompose_research_node(state: PodState, config: RunnableConfig) -> di
                 HumanMessage(content=user),
             ]
         )
-        usage = _usage_from_ai_msg(msg)
-        if collector is not None:
-            collector.record_llm_call(
-                node="research_decompose",
-                call="decompose",
-                duration_ms=int((time.monotonic() - call_start) * 1000),
-                input_tokens=cast(int, usage.get("input_tokens", 0)),
-                output_tokens=cast(int, usage.get("output_tokens", 0)),
-                cache_creation_tokens=cast(int, usage.get("cache_creation_tokens", 0)),
-                cache_read_tokens=cast(int, usage.get("cache_read_tokens", 0)),
-            )
+        usage = _record_llm_usage(
+            collector, msg, node="research_decompose", call="decompose", call_start=call_start
+        )
         raw = msg.content
         if not isinstance(raw, str):
             raise ValueError("研究問題拆解回應不是文字")
@@ -989,7 +1013,7 @@ async def cross_verify_node(state: PodState, config: RunnableConfig) -> dict[str
         }
 
     evidence_payload = [card.model_dump(mode="json") for card in cards]
-    usage: dict[str, object] | None = None
+    usage: dict[str, int] | None = None
     call_start = time.monotonic()
     try:
         msg = await chat.ainvoke(
@@ -998,17 +1022,9 @@ async def cross_verify_node(state: PodState, config: RunnableConfig) -> dict[str
                 HumanMessage(content=json.dumps(evidence_payload, ensure_ascii=False)),
             ]
         )
-        usage = _usage_from_ai_msg(msg)
-        if collector is not None:
-            collector.record_llm_call(
-                node="research_cross_verify",
-                call="cross_verify",
-                duration_ms=int((time.monotonic() - call_start) * 1000),
-                input_tokens=cast(int, usage.get("input_tokens", 0)),
-                output_tokens=cast(int, usage.get("output_tokens", 0)),
-                cache_creation_tokens=cast(int, usage.get("cache_creation_tokens", 0)),
-                cache_read_tokens=cast(int, usage.get("cache_read_tokens", 0)),
-            )
+        usage = _record_llm_usage(
+            collector, msg, node="research_cross_verify", call="cross_verify", call_start=call_start
+        )
         raw = msg.content
         if not isinstance(raw, str):
             raise ValueError("交叉驗證回應不是文字")
@@ -1213,20 +1229,16 @@ async def _generate_outline(
             logger.warning("%s 撞限流 big_topic=%s (outline)", usage_node, state["big_topic"])
             raise
 
-        usage = _usage_from_ai_msg(ai_msg)
-        total_usage["input_tokens"] += cast(int, usage.get("input_tokens", 0))
-        total_usage["output_tokens"] += cast(int, usage.get("output_tokens", 0))
-        if collector is not None:
-            collector.record_llm_call(
-                node=usage_node,
-                call="outline",
-                attempt=attempt + 1,
-                duration_ms=int((time.monotonic() - call_start) * 1000),
-                input_tokens=cast(int, usage.get("input_tokens", 0)),
-                output_tokens=cast(int, usage.get("output_tokens", 0)),
-                cache_creation_tokens=cast(int, usage.get("cache_creation_tokens", 0)),
-                cache_read_tokens=cast(int, usage.get("cache_read_tokens", 0)),
-            )
+        usage = _record_llm_usage(
+            collector,
+            ai_msg,
+            node=usage_node,
+            call="outline",
+            call_start=call_start,
+            attempt=attempt + 1,
+        )
+        total_usage["input_tokens"] += usage["input_tokens"]
+        total_usage["output_tokens"] += usage["output_tokens"]
 
         try:
             return _parse_outline(ai_msg.content), usage, total_usage
@@ -1314,19 +1326,17 @@ async def _generate_segment(  # type: ignore[return]
             )
             raise
 
-        usage = _usage_from_ai_msg(ai_msg)
-        total_usage["input_tokens"] += cast(int, usage.get("input_tokens", 0))
-        total_usage["output_tokens"] += cast(int, usage.get("output_tokens", 0))
-        if collector is not None:
-            collector.record_llm_call(
-                node=usage_node,
-                call="segment",
-                attempt=attempt + 1,
-                duration_ms=int((time.monotonic() - call_start) * 1000),
-                input_tokens=cast(int, usage.get("input_tokens", 0)),
-                output_tokens=cast(int, usage.get("output_tokens", 0)),
-                segment_index=segment_index,
-            )
+        usage = _record_llm_usage(
+            collector,
+            ai_msg,
+            node=usage_node,
+            call="segment",
+            call_start=call_start,
+            attempt=attempt + 1,
+            segment_index=segment_index,
+        )
+        total_usage["input_tokens"] += usage["input_tokens"]
+        total_usage["output_tokens"] += usage["output_tokens"]
 
         try:
             lines = _parse_segment_script(ai_msg.content)
@@ -1586,6 +1596,8 @@ async def _normalize_line_lengths(
     chat: Any,
     *,
     target_max_words: int = _TARGET_TEXT_WORD_COUNT,
+    usage_node: str = "writer",
+    collector: MetricsCollector | None = None,
     _depth: int = 0,
 ) -> ScriptJSON:
     """把 script.script 裡 text 單字數 > target_max_words 的行回丟 LLM 切分。
@@ -1644,25 +1656,39 @@ async def _normalize_line_lengths(
         {"role": "user", "content": json.dumps(prompt_payload, ensure_ascii=False)},
     ]
 
+    call_start = time.monotonic()
     try:
         ai_msg = await chat.ainvoke(_to_lc_messages(msgs))
-        cleaned = _strip_code_fence(ai_msg.content)
-        batch = _LineSplitBatch.model_validate_json(cleaned)
-        replacements = _validate_split_batch(
-            long_items, batch, target_max_words=target_max_words
-        )
-    except (PydanticValidationError, json.JSONDecodeError, ValueError) as exc:
+    except Exception as exc:
+        # chat transport / RateLimitError / 其他 — fallback 保護 pod 流程
         logger.warning(
-            "_normalize_line_lengths 第 %d 層解析/保真檢查失敗，atomic fallback big_topic=%s: %s",
+            "_normalize_line_lengths 第 %d 層 LLM 呼叫失敗，atomic fallback big_topic=%s: %s",
             _depth,
             getattr(script, "topic", "?"),
             exc,
         )
         return script
+
+    # 遞迴層數當 attempt 記，讓 cost 報表看得出第幾層切分燒掉多少 token
+    _record_llm_usage(
+        collector,
+        ai_msg,
+        node=usage_node,
+        call="line_split",
+        call_start=call_start,
+        attempt=_depth + 1,
+    )
+
+    try:
+        cleaned = _strip_code_fence(ai_msg.content)
+        batch = _LineSplitBatch.model_validate_json(cleaned)
+        replacements = _validate_split_batch(
+            long_items, batch, target_max_words=target_max_words
+        )
     except Exception as exc:
-        # chat transport / RateLimitError / 其他 — fallback 保護 pod 流程
+        # 解析 / 保真檢查任何失敗都 atomic fallback，切分是輔助功能不該中止 pod
         logger.warning(
-            "_normalize_line_lengths 第 %d 層 LLM 呼叫失敗，atomic fallback big_topic=%s: %s",
+            "_normalize_line_lengths 第 %d 層解析/保真檢查失敗，atomic fallback big_topic=%s: %s",
             _depth,
             getattr(script, "topic", "?"),
             exc,
@@ -1700,6 +1726,8 @@ async def _normalize_line_lengths(
             new_script,
             chat,
             target_max_words=target_max_words,
+            usage_node=usage_node,
+            collector=collector,
             _depth=_depth + 1,
         )
     return new_script
@@ -1892,7 +1920,9 @@ async def _invoke_writer(
             # 失敗一律 atomic fallback 回傳 full_script，不影響主流程。
             # 因為覆蓋了所有初次生成與 rewrite（含 partial_rewrite）路徑，
             # 後續 judge 永遠看得到已切分版本，不需改 router / state。
-            full_script = await _normalize_line_lengths(full_script, chat)
+            full_script = await _normalize_line_lengths(
+                full_script, chat, usage_node=usage_node, collector=collector
+            )
         except (PydanticValidationError, ValueError) as exc:
             last_exc = GenerationError(f"合併後 ScriptJSON 違反契約：{exc}")
             logger.warning(
@@ -2062,7 +2092,7 @@ async def verify_script_claims_node(state: PodState, config: RunnableConfig) -> 
         {"extracted_facts": facts_payload, "sources": sources_payload},
         ensure_ascii=False,
     )
-    usage: dict[str, object] | None = None
+    usage: dict[str, int] | None = None
     call_start = time.monotonic()
     try:
         msg = await chat.ainvoke(
@@ -2071,17 +2101,9 @@ async def verify_script_claims_node(state: PodState, config: RunnableConfig) -> 
                 HumanMessage(content=user),
             ]
         )
-        usage = _usage_from_ai_msg(msg)
-        if collector is not None:
-            collector.record_llm_call(
-                node="research_claim_verify",
-                call="verify",
-                duration_ms=int((time.monotonic() - call_start) * 1000),
-                input_tokens=cast(int, usage.get("input_tokens") or 0),
-                output_tokens=cast(int, usage.get("output_tokens") or 0),
-                cache_creation_tokens=cast(int, usage.get("cache_creation_tokens") or 0),
-                cache_read_tokens=cast(int, usage.get("cache_read_tokens") or 0),
-            )
+        usage = _record_llm_usage(
+            collector, msg, node="research_claim_verify", call="verify", call_start=call_start
+        )
         raw = msg.content
         if not isinstance(raw, str):
             raise ValueError("成稿主張核對回應不是文字")
@@ -2251,17 +2273,7 @@ async def quality_judge_node(state: PodState, config: RunnableConfig) -> dict[st
         msg = await judge_chat.ainvoke(
             [SystemMessage(content=_JUDGE_SYSTEM), HumanMessage(content=user)]
         )
-        usage = _usage_from_ai_msg(msg)
-        if collector is not None:
-            collector.record_llm_call(
-                node="judge",
-                call="judge",
-                duration_ms=int((time.monotonic() - call_start) * 1000),
-                input_tokens=cast(int, usage.get("input_tokens") or 0),
-                output_tokens=cast(int, usage.get("output_tokens") or 0),
-                cache_creation_tokens=cast(int, usage.get("cache_creation_tokens") or 0),
-                cache_read_tokens=cast(int, usage.get("cache_read_tokens") or 0),
-            )
+        usage = _record_llm_usage(collector, msg, node="judge", call="judge", call_start=call_start)
         # judge 也可能包 ```json fence（寫稿路徑早有同樣防護，這裡補齊）。
         verdict = JudgeVerdict.model_validate_json(_strip_code_fence(msg.content))
     except Exception as exc:
@@ -2373,17 +2385,7 @@ async def _identify_affected_segments(
         logger.warning("per-segment judge ainvoke 失敗: %s", exc)
         return []
 
-    usage = _usage_from_ai_msg(msg)
-    if collector is not None:
-        collector.record_llm_call(
-            node="judge",
-            call="per_segment_judge",
-            duration_ms=int((time.monotonic() - call_start) * 1000),
-            input_tokens=cast(int, usage.get("input_tokens") or 0),
-            output_tokens=cast(int, usage.get("output_tokens") or 0),
-            cache_creation_tokens=cast(int, usage.get("cache_creation_tokens") or 0),
-            cache_read_tokens=cast(int, usage.get("cache_read_tokens") or 0),
-        )
+    _record_llm_usage(collector, msg, node="judge", call="per_segment_judge", call_start=call_start)
 
     try:
         payload = json.loads(_strip_code_fence(msg.content))
