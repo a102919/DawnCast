@@ -253,11 +253,18 @@ class FakeChatModel(BaseChatModel):
         text = await chat.ainvoke([SystemMessage(...), HumanMessage(...)])
 
     也可加 judge_responses 序列，第二次後切到 judge。
+
+    is_fake=True 讓 _normalize_line_lengths 自動 no-op（避免污染測試 LLM call 計數：
+    測試 fixture 設計上 text 行遠超 12 詞過 word_floor，每跑一次 normalize 都會多一個
+    chat.ainvoke 呼叫，影響既有 _call_count 斷言）。想真的驗 normalize 走完整路徑：
+    FakeChatModel(skip_normalize_noop=True, ...)。
     """
 
     responses: list[ChatResponse] = Field(default_factory=list)
     judge_responses: list[ChatResponse] = Field(default_factory=list)
     role: Literal["writer", "judge"] = "writer"
+    is_fake: bool = True
+    skip_normalize_noop: bool = False
     _call_count: int = 0
     _writer_count: int = 0
     _judge_count: int = 0
