@@ -379,3 +379,28 @@ WHEN clause 把頻道 / evergreen（order_id NULL）排除掉。`deliver_and_mar
 - **保留 reconcile 兜底不是冗餘**：trigger + reconcile 是兩層防護。trigger 強但不變 schema（truncate、重灌、舊環境不跑 migration 時就失效），reconcile 弱但能 catch up。**belt-and-suspenders 永遠比單層強**，特別是寫入路徑橫跨多個 module（`insert_deliveries_node` + `reuse_repo.insert_delivery` + reconcile fallback）時。
 - **驗 trigger 真的有跑不是靠「reconcile 沒命中」**：worker log 時間軸是關鍵證據——pipeline 完成 timestamp 在前、reconcile timestamp 在後，bc927df7 中間沒有 `order_reconcile` log 行 → 唯一翻牌來源是 trigger。「沒命中 reconcile」是必要條件不是充分條件（reconcile 可能在 pipeline 完成後才跑、且 idempotent），必須確認 reconcile 真的有機會跑卻沒介入。
 - **新增 DELETE-on-failure 補償時重新評估 trigger 影響**：`update_episode_keys_node` 的 DELETE-on-failure 砍 row 後下一個 node INSERT deliveries 會 FK violation；trigger 雖在 INSERT 後跑但 FK violation 會讓整個 transaction rollback，trigger 也不會 fire。ForeignKeyViolation 仍要 catch（見 2026-07-20 lesson），但 trigger 不會救這個情境——FK 違反時根本走不到 trigger。
+
+## 2026-08-01 — Phase 4 純刪除改動的可逆性邊界 + 測試覆蓋守門員
+
+**情境**：播放器重構 Phase 3 上線穩定一天後就做 Phase 4（plan 寫「1-2 週後」其實可提早）——純刪除型改動，把後端「雙寫 segments + 整集」死碼清乾淨。**淨刪 100 行**（+36/-136）。
+
+**症狀/機會**：「可逆性」是 Phase 4 唯一的設計變數。整個改動沒有新功能、沒有 bug 修，只刪**已經不再被任何 caller 使用的程式碼**。這時候最危險的不是刪錯，而是「**砍掉契約層讓 OpenAPI 變動**」——前端還在 typecheck 用、OpenAPI contract hash test 會擋。
+
+**可逆性邊界（commit 69e17c9 落地版）**：
+| 層 | 處理 | 為什麼 |
+|---|---|---|
+| **實作層**（上傳邏輯、segments 計算） | 全砍 | 沒有 caller 會再用，砍了零風險 |
+| **DB 欄位**（`audio_r2_keys`） | 保留、不寫新值 | 砍欄位要 migration、historical data 還在 DB；不寫新值自然過渡成「永久空 list」 |
+| **函式簽章**（`audio_keys` 參數） | 保留、呼叫端不傳 | mock / 測試 fixture 仍可用 `audio_keys=[...]` 表達 Gen-2；real repo SQL 略過這個參數不寫欄位 |
+| **契約層**（`Episode.segments` 欄位、`Segment` model） | 保留、回空 list | OpenAPI 不破；前端 typecheck 仍合法（`segments: []` 是 `readonly Segment[]` 的合法值） |
+| **回傳 dict 欄位**（`upload_artifacts_node` 的 `audio_keys: []`） | 保留、空 list | 介面穩定；P4+1 再決定要不要從 PodState 拔 |
+
+**測試覆蓋 = 部署守門員**：Phase 4 所有改動都被現有測試覆蓋——`test_pipeline` 跑完整 graph path + `test_langgraph_pod` 驗 mock R2 上傳物件數 + `test_api` 驗 build_episode 對外契約。`uv run poe test` 472 passed（含 OpenAPI contract hash 同步）→ 線上 RUNNING + 啟動無錯 = Phase 4 生效。**不需要等新集生成才能驗**（新集生成會耗 MiniMax token，太貴）。
+
+**順帶 fact 更正**：「prebuilt marketplace worker 不會被 git push 觸發重啟」這條之前只在私人 memory 記，但**只對 env change 適用**。**code change（push 新 commit）會走完整 BUILDING → DEPLOYING → RUNNING 自動切 container**，這次 push 69e17c9 觀察到 worker `6a6e251b9cd65e28a3435db2` 自動從 BUILDING → DEPLOYING → RUNNING（新 container `Started`），image 413MB pull + 啟動 log `worker 啟動，輪詢 control / generate / dict_translate 佇列` 都自然發生。memory 該更正：分兩條——env change 要 manual restart（既有行為），code change 自動切（新發現）。
+
+**規則**：
+- **「純刪除型改動」的邊界在契約層，不是實作層**：可逆性靠「契約穩定 + 實作可換」。DB 欄位、函式簽章、API 契約、回傳 dict 欄位都是「契約層」，沒人逼你砍；實作層（沒 caller 的死碼）才是該砍的。「等 caller 都下線再砍」是拖延；「契約保留 + 實作砍」是當下就能做。
+- **測試是契約的執行，不是裝飾**：當 472 passed + OpenAPI hash 同步時，「RUNNING + 啟動無錯」就是「生效」，不必再花新集生成 token 來「真的跑一次」。測試沒覆蓋的改動才需要線上驗證——這時候反而該補測試而不是先部署。
+- **刪除型 PR 標題要寫「停產 X / 砍 Y」不是「改進 Z」**：commit message 寫 `停產 segments 上傳與 audio_r2_keys[] 寫入` 比 `清理舊碼` 精確十倍——前者讀者一眼知道「不再做這件事」，後者讀者要開 diff 才確認。
+- **不要為了「乾淨」而砍契約**：`Segment` model 還在 `shared/models/api.py`，前端 `Episode.segments: readonly Segment[]` 也還在。砍它們能再多刪 ~30 行，但會動 OpenAPI、front-end gen、contract hash test——「這次省的事」<「回滾成本」。**下一版（再一個版本週期）再砍**，那時連前端的 fixture 也都改成 `segments: []` 了。
