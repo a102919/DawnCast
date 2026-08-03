@@ -496,22 +496,10 @@ async def test_private_reuse_skip_if_already_delivered(
 # ── 3. generate_job 串接 ───────────────────────────────────────────
 
 
-def _sample_script(format: str = "dialogue") -> ScriptJSON:
-    """讀 tests/fixtures/loop_engineering.json 當合法 ScriptJSON 範本。
-
-    format="monologue" 時把所有 speaker 換成 Nova：news topic_type 走
-    resolve_format → monologue，merge ScriptJSON validator 會拒絕含 Alex/Sarah
-    的 script；這個 helper 給 idempotency 跨 topic_type 測試用，避免建第二份 fixture。
-    """
+def _sample_script() -> ScriptJSON:
+    """讀 tests/fixtures/loop_engineering.json 當合法 ScriptJSON 範本。"""
     fixture = Path(__file__).resolve().parent / "fixtures" / "loop_engineering.json"
     script = ScriptJSON.model_validate_json(fixture.read_text(encoding="utf-8"))
-    if format == "monologue":
-        return script.model_copy(
-            update={
-                "format": "monologue",
-                "script": [line.model_copy(update={"speaker": "Nova"}) for line in script.script],
-            }
-        )
     return script
 
 
@@ -781,15 +769,14 @@ async def test_generate_job_idempotency_key_includes_topic_type(
         "user_ids": ["u1"],
         "length_tier": "medium",
     }
-    # news → resolve_format → monologue：fixture 必須 speaker 全 Nova，
-    # topic → dialogue：fixture 維持 Alex/Sarah。兩次 run_generate_job 各自
-    # 拿不同 script（mock 內 segment_json 用對應的 script 餵）。
+    # news / topic 現在都是 resolve_format → dialogue（2026-08-03 拿掉
+    # monologue 分支），這裡只驗證 topic_type 不同會產生不同的冪等鍵。
     news_mocks, _ = _patch_generate_job(
-        monkeypatch, script=_sample_script(format="monologue"), repo_spy=repo_spy
+        monkeypatch, script=_sample_script(), repo_spy=repo_spy
     )
     news = await generate_job.run_generate_job({**base, "topic_type": "news"}, **news_mocks)
     topic_mocks, _ = _patch_generate_job(
-        monkeypatch, script=_sample_script(format="dialogue"), repo_spy=repo_spy
+        monkeypatch, script=_sample_script(), repo_spy=repo_spy
     )
     topic = await generate_job.run_generate_job({**base, "topic_type": "topic"}, **topic_mocks)
 

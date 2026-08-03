@@ -776,11 +776,12 @@ def test_phrasal_verb_vocab_truly_missing_still_rejected() -> None:
 # ── 10. resolve_format：入口類型 × 長度 tier 自動決定格式 ──
 
 
-def test_resolve_format_news_always_monologue() -> None:
+def test_resolve_format_news_always_dialogue() -> None:
+    """2026-08-03 拿掉 news → monologue 分支，一律 dialogue。"""
     from engine.pipeline.langgraph_pod.nodes import resolve_format
 
-    assert resolve_format("news", "short") == "monologue"
-    assert resolve_format("news", "long") == "monologue"
+    assert resolve_format("news", "short") == "dialogue"
+    assert resolve_format("news", "long") == "dialogue"
 
 
 def test_resolve_format_evergreen_always_dialogue() -> None:
@@ -797,30 +798,6 @@ def test_resolve_format_product_always_dialogue() -> None:
 
     assert resolve_format("product", "short") == "dialogue"
     assert resolve_format("product", "long") == "dialogue"
-
-
-# ── 11. 單人口白格式端到端：news topic_type → Nova 單人稿 ─────
-
-
-async def test_pod_monologue_format_end_to_end(pod_mocks: PodMocks) -> None:
-    chat = _make_passing_chat(format="monologue")
-    repo, r2, queue, renderer = pod_mocks
-
-    body = {
-        "big_topic": "AI News",
-        "canonical_topic": "AI News Today",
-        "angle": "定義",
-        "topic_type": "news",  # news → resolve_format 一律 monologue
-        "deliver_date": "2026-07-14",
-        "user_ids": ["u1"],
-    }
-    eid = await run_pod(body, chat=chat, repo=repo, r2=r2, queue=queue, renderer=renderer)
-    assert eid
-    ep = repo.get_episode(eid)
-    assert ep is not None
-    assert ep.script_json is not None
-    speakers = {line["speaker"] for line in ep.script_json["script"]}
-    assert speakers == {"Nova"}
 
 
 # ── 12. Grounding：注入 source_provider_factory 後 sources 進到 state ─

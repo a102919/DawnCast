@@ -30,17 +30,10 @@ logger = logging.getLogger(__name__)
 
 
 def resolve_format(topic_type: str, length_tier: str) -> ScriptFormat:
-    """依入口類型決定格式，使用者不手動切換（PRD 重新設計 §3）。
+    """一律雙主持對話（PRD 重新設計 §3，2026-08-03 拿掉 news → monologue 分支）。
 
-    news    → 單人口白（快訊，Up First / Apple News+ Narrated 模式）
-    其餘    → 雙主持對話（保留 SLA 對話建模與化學效應價值）
-
-    注意：原本「evergreen 長篇 → 單人口白」會把所有長篇技術/科普講成
-    Nova 獨白 7 分鐘，沒有對話節奏與角色互動；對依賴 dialogue chemistry
-    的使用者體驗是直接降級，已在 2026-07-29 拿掉，一律走 dialogue。
+    保留函式簽章給呼叫端沿用；topic_type/length_tier 目前不影響結果。
     """
-    if topic_type == "news":
-        return "monologue"
     return "dialogue"
 
 
