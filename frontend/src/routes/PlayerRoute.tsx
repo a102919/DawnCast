@@ -27,8 +27,11 @@ interface VocabSeekState {
 
 function parseVocabSeekState(state: unknown): VocabSeekState | null {
   if (typeof state !== 'object' || state === null) return null
-  const seekTo = (state as Record<string, unknown>).seekTo
-  return typeof seekTo === 'number' ? { seekTo, seekLineNo: (state as Record<string, unknown>).seekLineNo as number | undefined } : null
+  const record = state as Record<string, unknown>
+  const seekTo = record.seekTo
+  if (typeof seekTo !== 'number') return null
+  const seekLineNo = typeof record.seekLineNo === 'number' ? record.seekLineNo : undefined
+  return { seekTo, seekLineNo }
 }
 
 export function PlayerRoute() {
