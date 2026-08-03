@@ -56,6 +56,8 @@ class TavilyProvider(_HttpSourceProvider):
             resp = await self._client.post("/search", json=payload)
             resp.raise_for_status()
             data = resp.json()
+            if not isinstance(data, dict):
+                raise ValueError(f"Tavily 回應非預期形狀：{type(data).__name__}")
         except (httpx.HTTPError, ValueError) as exc:
             raise SourceFetchError(f"Tavily 搜尋失敗：{type(exc).__name__}") from exc
 
@@ -87,6 +89,8 @@ class TavilyProvider(_HttpSourceProvider):
             )
             resp.raise_for_status()
             data = resp.json()
+            if not isinstance(data, dict):
+                return {}
         except (httpx.HTTPError, ValueError):
             return {}
         out: dict[str, str] = {}

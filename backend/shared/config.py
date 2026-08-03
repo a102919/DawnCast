@@ -188,7 +188,10 @@ class Settings(BaseSettings):
     # ── 頻道（Channel）機制 ──────────────────────────────────
     # 每日最多產幾集：成本天花板。pick_daily_topics 的 limit 參數吃這個值，
     # 候選不足時自然回少於此數（甚至 0），這裡只設「上限」不是「目標」。
-    channel_daily_max_slots: int = 4
+    # le=10：daily_batch.enqueue_daily_batch → shared/db/queue.py 送出當日批次時
+    # 硬性 assert 0~10 筆，設超過 10 會讓整批 enqueue 直接 ValueError、當晚所有
+    # 頻道都不出集，而不是只降低這一項的產出。
+    channel_daily_max_slots: int = Field(default=4, le=10)
     # 候選主題可被排程的最低分數門檻。選題 LLM 打分低於此值的主題永遠留在
     # candidate 狀態陪跑，不會被 pick_daily_topics 選中，也不算數量不足的錯誤。
     channel_min_topic_score: float = 0.6

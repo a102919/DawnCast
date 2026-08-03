@@ -303,24 +303,33 @@ async def upload_artifacts_node(state: PodState, config: RunnableConfig) -> dict
     storage_failed = False
     mp3_uploaded = False
 
+    if r2 is not None:
+        client = r2
+    else:
+        from shared.storage import r2 as real_r2  # noqa: PLC0415
+
+        client = real_r2
+
     # Phase 4：整集 mp3 接管前端播放，segments/sidecar 停產。
     try:
-        if r2 is not None:
-            r2.put_object(mp3_key, art.mp3_path.read_bytes(), "audio/mpeg")
-            mp3_uploaded = True
-            r2.put_object(srt_key, art.srt.encode("utf-8"), "application/x-subrip")
-        else:
-            from shared.storage import r2 as real_r2  # noqa: PLC0415
-
-            real_r2.put_object(mp3_key, art.mp3_path.read_bytes(), "audio/mpeg")
-            mp3_uploaded = True
-            real_r2.put_object(srt_key, art.srt.encode("utf-8"), "application/x-subrip")
+        client.put_object(mp3_key, art.mp3_path.read_bytes(), "audio/mpeg")
+        mp3_uploaded = True
+        client.put_object(srt_key, art.srt.encode("utf-8"), "application/x-subrip")
     except Exception as exc:  # 包括 StorageError 與 MockR2 forced failure
         logger.warning(
             "upload_artifacts 失敗（%s）episode_id=%s",
             exc,
             episode_id,
         )
+        if mp3_uploaded:
+            # mp3 傳成功但 srt 傳失敗：dead_letter_node 只刪 DB row，不清 R2，
+            # 不主動刪這裡上傳的 mp3 會變成永久孤兒物件。
+            try:
+                client.delete_object(mp3_key)
+            except Exception:
+                logger.warning(
+                    "孤兒 mp3 清理失敗 episode_id=%s key=%s", episode_id, mp3_key, exc_info=True
+                )
         mp3_uploaded = False
         storage_failed = True
 

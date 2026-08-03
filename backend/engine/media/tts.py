@@ -253,11 +253,13 @@ async def _synth_line_edge(
     if not got_audio or raw_path.stat().st_size == 0:
         raise TTSError(f"edge-tts 第 {index} 行未產生音訊：{speaker}")
 
-    _trim_silence(raw_path, out_path)
+    # _trim_silence/_probe_duration 是同步 subprocess.run 呼叫 ffmpeg/ffprobe，
+    # 用 to_thread 避免擋住 worker event loop（同 dict_audio.py 的處理方式）。
+    await asyncio.to_thread(_trim_silence, raw_path, out_path)
     raw_path.unlink(missing_ok=True)
 
     # 用修剪後音檔的真實時長（與 concat 串接的音訊一致），單檔 ffprobe。
-    return _probe_duration(out_path)
+    return await asyncio.to_thread(_probe_duration, out_path)
 
 
 async def _fetch_word_boundary(client: httpx.AsyncClient, subtitle_url: str) -> list[WordOffset]:
@@ -353,8 +355,10 @@ def _make_minimax_line_synth(
     """
 
     async def synth_line(
-        index: int, speaker: str, text: str, emotion: str | None, out_path: Path
+        _index: int, speaker: str, text: str, emotion: str | None, out_path: Path
     ) -> tuple[float, list[WordOffset]]:
+        # _index：跟 edge 路徑共用同一個 Callable 簽名（_run_lines 呼叫端統一傳位置參數），
+        # 這裡沒用到——MiniMax 錯誤訊息不需要行號。
         voice = MINIMAX_VOICES.get(speaker)
         if voice is None:
             raise TTSError(f"未知主持人 {speaker!r}，無對應 MiniMax voice")
@@ -379,9 +383,10 @@ def _make_minimax_line_synth(
         raw_path = out_path.with_name(f"{out_path.stem}_raw{out_path.suffix}")
         raw_path.write_bytes(audio)
         # 與 edge 路徑同樣去頭尾靜音——供應商無論誰，cue 時間軸都要貼著實際語音。
-        _trim_silence(raw_path, out_path)
+        # to_thread：避免同步 subprocess.run 擋住 worker event loop。
+        await asyncio.to_thread(_trim_silence, raw_path, out_path)
         raw_path.unlink(missing_ok=True)
-        duration = _probe_duration(out_path)
+        duration = await asyncio.to_thread(_probe_duration, out_path)
         # word boundary：抓 subtitle_file 拿詞級字幕。失敗不擋合成（空 list fallback）。
         word_offsets = await _fetch_word_boundary(client, subtitle_url) if subtitle_url else []
         return duration, word_offsets

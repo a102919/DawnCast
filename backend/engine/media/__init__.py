@@ -9,6 +9,7 @@ drift=0），逐行 mp3 仍保留（雙寫過渡期，見 EpisodeArtifacts docst
 
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -84,23 +85,31 @@ async def render_episode(
     segs, tts_provider = await synth_script(script, workdir, cefr=cefr)
     tts_characters = sum(len(seg.text) for seg in segs)
 
-    rate, channels = probe_stream_info(segs[0].audio_path)
+    # audio.py 的 probe/synthesize/concat 都是同步 subprocess.run 呼叫 ffmpeg/
+    # ffprobe，直接在這個 async 函式裡跑會擋住整個 worker event loop（generate
+    # 有界併發 + control 佇列 tick 全部陪跑），一集下來可能卡數百 ms 到數秒。
+    rate, channels = await asyncio.to_thread(probe_stream_info, segs[0].audio_path)
     short_gap_path = workdir / "_silence_short.mp3"
-    short_gap = synthesize_silence(
-        short_gap_path, seconds=settings.pause_sec, rate=rate, channels=channels
+    short_gap = await asyncio.to_thread(
+        synthesize_silence, short_gap_path, seconds=settings.pause_sec, rate=rate, channels=channels
     )
     if settings.long_pause_sec == settings.pause_sec:
         long_gap_path, long_gap = short_gap_path, short_gap
     else:
         long_gap_path = workdir / "_silence_long.mp3"
-        long_gap = synthesize_silence(
-            long_gap_path, seconds=settings.long_pause_sec, rate=rate, channels=channels
+        long_gap = await asyncio.to_thread(
+            synthesize_silence,
+            long_gap_path,
+            seconds=settings.long_pause_sec,
+            rate=rate,
+            channels=channels,
         )
 
     layout = plan_layout(segs, short_gap=short_gap, long_gap=long_gap)
 
     mp3_path = workdir / "episode.mp3"
-    probed_duration = concat_episode(
+    probed_duration = await asyncio.to_thread(
+        concat_episode,
         segs,
         layout,
         mp3_path,

@@ -16,7 +16,7 @@ cat <<'EOF'
 
 # 必設（缺一就 fail）：
 POSTGRES_PASSWORD=<你決定的強密碼，例 openssl rand -hex 32>
-ADMIN_TOKEN=<強祕密，同上產生方式>
+ADMIN_EMAIL=<你的 Google 帳號 email，admin 後台唯一授權路徑>
 MINIMAX_API_KEY=<已申請的 MiniMax auth token>
 
 # Gotrue / Auth 必設（用 deploy/scripts/sign-jwt-key.sh 產）：
@@ -68,7 +68,7 @@ URI_ALLOW_LIST=["https://<your-domain>","https://<api-subdomain>.<your-domain>/a
 #   SITE_URL
 #   API_EXTERNAL_URL
 #   CORS_ALLOWED_ORIGINS=["https://<your-domain>"]
-#   ADMIN_TOKEN
+#   ADMIN_EMAIL
 #   TAVILY_API_KEY=          ← 缺可空，自動降級
 #   APPLY_MIGRATIONS_ON_BOOT=1
 #   POSTGRES_USER=supabase_admin

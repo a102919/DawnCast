@@ -26,13 +26,6 @@ TOKEN="$R2_TOKEN"
 MAIN="${MAIN_BUCKET:-dawncast}"
 BACKUP="${BACKUP_BUCKET:-dawncast-backups}"
 
-api() {
-  curl -fsS -X "$1" "$2" \
-    -H "Authorization: Bearer ${TOKEN}" \
-    -H "Content-Type: application/json" \
-    ${3:+--data-binary @<(printf '%s' "$3")}
-}
-
 # ━━━━━ 0) 偷看現有 bucket 列表 ━━━━━
 echo "→ 列出已有 bucket..."
 LIST=$(curl -fsS -X GET \

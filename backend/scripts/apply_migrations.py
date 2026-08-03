@@ -176,18 +176,19 @@ def main(argv: list[str] | None = None) -> int:
         print("POSTGRES_PASSWORD 必設（migration runner 需要 superuser 權限）。", file=sys.stderr)
         return 2
 
-    dsn = (
-        f"host={os.environ.get('POSTGRES_HOST', 'localhost')} "
-        f"port={os.environ.get('POSTGRES_PORT', '5432')} "
-        f"user={user} "
-        f"password={password} "
-        f"dbname={os.environ.get('POSTGRES_DB', 'postgres')} "
-        f"application_name=dawncast_migrate"
-    )
-
     print(f"\n連線到 {user}@...（讀 env 略）", flush=True)
 
-    with psycopg.connect(dsn, autocommit=False) as conn:
+    # 用 keyword 參數而非手拼字串：密碼含空白/引號等特殊字元時手拼字串必須自己
+    # 轉義，psycopg.connect 的 kwargs 形式直接把每個值當獨立參數處理，免踩這雷。
+    with psycopg.connect(
+        host=os.environ.get("POSTGRES_HOST", "localhost"),
+        port=os.environ.get("POSTGRES_PORT", "5432"),
+        user=user,
+        password=password,
+        dbname=os.environ.get("POSTGRES_DB", "postgres"),
+        application_name="dawncast_migrate",
+        autocommit=False,
+    ) as conn:
         # advisory lock：api lifespan 與 worker main() 同一次部署可能併發呼叫
         # 到這裡，用固定 key 的 session-level lock 序列化兩邊。拿不到就阻塞
         # 等待——全程只有這一把鎖、沒有雙方互等對方另一把鎖的情況，不會死結；

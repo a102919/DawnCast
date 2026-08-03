@@ -21,6 +21,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import re
+import subprocess
 from pathlib import Path
 
 from shared.config import get_settings
@@ -121,7 +122,13 @@ async def synthesize_word_audio(word: str) -> str | None:
         return None
     try:
         data = await asyncio.to_thread(_synthesize, word, _resolve_model())
-    except (RuntimeError, FileNotFoundError, TimeoutError, OSError) as exc:
+    except (
+        RuntimeError,
+        FileNotFoundError,
+        TimeoutError,
+        OSError,
+        subprocess.TimeoutExpired,
+    ) as exc:
         logger.warning("Piper 合成失敗 word=%s: %s", word, exc)
         return None
     url = await _publish(word, data, "audio/wav")

@@ -396,7 +396,15 @@ async def run_worker(shutdown: _Shutdown | None = None) -> None:
 
             ctrl = await queue.read(CONTROL_QUEUE, CONTROL_VT)
             if ctrl is not None:
-                await _process(CONTROL_QUEUE, ctrl, _handle_control, settings.dead_letter_after)
+                # _process 內部已吞掉 handler 失敗；這裡只會接到 queue.delete/archive
+                # 本身失敗（同 _run_generate 的理由），不能讓它冒出主迴圈把整個
+                # worker process（含 generate/dict_translate）一起拖死。
+                try:
+                    await _process(
+                        CONTROL_QUEUE, ctrl, _handle_control, settings.dead_letter_after
+                    )
+                except Exception:
+                    logger.exception("control msg_id=%s queue 層失敗", ctrl.msg_id)
                 continue
 
             if len(inflight) < max_concurrency:

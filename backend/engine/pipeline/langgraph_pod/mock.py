@@ -309,6 +309,9 @@ class MockR2:
             raise StorageError(f"mock: put_object {key} forced failure")
         self.objects[key] = _R2Object(key=key, data=data, content_type=content_type)
 
+    def delete_object(self, key: str) -> None:
+        self.objects.pop(key, None)
+
     def presigned_get_url(self, key: str, ttl: int | None = None) -> str:
         return f"https://mock-r2.local/{key}?ttl={ttl or 7200}"
 

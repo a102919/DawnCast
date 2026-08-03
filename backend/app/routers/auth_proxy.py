@@ -35,10 +35,14 @@ _GOTRUE_INTERNAL_HOST = os.environ.get(
 _GOTRUE_PROXY_TARGET = f"http://{_GOTRUE_INTERNAL_HOST}:9999"
 
 # hop-by-hop headers 不轉發（RFC 7230 §6.1 + 常見實務清單）。
+# content-encoding 也要拔：httpx 預設自動解壓縮回應（upstream.content 已是明文
+# bytes），若原樣轉發 gotrue 送來的 Content-Encoding: gzip，SPA 會拿著「宣稱
+# gzip 但其實是明文」的回應去解壓，間歇性壞在 gotrue 剛好回壓縮內容的請求上。
 _HOP_BY_HOP = frozenset(
     {
         "host",
         "content-length",
+        "content-encoding",
         "connection",
         "keep-alive",
         "transfer-encoding",

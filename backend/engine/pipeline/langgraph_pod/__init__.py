@@ -30,7 +30,7 @@ from shared.storage import r2 as db_r2
 from .chat import make_langchain_chat
 from .graph import build_pod
 from .metrics import MetricsCollector
-from .mock import MockRenderer, get_mocks
+from .mock import MockRenderer, get_mocks, make_mock_workdir
 
 SourceProviderFactory = Callable[[str, Settings], Any]
 
@@ -55,7 +55,9 @@ def _build_runtime_context(
         queue_obj: Any
         renderer_obj: Any
         repo_obj, r2_obj, queue_obj = get_mocks(reset=reset_mocks)
-        renderer_obj = MockRenderer
+        # instance，不是 class：render_episode_node 對 renderer 做
+        # isinstance(renderer, MockRenderer) 檢查，傳 class 本身必炸 TypeError。
+        renderer_obj = MockRenderer(make_mock_workdir())
         chat: BaseChatModel | None = None
         chat_failover: BaseChatModel | None = None
         # mock 模式預設不打真實資料來源；測試要驗證 grounding 行為時

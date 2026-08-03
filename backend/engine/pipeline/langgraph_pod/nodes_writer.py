@@ -1325,6 +1325,9 @@ async def _invoke_writer(
 
     best_result: ScriptJSON | None = None
     best_word_count = -1
+    # best_result 的段落內容要跟著一起記——單獨用最後一輪的 segment_scripts 會跟
+    # best_result 實際對應的那一輪錯位（見下面兩處 fallback return）。
+    best_segment_scripts: list[list[ScriptLine]] | None = None
 
     # 第一階段：生大綱。
     # [opt-p1] rewrite pass 時若上一輪 outline 還在 state、且 feedback 沒要求改大綱,
@@ -1497,6 +1500,7 @@ async def _invoke_writer(
         word_count = _script_word_count(full_script)
         if word_count > best_word_count:
             best_result, best_word_count = full_script, word_count
+            best_segment_scripts = segment_scripts
 
         if word_count >= word_floor:
             return {
@@ -1523,7 +1527,7 @@ async def _invoke_writer(
             return {
                 "script": best_result,
                 "outline": outline,
-                "previous_segment_scripts": segment_scripts,
+                "previous_segment_scripts": best_segment_scripts,
                 "engine_used": engine_label,
                 "rate_limited": False,
                 "token_usage": [{"node": usage_node, **total_usage}],
@@ -1566,7 +1570,7 @@ async def _invoke_writer(
     return {
         "script": best_result,
         "outline": outline,
-        "previous_segment_scripts": segment_scripts,
+        "previous_segment_scripts": best_segment_scripts,
         "engine_used": engine_label,
         "rate_limited": False,
         "token_usage": [{"node": usage_node, **total_usage}],

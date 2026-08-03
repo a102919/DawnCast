@@ -32,10 +32,16 @@ create unique index if not exists idx_daily_orders_one_active_per_user
 -- find_delivered_episode 都是用 (user_id, deliver_date) 猜的，多筆同天訂單
 -- 下會直接猜錯。頻道路徑（daily_podcast/channel_plan）永遠不帶這個欄位，
 -- NULL＝零行為變動。
-alter table public.deliveries
-  add column if not exists order_id uuid references public.daily_orders(id) on delete set null;
+alter table public.deliveries add column if not exists order_id uuid;
 create index if not exists idx_deliveries_order
   on public.deliveries (order_id) where order_id is not null;
+-- FK 獨立補（不掛在 ADD COLUMN 上）：line 17 的 CASCADE 重建 daily_orders_pkey
+-- 會把這條 FK 一併砍掉；若 FK 仍綁在 ADD COLUMN IF NOT EXISTS 裡，column 已
+-- 存在時整句 no-op，FK 永遠救不回來。drop+add 讓每次重跑都保證它存在。
+alter table public.deliveries drop constraint if exists deliveries_order_id_fkey;
+alter table public.deliveries
+  add constraint deliveries_order_id_fkey
+  foreign key (order_id) references public.daily_orders(id) on delete set null;
 
 -- 擴大 unique constraint：0001_init.sql 原本是 unique (user_id, episode_id)，
 -- 代表同一使用者對同一集數只能有一筆 delivery。佇列制下如果 reuse 命中一集
@@ -62,10 +68,14 @@ alter table public.deliveries
   add constraint deliveries_user_episode_order_key
   unique nulls not distinct (user_id, episode_id, order_id);
 
-alter table public.topic_requests
-  add column if not exists order_id uuid references public.daily_orders(id) on delete cascade;
+alter table public.topic_requests add column if not exists order_id uuid;
 create index if not exists idx_topic_requests_order
   on public.topic_requests (order_id) where order_id is not null;
+-- 同上，FK 獨立補，理由同 deliveries_order_id_fkey。
+alter table public.topic_requests drop constraint if exists topic_requests_order_id_fkey;
+alter table public.topic_requests
+  add constraint topic_requests_order_id_fkey
+  foreign key (order_id) references public.daily_orders(id) on delete cascade;
 
 -- ── 3. 拔掉 22:00 collect_open / 23:00 orchestrate 批次收單 cron ──────
 -- 個人點餐已改成送出即觸發（POST /jobs/orders/{id}/generate）為主路徑，

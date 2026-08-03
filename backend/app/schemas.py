@@ -6,11 +6,15 @@
 
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from shared.models import CamelModel, EntryMode, EpisodeCategory, LengthTier, TopicType
+
+# HH:MM 24 小時制；delivery_time / default_delivery_time 共用。
+_TIME_HHMM_PATTERN = r"^([01]\d|2[0-3]):[0-5]\d$"
 
 
 class AddVocabBody(CamelModel):
@@ -52,7 +56,7 @@ class UpdateSettingsBody(CamelModel):
     playback_rate: float | None = None
     theme: Literal["light", "dark", "auto"] | None = None
     preferred_topics: list[str] | None = None
-    default_delivery_time: str | None = None
+    default_delivery_time: str | None = Field(default=None, pattern=_TIME_HHMM_PATTERN)
     cefr_level: Literal["A2", "B1", "B2"] | None = None
 
 
@@ -77,6 +81,16 @@ class LastPlayedInput(CamelModel):
     position: float = Field(ge=0)
     at: str = Field(min_length=1)
 
+    @field_validator("at")
+    @classmethod
+    def _validate_at(cls, v: str) -> str:
+        """壞格式在這裡擋下（400），不要留到 activity.py 直接寫進 timestamptz 欄位摔 DB。"""
+        try:
+            datetime.fromisoformat(v.replace("Z", "+00:00"))
+        except ValueError as exc:
+            raise ValueError("at 必須是合法 ISO 8601 時間戳") from exc
+        return v
+
 
 class PatchActivityBody(CamelModel):
     """patchActivity(patch)。全 optional，皆為「增量」語意，只合併有給的欄位。"""
@@ -98,7 +112,7 @@ class CreateDailyOrderBody(CamelModel):
 
     selected_topics: list[str] = Field(default_factory=list)
     specific_request: str | None = None
-    delivery_time: str = "07:00"
+    delivery_time: str = Field(default="07:00", pattern=_TIME_HHMM_PATTERN)
     entry_mode: EntryMode = "topic"
     length_tier: LengthTier = "medium"
 

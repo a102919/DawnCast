@@ -43,7 +43,7 @@ async def _run(script_path: Path, out_dir: Path) -> None:
 
     total = artifacts.cues[-1].end if artifacts.cues else 0.0
     print(f"✓ Done. {len(artifacts.cues)} cues, ~{total:.1f}s")
-    print(f"  segments: {len(artifacts.segments)} per-line mp3（無整集 concat）")
+    print(f"  segments: {len(artifacts.segments)} per-line mp3 + 整集 concat: {artifacts.mp3_path}")
 
 
 def main() -> None:

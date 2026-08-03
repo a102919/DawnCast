@@ -90,14 +90,8 @@ spec:
             default: authenticated
           GOTRUE_JWT_EXP:
             default: "3600"
-          GOTRUE_DISABLE_EMAIL_SIGNUP:
-            default: "true"
-          GOTRUE_DISABLE_EMAIL_LINK_SIGNUP:
-            default: "true"
-          GOTRUE_DISABLE_EMAIL_MAGICLINK:
-            default: "true"
-          GOTRUE_DISABLE_EMAIL_OTP:
-            default: "true"
+          GOTRUE_EXTERNAL_EMAIL_ENABLED:
+            default: "false"
           GOTRUE_MAILER_AUTOCONFIRM:
             default: "true"
           GOTRUE_SMTP_HOST:
@@ -195,6 +189,8 @@ spec:
             default: authenticated
           CORS_ALLOWED_ORIGINS:
             default: https://dawncast.app
+          ADMIN_EMAIL:
+            default: ""
           ADMIN_TOKEN:
             default: ""
           GENERATION_ENGINE:
@@ -223,6 +219,8 @@ spec:
             default: "1"
           POSTGRES_USER:
             default: supabase_admin
+          POSTGRES_PASSWORD:
+            default: ${POSTGRES_PASSWORD}
           POSTGRES_HOST:
             default: db
           POSTGRES_PORT:
@@ -338,6 +336,8 @@ spec:
             default: "1"
           POSTGRES_USER:
             default: supabase_admin
+          POSTGRES_PASSWORD:
+            default: ${POSTGRES_PASSWORD}
           POSTGRES_HOST:
             default: db
           POSTGRES_PORT:

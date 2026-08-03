@@ -19,7 +19,6 @@ from shared.models import (
     ClaimCheck,
     ClaimVerification,
     JudgeVerdict,
-    ScriptJSON,
     ScriptLine,
     SourceSnippet,
 )
@@ -231,7 +230,7 @@ async def quality_judge_node(state: PodState, config: RunnableConfig) -> dict[st
         "groundedness": 1.0,
     }
     if judge_chat is None or script is None:
-        return {"judge_scores": default_scores}
+        return {"judge_scores": default_scores, "affected_segments": []}
 
     sources: list[SourceSnippet] = state.get("sources") or []
     user_parts = [f"Format: {fmt}", "", "Script:", script.model_dump_json(indent=2)]
@@ -262,7 +261,7 @@ async def quality_judge_node(state: PodState, config: RunnableConfig) -> dict[st
             state.get("big_topic"),
             exc,
         )
-        return {"judge_scores": default_scores}
+        return {"judge_scores": default_scores, "affected_segments": []}
     finally:
         if prev_role is not None and hasattr(judge_chat, "role"):
             judge_chat.role = prev_role
@@ -291,6 +290,9 @@ async def quality_judge_node(state: PodState, config: RunnableConfig) -> dict[st
     # 只有 affected_segments 非空時 judge_decision 才會走 partial_rewrite;
     # 失敗或 LLM 亂答都 fallback 整輪（不設 affected_segments）。
     threshold = float(ctx.get("quality_threshold", 0.6))
+    # 無 reducer 的 state key：沒回傳這個欄位 LangGraph 會沿用上一輪殘留值，
+    # 所以每輪一律顯式回傳（含空 list），不能只在「有找到」時才設。
+    affected: list[int] = []
     if not _judge_passed(scores, threshold) and judge_chat is not None:
         try:
             affected = await _identify_affected_segments(
@@ -301,7 +303,6 @@ async def quality_judge_node(state: PodState, config: RunnableConfig) -> dict[st
                 collector=collector,
             )
             if affected:
-                result["affected_segments"] = affected
                 logger.info(
                     "per-segment judge 定位失敗段 big_topic=%s: %s",
                     state.get("big_topic"),
@@ -313,6 +314,7 @@ async def quality_judge_node(state: PodState, config: RunnableConfig) -> dict[st
                 state.get("big_topic"),
                 exc,
             )
+    result["affected_segments"] = affected
 
     return result
 

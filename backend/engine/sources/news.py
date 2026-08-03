@@ -83,6 +83,8 @@ class GdeltProvider(_HttpSourceProvider):
             )
             resp.raise_for_status()
             data = resp.json()
+            if not isinstance(data, dict):
+                raise ValueError(f"GDELT 回應非預期形狀：{type(data).__name__}")
         except (httpx.HTTPError, ValueError) as exc:
             raise SourceFetchError(f"GDELT 搜尋失敗：{type(exc).__name__}") from exc
 

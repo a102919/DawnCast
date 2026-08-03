@@ -254,10 +254,7 @@ GOTRUE_DATABASE_URL=postgres://supabase_admin:<pwd>@db-pran.zeabur.internal:5432
 GOTRUE_SITE_URL=https://dawncast.pages.dev
 GOTRUE_URI_ALLOW_LIST=https://gotrue-mon.zeabur.app,https://dawncast.pages.dev,http://localhost:5173
 GOTRUE_API_EXTERNAL_URL=https://gotrue-mon.zeabur.app
-GOTRUE_DISABLE_EMAIL_SIGNUP=true
-GOTRUE_DISABLE_EMAIL_LINK_SIGNUP=true
-GOTRUE_DISABLE_EMAIL_MAGICLINK=true
-GOTRUE_DISABLE_EMAIL_OTP=true
+GOTRUE_EXTERNAL_EMAIL_ENABLED=false
 GOTRUE_MAILER_AUTOCONFIRM=true
 
 # Google OAuth（見 §3.7）

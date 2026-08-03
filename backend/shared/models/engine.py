@@ -214,9 +214,7 @@ class ScriptOutline(BaseModel):
                     dropped.append(w)
             seg.vocab_words = kept
         if dropped:
-            import logging
-
-            logging.getLogger(__name__).warning(
+            logger.warning(
                 "ScriptOutline 過濾掉 LLM 偷塞的 vocab_words（不在 target_vocab 裡）：%s",
                 dropped,
             )

@@ -40,6 +40,11 @@ RATE_LIMIT_MESSAGE = "超過查詞頻率限制"
 # 預設視窗：60 秒
 DEFAULT_WINDOW_SEC = 60.0
 
+# 每隔這麼多次 check() 掃一次全體 bucket，把已無未過期紀錄的 key 整個刪掉——
+# 否則長期跑下來 self._buckets 會隨「歷史上出現過的 unique IP 數」無上限累積
+# （單一 bucket 內的 deque 有 limit 上限，但 key 本身從不被刪）。
+_SWEEP_INTERVAL = 1000
+
 
 def now() -> float:
     """單調時鐘 helper。
@@ -62,6 +67,7 @@ class SlidingWindowBucket:
         self._limit = limit
         self._window_sec = window_sec
         self._buckets: dict[str, deque[float]] = {}
+        self._checks_since_sweep = 0
 
     def check(self, client_key: str) -> bool:
         now_ts = now()
@@ -72,10 +78,21 @@ class SlidingWindowBucket:
             self._buckets[client_key] = bucket
         while bucket and bucket[0] < cutoff:
             bucket.popleft()
-        if len(bucket) >= self._limit:
-            return False
-        bucket.append(now_ts)
-        return True
+        allowed = len(bucket) < self._limit
+        if allowed:
+            bucket.append(now_ts)
+
+        self._checks_since_sweep += 1
+        if self._checks_since_sweep >= _SWEEP_INTERVAL:
+            self._sweep(cutoff)
+            self._checks_since_sweep = 0
+        return allowed
+
+    def _sweep(self, cutoff: float) -> None:
+        """刪掉已空或最新紀錄都過期的 key，讓 self._buckets 不隨 unique IP 數無限成長。"""
+        dead = [k for k, b in self._buckets.items() if not b or b[-1] < cutoff]
+        for k in dead:
+            del self._buckets[k]
 
 
 class RateLimitMiddleware(BaseHTTPMiddleware):

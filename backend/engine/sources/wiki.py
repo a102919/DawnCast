@@ -47,6 +47,8 @@ class WikipediaProvider(_HttpSourceProvider):
         )
         resp.raise_for_status()
         data = resp.json()
+        if not isinstance(data, dict):
+            raise ValueError(f"Wikipedia search 回應非預期形狀：{type(data).__name__}")
         hits = data.get("query", {}).get("search", [])
         return [h["title"] for h in hits if isinstance(h.get("title"), str)]
 
@@ -64,6 +66,8 @@ class WikipediaProvider(_HttpSourceProvider):
         )
         resp.raise_for_status()
         data = resp.json()
+        if not isinstance(data, dict):
+            raise ValueError(f"Wikipedia extracts 回應非預期形狀：{type(data).__name__}")
         pages = data.get("query", {}).get("pages", {})
         for page_id, page in pages.items():
             if page_id == "-1":  # 找不到該頁
