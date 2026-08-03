@@ -48,7 +48,7 @@ from shared.storage import r2
 logger = logging.getLogger(__name__)
 
 
-def require_admin(
+async def require_admin(
     authorization: str | None = Header(default=None),
 ) -> None:
     """驗 admin 身分：Supabase JWT（Google 登入）email 白名單。
@@ -66,12 +66,12 @@ def require_admin(
     token = extract_bearer_token(authorization)
     if not token:
         raise AuthError("認證失敗")
-    payload = _decode_for_admin(token)
+    payload = await _decode_for_admin(token)
     if not _is_authorized_admin(payload, settings.admin_email):
         raise AuthError("認證失敗")
 
 
-def _decode_for_admin(token: str) -> dict[str, Any] | None:
+async def _decode_for_admin(token: str) -> dict[str, Any] | None:
     """解 JWT payload；驗證失敗 / 沒 exp 視同沒帶憑證，回 None（不 throw）。
 
     require_exp=True 免費防禦：python-jose 預設驗 exp 但不要求有 exp claim，
@@ -79,7 +79,7 @@ def _decode_for_admin(token: str) -> dict[str, Any] | None:
     的 token 不該被接受。
     """
     try:
-        return decode_jwt_payload(token, require_exp=True)
+        return await decode_jwt_payload(token, require_exp=True)
     except AuthError:
         return None
 

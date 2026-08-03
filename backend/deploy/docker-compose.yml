@@ -49,10 +49,9 @@ services:
       GOTRUE_JWT_KEY: ${GOTRUE_JWT_KEY:?run deploy/scripts/sign-jwt-key.sh first}
       GOTRUE_JWT_AUD: authenticated
       GOTRUE_JWT_EXP: "3600"
-      GOTRUE_DISABLE_EMAIL_SIGNUP: "true"
-      GOTRUE_DISABLE_EMAIL_LINKUP: "true"
-      GOTRUE_DISABLE_EMAIL_MAGICLINK: "true"
-      GOTRUE_DISABLE_EMAIL_OTP: "true"
+      # GoTrue v2.189.0 只認 EXTERNAL_EMAIL_ENABLED，關掉即停用整個 email provider
+      # （password/magiclink/OTP 一起關）；舊的 GOTRUE_DISABLE_EMAIL_* 不是合法設定名
+      GOTRUE_EXTERNAL_EMAIL_ENABLED: "false"
       GOTRUE_MAILER_AUTOCONFIRM: "true"
       GOTRUE_SMTP_HOST: ""
       PORT: "9999"

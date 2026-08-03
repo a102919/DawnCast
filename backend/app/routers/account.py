@@ -59,7 +59,7 @@ async def _jwt_email(authorization: str | None = Header(default=None)) -> str:
     if not token:
         return ""
     try:
-        payload = decode_jwt_payload(token)
+        payload = await decode_jwt_payload(token)
     except AuthError:
         return ""
     email = payload.get("email")

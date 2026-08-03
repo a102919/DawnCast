@@ -36,11 +36,7 @@ export function StartSessionButton({ items }: StartSessionButtonProps) {
             開始學習
           </p>
           <p className="text-caption tracking-caption leading-caption text-text-secondary mt-0.5 truncate">
-            {disabled
-              ? '先到播放頁收幾個字再開始'
-              : count >= 1
-                ? `今天還有 ${count} 張可以練習`
-                : '今天沒有可練習的單字'}
+            {disabled ? '先到播放頁收幾個字再開始' : `今天還有 ${count} 張可以練習`}
           </p>
         </div>
       </div>

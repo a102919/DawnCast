@@ -38,6 +38,12 @@ async def _resynth_real_audio(episode_id: str) -> None:
     decodeAudioData 會直接失敗。這裡用真 TTS 重新合成，蓋掉假音檔 + cues
     （兩者必須來自同一次 render，時間軸才對得齊——見方案 B 核心保證）。
 
+    上傳路徑跟 key 命名必須對齊 nodes_episode.py::upload_artifacts_node（整集
+    單一 mp3，Phase 4 後 segments 上傳已停產）；之前這裡還在傳統路徑上傳
+    segments、也沒把 audio_key 傳給 update_episode_keys，結果假音檔沒被蓋掉，
+    cues 卻換成對齊「真實整集 mp3」的新時間軸——播放器讀到的音檔仍是假的，
+    字幕時間軸卻對不上它。
+
     走真正的 shared.storage.r2 模組（非 MockR2）：該模組在 ENVIRONMENT=dev
     且沒填 R2 金鑰時會自動落地本機檔案 + 簽 /mock-r2/{key} URL，跟 production
     router／backfill 走同一份程式碼，不用另外維護一份 mock 上傳邏輯。
@@ -63,14 +69,15 @@ async def _resynth_real_audio(episode_id: str) -> None:
     workdir = make_job_workdir()
     try:
         artifacts = await render_episode(script, workdir, cefr=row.get("cefr_level") or "B1")
-        keys: list[str] = []
-        for seg in artifacts.segments:
-            key = f"episodes/{episode_id}/segments/{seg.index:03d}.mp3"
-            r2.put_object(key, seg.audio_path.read_bytes(), "audio/mpeg")
-            keys.append(key)
+        prefix = f"episodes/{episode_id}"
+        mp3_key = f"{prefix}/episode.mp3"
+        srt_key = f"{prefix}/episode.srt"
+        r2.put_object(mp3_key, artifacts.mp3_path.read_bytes(), "audio/mpeg")
+        r2.put_object(srt_key, artifacts.srt.encode("utf-8"), "application/x-subrip")
         await db_repo.update_episode_keys(
             episode_id,
-            audio_keys=keys,
+            audio_key=mp3_key,
+            srt_key=srt_key,
             script_json=script.model_dump(by_alias=False),
             cues=artifacts.cues,
         )
@@ -159,7 +166,7 @@ async def main(
     print(f"✓ episode_id={episode_id}  slug={slug}")
     print(f"  Player:  http://localhost:5173/player/{slug}")
     if use_mock:
-        print(f"  音檔本地路徑: /tmp/dc_mock_r2/episodes/{episode_id}/segments/")
+        print(f"  音檔本地路徑: /tmp/dc_mock_r2/episodes/{episode_id}/episode.mp3")
 
 
 if __name__ == "__main__":

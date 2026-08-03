@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState, type ReactNode } from 'react'
+import { toast } from 'sonner'
 import { api } from '../api'
 import { FavoritesContext, type FavoritesContextValue } from './favoritesContextValue'
 
@@ -26,7 +27,21 @@ export function FavoritesProvider({ children }: { readonly children: ReactNode }
       return next
     })
     const call = willAdd ? api.addFavorite(id) : api.removeFavorite(id)
-    await call.catch(err => console.warn('[favorites] toggle sync failed', err))
+    await call.catch(err => {
+      console.warn('[favorites] toggle sync failed', err)
+      // 失敗要把樂觀更新復原，否則 UI 顯示已收藏／已取消收藏但後端沒真的變，
+      // 使用者無從察覺、下次重整後又「消失」（見 ChannelSubscriptionsProvider 同模式）。
+      setFavorites(prev => {
+        const next = new Set(prev)
+        if (willAdd) {
+          next.delete(id)
+        } else {
+          next.add(id)
+        }
+        return next
+      })
+      toast.error(willAdd ? '加入收藏失敗，請稍後再試' : '取消收藏失敗，請稍後再試')
+    })
   }, [favorites])
 
   const has = useCallback(

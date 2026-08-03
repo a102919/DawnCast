@@ -44,28 +44,34 @@ _JwksFactory = Callable[[Settings], dict[str, Any]]
 _jwks_factory: _JwksFactory | None = None
 
 
-def _fetch_jwks_http(url: str) -> dict[str, Any]:
+async def _fetch_jwks_http(url: str) -> dict[str, Any]:
     """從 Supabase JWKS endpoint 抓公開 key set。"""
-    res = httpx.get(url, timeout=5.0)
+    async with httpx.AsyncClient(timeout=5.0) as client:
+        res = await client.get(url)
     res.raise_for_status()
     payload: dict[str, Any] = res.json()
     return payload
 
 
-def _get_jwks(settings: Settings) -> dict[str, Any]:
+async def _get_jwks(settings: Settings) -> dict[str, Any]:
     global _jwks_cache, _jwks_fetched_at
     now = time.monotonic()
     with _jwks_lock:
         if _jwks_cache is not None and (now - _jwks_fetched_at) < _JWKS_TTL_SEC:
             return _jwks_cache
-        payload = (
-            _jwks_factory(settings)
-            if _jwks_factory
-            else _fetch_jwks_http(settings.supabase_jwks_url)
-        )
+    # 鎖不能跨 await 持有：threading.Lock 是同步鎖，若在 await 期間仍佔著，
+    # 另一個 coroutine 對同一把鎖的同步 acquire 會直接卡死整個 event loop
+    # thread（單執行緒事件迴圈裡誰都無法讓出）。代價是 cache miss 的窗口內
+    # 可能有多個 coroutine 各自重抓一次，換取不死鎖，可接受。
+    payload = (
+        _jwks_factory(settings)
+        if _jwks_factory
+        else await _fetch_jwks_http(settings.supabase_jwks_url)
+    )
+    with _jwks_lock:
         _jwks_cache = payload
         _jwks_fetched_at = now
-        return payload
+    return payload
 
 
 def _invalidate_jwks_cache() -> None:
@@ -106,15 +112,15 @@ def extract_bearer_token(authorization: str | None) -> str | None:
     return token or None
 
 
-def _decode(token: str) -> str:
-    payload = decode_jwt_payload(token)
+async def _decode(token: str) -> str:
+    payload = await decode_jwt_payload(token)
     sub = payload.get("sub")
     if not isinstance(sub, str) or not sub:
         raise AuthError("認證失敗")
     return sub
 
 
-def decode_jwt_payload(token: str, *, require_exp: bool = False) -> dict[str, Any]:
+async def decode_jwt_payload(token: str, *, require_exp: bool = False) -> dict[str, Any]:
     """驗 JWT，回傳完整 payload。給 account.py 的 _jwt_email 等需要額外 claim 的場景用。
 
     兩個 mode：
@@ -157,7 +163,7 @@ def decode_jwt_payload(token: str, *, require_exp: bool = False) -> dict[str, An
         raise AuthError("認證失敗")
 
     try:
-        jwks = _get_jwks(settings)
+        jwks = await _get_jwks(settings)
         key = _find_key(jwks, kid)
         if key is None:
             # 沒找到 → 強制重抓，cover key rotation 邊界；
@@ -165,7 +171,7 @@ def decode_jwt_payload(token: str, *, require_exp: bool = False) -> dict[str, An
             # 會連坐把 get_current_user 一起拖累）。冷卻期間直接 401。
             if not _force_refetch_jwks():
                 raise AuthError("認證失敗")
-            jwks = _get_jwks(settings)
+            jwks = await _get_jwks(settings)
             key = _find_key(jwks, kid)
     except Exception as exc:
         logger.info("JWKS 取得失敗: %s", exc)
@@ -225,4 +231,4 @@ async def get_current_user(authorization: str | None = Header(default=None)) -> 
     token = extract_bearer_token(authorization)
     if not token:
         raise AuthError("缺少授權標頭")
-    return _decode(token)
+    return await _decode(token)

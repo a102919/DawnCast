@@ -15,7 +15,14 @@ from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_core.runnables import RunnableConfig
 
 from engine.pipeline.langgraph_pod.prompt import _strip_code_fence
-from shared.models import ClaimCheck, ClaimVerification, JudgeVerdict, ScriptJSON, SourceSnippet
+from shared.models import (
+    ClaimCheck,
+    ClaimVerification,
+    JudgeVerdict,
+    ScriptJSON,
+    ScriptLine,
+    SourceSnippet,
+)
 
 from .metrics import MetricsCollector
 from .nodes_common import _collector, _ctx, _record_llm_usage
@@ -288,7 +295,7 @@ async def quality_judge_node(state: PodState, config: RunnableConfig) -> dict[st
         try:
             affected = await _identify_affected_segments(
                 chat=judge_chat,
-                script=script,
+                previous_segment_scripts=state.get("previous_segment_scripts") or [],
                 feedback=verdict.feedback,
                 scores=scores,
                 collector=collector,
@@ -313,26 +320,41 @@ async def quality_judge_node(state: PodState, config: RunnableConfig) -> dict[st
 async def _identify_affected_segments(
     *,
     chat: Any,
-    script: ScriptJSON,
+    previous_segment_scripts: list[list[ScriptLine]],
     feedback: list[str],
     scores: dict[str, float],
     collector: MetricsCollector | None = None,
 ) -> list[int]:
-    """[opt-p3] 給 LLM 看整集腳本,問「哪些段是這次 judge 失敗的元兇」。
+    """[opt-p3] 給 LLM 看依 outline segment 分組的腳本,問「哪些段是這次 judge 失敗的元兇」。
+
+    回傳的 index 必須對齊 nodes_writer.py 的 outline segment index（消費端用
+    `seg_idx not in target_segs` 逐段比對，見 write_script_node），不是腳本行數——
+    之前用 `len(script.script)`（攤平的對話行數，一集常有 20-40 行）當段數代理,
+    LLM 回的行索引幾乎不可能命中 outline 的段索引（通常只有 3-4 段）,導致
+    partial_rewrite 誤判進場後卻沒有任何一段真的被重打。
 
     回傳 0-indexed segment index list；失敗或 LLM 回空就回空 list
     (caller 走整輪 rewrite 邏輯)。
     """
-    n_segments = len(script.script)  # 簡化:用 script 行數當段數代理
+    n_segments = len(previous_segment_scripts)
     if n_segments <= 1:
         return []  # 單段沒 partial 意義
 
     feedback_text = "\n".join(f"- {f}" for f in feedback[:5]) or "(no specific feedback)"
+    segments_json = json.dumps(
+        [
+            [line.model_dump() for line in seg_lines]
+            for seg_lines in previous_segment_scripts
+        ],
+        ensure_ascii=False,
+        indent=2,
+    )
     user = (
         f"This podcast script scored these overall axes: {scores}\n"
         f"Overall feedback:\n{feedback_text}\n\n"
-        f"Script (single flat list, but it's structured as ~{n_segments} segments):\n"
-        f"{script.model_dump_json(indent=2)}\n\n"
+        f"Script, grouped into {n_segments} segments "
+        f"(outer list index == segment index):\n"
+        f"{segments_json}\n\n"
         f"Identify which segment indices (0-indexed, in [0, {n_segments - 1}]) "
         f"are the main cause of the low scores.\n"
         f'Return ONLY JSON: {{"affected_segments": [int, ...]}}'
