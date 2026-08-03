@@ -70,6 +70,21 @@ def put_object(key: str, data: bytes, content_type: str) -> None:
         raise StorageError("物件上傳失敗") from exc
 
 
+def delete_object(key: str) -> None:
+    """刪除私有 bucket 內的物件。物件本來就不存在也視為成功（S3 delete 語意冪等），
+    給批次清舊音檔的腳本重跑不會因為「已經刪過」而報錯。
+    """
+    if _dev_fallback():
+        (_mock_root() / key).unlink(missing_ok=True)
+        return
+    settings = get_settings()
+    try:
+        _client().delete_object(Bucket=settings.r2_bucket, Key=key)
+    except (BotoCoreError, ClientError) as exc:
+        logger.error("R2 delete_object 失敗 key=%s: %s", key, exc)
+        raise StorageError("物件刪除失敗") from exc
+
+
 def object_exists(key: str) -> bool:
     """HEAD 物件是否存在於 bucket。
 
