@@ -19,7 +19,7 @@ from typing import Any
 import pytest
 
 from engine.pipeline import generate_job, reuse
-from engine.pipeline.langgraph_pod import nodes
+from engine.pipeline.langgraph_pod import nodes, nodes_episode
 from engine.pipeline.langgraph_pod.chat import FakeChatModel
 from engine.pipeline.langgraph_pod.mock import MockRenderer, make_mock_workdir
 from shared.db import channels
@@ -226,7 +226,7 @@ async def test_insert_delivery_survives_push_failure(
     async def _fail_notify(_user_id: str, _payload: dict[str, str]) -> int:
         raise RuntimeError("push unavailable")
 
-    monkeypatch.setattr(nodes, "notify_user", _fail_notify)
+    monkeypatch.setattr(nodes_episode, "notify_user", _fail_notify)
 
     result = await nodes.insert_deliveries_node(
         {
@@ -266,7 +266,7 @@ async def test_insert_deliveries_node_marks_order_ready(
         repo.ready_order_ids.append(order_id)
         return True
 
-    monkeypatch.setattr(nodes, "notify_user", _ok_notify)
+    monkeypatch.setattr(nodes_episode, "notify_user", _ok_notify)
     monkeypatch.setattr(nodes.app_repo, "deliver_and_mark_ready", _fake_deliver_and_mark_ready)
 
     result = await nodes.insert_deliveries_node(
