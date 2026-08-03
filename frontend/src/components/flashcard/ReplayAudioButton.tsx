@@ -41,9 +41,7 @@ export function ReplayAudioButton({ episodeSlug, timestamp, lineNo }: ReplayAudi
       const offsetSec = Math.max(0, Math.min(timestamp - cue.start, cue.end - cue.start))
       playClip(cue.start + offsetSec, 0.6)
     } catch (e) {
-      if (e instanceof AppError) {
-        console.warn('[ReplayAudioButton] 載入失敗', e.message)
-      }
+      console.warn('[ReplayAudioButton] 載入失敗', e instanceof AppError ? e.message : e)
     }
   }
 

@@ -1,8 +1,8 @@
-import { useContext } from 'react'
+import { createContextHook } from './createContextHook'
 import { VocabContext, type VocabContextValue } from './vocabContextValue'
 
-export function useVocab(): VocabContextValue {
-  const ctx = useContext(VocabContext)
-  if (!ctx) throw new Error('useVocab must be used inside VocabProvider')
-  return ctx
-}
+export const useVocab: () => VocabContextValue = createContextHook(
+  VocabContext,
+  'useVocab',
+  'VocabProvider',
+)

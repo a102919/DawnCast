@@ -12,6 +12,12 @@ import { IconButton, Sheet } from '../primitives'
 import { MnemonicHint } from './MnemonicHint'
 import { PronounceButton } from './PronounceButton'
 
+function addVocabButtonTone(inVocab: boolean, hasEntry: boolean): string {
+  if (inVocab) return 'bg-success/10 text-success cursor-default'
+  if (!hasEntry) return 'bg-bg-secondary text-text-tertiary cursor-default'
+  return 'bg-accent text-white hover:bg-accent-hover cursor-pointer'
+}
+
 function highlightWord(sentence: string, word: string): ReactNode {
   if (!word) return sentence
   const lower = sentence.toLowerCase()
@@ -162,13 +168,7 @@ export function WordCardPanel({ isOpen, word, entry, lookupError, onRetry, activ
               onClick={handleAddVocab}
               disabled={inVocab || !entry || isPending}
               transition={snappy}
-              className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md text-sm font-medium overflow-hidden transition-[background-color,color,transform] duration-fast ease-apple active:scale-[0.97] disabled:active:scale-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent ${
-                inVocab
-                  ? 'bg-success/10 text-success cursor-default'
-                  : !entry
-                    ? 'bg-bg-secondary text-text-tertiary cursor-default'
-                    : 'bg-accent text-white hover:bg-accent-hover cursor-pointer'
-              }`}
+              className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md text-sm font-medium overflow-hidden transition-[background-color,color,transform] duration-fast ease-apple active:scale-[0.97] disabled:active:scale-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent ${addVocabButtonTone(inVocab, !!entry)}`}
             >
               <AnimatePresence mode="wait" initial={false}>
                 <motion.span

@@ -1,7 +1,8 @@
 import { Link } from 'react-router-dom'
 import { Play, Sparkles } from 'lucide-react'
-import { CEFR_COLOR, TOPIC_LABELS } from '../../lib'
+import { TOPIC_LABELS } from '../../lib'
 import type { MockEpisode } from '../../lib'
+import { CefrBadge } from '../shared/CefrBadge'
 import { EpisodeCover } from '../shared/EpisodeCover'
 import { HeroLayout } from './HeroLayout'
 
@@ -40,9 +41,7 @@ export function HomeHeroFallback({ featured }: HomeHeroFallbackProps) {
       subtitle={featured.titleZh}
       meta={
         <>
-          <span className={`text-[10px] font-semibold px-1.5 py-0.5 rounded ${CEFR_COLOR[featured.cefrLevel]}`}>
-            {featured.cefrLevel}
-          </span>
+          <CefrBadge level={featured.cefrLevel} />
           <span>· {TOPIC_LABELS[featured.topic]}</span>
         </>
       }

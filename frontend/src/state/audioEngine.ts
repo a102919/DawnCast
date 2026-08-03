@@ -45,6 +45,10 @@ export interface AudioEngine {
   /** 試聽：previewEl seek 到 startSec 開始播，`playing` 事件（真的出聲，非 loading
    *  等待）後起算 durationSec 限長自動停止。不動主播放的 src / currentTime / 狀態。 */
   playClip(startSec: number, durationSec: number): void
+  /** 拆掉 mainEl/previewEl 的事件監聽、停止播放、把 DOM host 移除。目前唯一呼叫方
+   *  （useSegmentPlayer）跟 App 同壽命，正常執行不會觸發；補上是為了測試環境
+   *  每個 test case 都會建一顆新 engine，沒有 dispose 舊 host/listener 會逐 test 累積。 */
+  dispose(): void
 }
 
 /** preservesPitch 未進所有 TS lib / 瀏覽器版本，連同 webkit 前綴一起設，
@@ -98,6 +102,10 @@ export function createAudioEngine(handlers: MainEventHandlers): AudioEngine {
   let generation = 0
   /** play() 呼叫中、promise 尚未落定：pause() 必須等它落定才真的動元素（見檔頭 3）。 */
   let pendingPlay: Promise<void> | null = null
+  /** 每次 play() 遞增：pause() 排隊等 pendingPlay 落定的 callback 要憑這個數字確認
+   *  「這次要暫停的仍是使用者最後一次的播放意圖」，否則 pause→play→pause-completion
+   *  的交錯順序會讓過期的排隊 pause 打斷使用者剛按下的新 play()。 */
+  let playIntent = 0
   let previewStopTimer: number | null = null
   /** 上一次 playClip 掛的 once('playing') listener：若它還沒觸發就被新的試聽取代，
    *  必須先拆掉，否則它會在新試聽的 playing 事件一起開火，用舊 stopAt 提早停掉新試聽。 */
@@ -128,6 +136,7 @@ export function createAudioEngine(handlers: MainEventHandlers): AudioEngine {
   }
 
   function play(): Promise<void> {
+    playIntent++
     const p = mainEl.play()
     pendingPlay = p
     void p.catch(() => undefined).finally(() => { if (pendingPlay === p) pendingPlay = null })
@@ -137,7 +146,8 @@ export function createAudioEngine(handlers: MainEventHandlers): AudioEngine {
   function pause(): void {
     if (pendingPlay) {
       const inFlight = pendingPlay
-      void inFlight.then(() => mainEl.pause()).catch(() => undefined)
+      const intentAtCall = playIntent
+      void inFlight.then(() => { if (intentAtCall === playIntent) mainEl.pause() }).catch(() => undefined)
       return
     }
     mainEl.pause()
@@ -174,6 +184,23 @@ export function createAudioEngine(handlers: MainEventHandlers): AudioEngine {
     void previewEl.play().catch(() => undefined)
   }
 
+  function dispose(): void {
+    if (previewStopTimer !== null) { window.clearTimeout(previewStopTimer); previewStopTimer = null }
+    if (previewPlayingListener !== null) {
+      previewEl.removeEventListener('playing', previewPlayingListener)
+      previewPlayingListener = null
+    }
+    mainEl.removeEventListener('timeupdate', handlers.onTimeUpdate)
+    mainEl.removeEventListener('seeked', handlers.onSeeked)
+    mainEl.removeEventListener('play', handlers.onPlay)
+    mainEl.removeEventListener('pause', handlers.onPause)
+    mainEl.removeEventListener('ended', handlers.onEnded)
+    mainEl.pause()
+    previewEl.pause()
+    const body = typeof document !== 'undefined' ? document.body : null
+    body?.querySelectorAll('[data-audio-host]').forEach(el => el.remove())
+  }
+
   return {
     load,
     play,
@@ -184,5 +211,6 @@ export function createAudioEngine(handlers: MainEventHandlers): AudioEngine {
     currentTime: () => mainEl.currentTime,
     duration: () => mainEl.duration,
     playClip,
+    dispose,
   }
 }

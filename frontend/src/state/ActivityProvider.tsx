@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { api } from '../api'
 import type { ActivityPatch } from '../api/types'
 import { toIsoDate } from '../lib/dailyOrderDate'
@@ -48,6 +48,8 @@ function loadCache(): ActivityState {
 export function ActivityProvider({ children }: { readonly children: ReactNode }) {
   const [state, setState] = useState<ActivityState>(loadCache)
   const lastSyncRef = useRef(0)
+  const listenedRef = useRef(state.listenedEpisodeIds)
+  useEffect(() => { listenedRef.current = state.listenedEpisodeIds }, [state.listenedEpisodeIds])
 
   useEffect(() => {
     // mount 時用後端資料覆蓋 localStorage cache，換裝置登入同一 user 才看得到一致數字。
@@ -73,6 +75,7 @@ export function ActivityProvider({ children }: { readonly children: ReactNode })
   }, [])
 
   const markListened = useCallback((episodeId: string) => {
+    if (listenedRef.current.includes(episodeId)) return
     const today = toIsoDate(new Date())
     setState(prev => {
       if (prev.listenedEpisodeIds.includes(episodeId)) return prev
@@ -124,7 +127,7 @@ export function ActivityProvider({ children }: { readonly children: ReactNode })
     [],
   )
 
-  const value: ActivityContextValue = {
+  const value = useMemo<ActivityContextValue>(() => ({
     streakDates: state.streakDates,
     listenMinutes: state.listenMinutes,
     lookupCount: state.lookupCount,
@@ -135,7 +138,7 @@ export function ActivityProvider({ children }: { readonly children: ReactNode })
     addListenMinutes,
     addLookupCount,
     setLastPlayed,
-  }
+  }), [state, markListened, addListenMinutes, addLookupCount, setLastPlayed])
 
   return (
     <ActivityContext.Provider value={value}>

@@ -27,7 +27,7 @@ function resolve(order: { status: DailyOrderStatus } | null): Resolved {
   if (order.status === 'ready') {
     return { icon: CheckCircle2, badgeIcon: false, tone: 'accent', label: '可收聽', spin: false }
   }
-  if (order.status === 'queued') {
+  if (order.status === 'queued' || order.status === 'pending') {
     return { icon: Loader2, badgeIcon: false, tone: 'accent', label: '生成中', spin: true }
   }
   if (order.status === 'expired') {

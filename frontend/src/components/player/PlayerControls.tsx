@@ -1,4 +1,4 @@
-import { useEffect, useCallback } from 'react'
+import { useEffect, useCallback, useLayoutEffect, useRef } from 'react'
 import { Play, Pause, Repeat1, Volume2, VolumeX } from 'lucide-react'
 import { usePlayer } from '../../state'
 import { formatTime } from '../../lib'
@@ -17,12 +17,20 @@ export function PlayerControls({ duration, isCueLooping, canLoopCue, onCueLoopTo
 
   const toggleMute = useCallback(() => { setMuted(!muted) }, [muted, setMuted])
 
-  // 鍵盤快捷鍵
+  // 鍵盤快捷鍵：currentTime 每次 timeupdate（每秒多次）都會變，若放進 deps 會讓這個
+  // effect 頻繁拆掉重掛 window keydown listener；改用 ref 讀最新值，effect 只掛一次。
+  const latestRef = useRef({ isPlaying, currentTime, duration, play, pause, seekTo })
+  useLayoutEffect(() => {
+    latestRef.current = { isPlaying, currentTime, duration, play, pause, seekTo }
+  })
+
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
-      const tag = (e.target as HTMLElement).tagName.toLowerCase()
+      if (!(e.target instanceof HTMLElement)) return
+      const tag = e.target.tagName.toLowerCase()
       if (tag === 'input' || tag === 'textarea') return
 
+      const { isPlaying, currentTime, duration, play, pause, seekTo } = latestRef.current
       if (e.code === 'Space') {
         e.preventDefault()
         if (isPlaying) pause()
@@ -37,7 +45,7 @@ export function PlayerControls({ duration, isCueLooping, canLoopCue, onCueLoopTo
     }
     window.addEventListener('keydown', handler)
     return () => window.removeEventListener('keydown', handler)
-  }, [isPlaying, currentTime, duration, play, pause, seekTo])
+  }, [])
 
   return (
     <div className="space-y-2">

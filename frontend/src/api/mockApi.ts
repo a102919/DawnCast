@@ -173,9 +173,19 @@ const DEFAULT_SETTINGS: Settings = {
   cefrLevel: 'B1',
 } as const
 
+function isVocabItem(x: unknown): x is VocabItem {
+  const v = x as Partial<VocabItem> | null
+  return (
+    typeof v?.id === 'string' &&
+    typeof v?.word === 'string' &&
+    typeof v?.lemma === 'string' &&
+    typeof v?.translation === 'string'
+  )
+}
+
 function readVocab(): VocabItem[] {
   const parsed = storageGet<unknown>(VOCAB_KEY)
-  return Array.isArray(parsed) ? (parsed as VocabItem[]) : []
+  return Array.isArray(parsed) ? parsed.filter(isVocabItem) : []
 }
 
 function writeVocab(items: VocabItem[]): void {
@@ -248,6 +258,10 @@ function readActivity(): Activity {
 
 function writeActivity(a: Activity): void {
   storageSet(ACTIVITY_KEY, a)
+}
+
+function mockUnsupported(feature: string): never {
+  throw new Error(`mock 模式不支援${feature}，請將 VITE_USE_MOCK 設為 false`)
 }
 
 // 簡化版合併（不要求跟後端逐 bit 一致，純粹讓 mock 模式功能可用）：
@@ -534,41 +548,41 @@ export const mockApi: Api = {
 
   // mock 模式沒有真實 episodes/gen_metrics/user_activity 資料可查。
   async getAdminEpisodeStats(): Promise<AdminEpisodeStatsResponse> {
-    throw new Error('mock 模式不支援管理員查詢，請將 VITE_USE_MOCK 設為 false')
+    mockUnsupported('管理員查詢')
   },
 
   async getAdminEpisodeGeneration(): Promise<AdminEpisodeGeneration> {
-    throw new Error('mock 模式不支援管理員查詢，請將 VITE_USE_MOCK 設為 false')
+    mockUnsupported('管理員查詢')
   },
 
   // 頻道管理同理：狀態在 DB，mock 沒有可寫的地方，一律明確擋掉而不是回假資料
   // 讓人誤以為建好了。
   async listAdminChannels(): Promise<readonly Channel[]> {
-    throw new Error('mock 模式不支援頻道管理，請將 VITE_USE_MOCK 設為 false')
+    mockUnsupported('頻道管理')
   },
 
   async createAdminChannel(): Promise<Channel> {
-    throw new Error('mock 模式不支援頻道管理，請將 VITE_USE_MOCK 設為 false')
+    mockUnsupported('頻道管理')
   },
 
   async updateAdminChannel(): Promise<Channel> {
-    throw new Error('mock 模式不支援頻道管理，請將 VITE_USE_MOCK 設為 false')
+    mockUnsupported('頻道管理')
   },
 
   async uploadAdminChannelCover(): Promise<Channel> {
-    throw new Error('mock 模式不支援頻道管理，請將 VITE_USE_MOCK 設為 false')
+    mockUnsupported('頻道管理')
   },
 
   async planAdminChannel(): Promise<ChannelPlanResponse> {
-    throw new Error('mock 模式不支援頻道管理，請將 VITE_USE_MOCK 設為 false')
+    mockUnsupported('頻道管理')
   },
 
   async listAdminChannelTopics(): Promise<readonly ChannelTopic[]> {
-    throw new Error('mock 模式不支援頻道管理，請將 VITE_USE_MOCK 設為 false')
+    mockUnsupported('頻道管理')
   },
 
   async updateAdminChannelTopic(): Promise<ChannelTopic> {
-    throw new Error('mock 模式不支援頻道管理，請將 VITE_USE_MOCK 設為 false')
+    mockUnsupported('頻道管理')
   },
 
   // 使用者端公開頻道：訂閱狀態比照 favorites 存 localStorage，讓 mock 模式也能完整走過

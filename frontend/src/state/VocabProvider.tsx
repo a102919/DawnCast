@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState, type ReactNode } from 'react'
+import { useCallback, useEffect, useMemo, useState, type ReactNode } from 'react'
 import { api, type VocabItem } from '../api'
 import { toIsoDate } from '../lib/dailyOrderDate'
 import { applyQuizRound as computeQuizRound } from '../lib/quiz'
@@ -132,11 +132,15 @@ export function VocabProvider({ children }: { readonly children: ReactNode }) {
     setItems(prev => prev.map(v => v.id === id ? { ...v, ...patch } : v))
   }, [])
 
-  const value: VocabContextValue = {
+  const value = useMemo<VocabContextValue>(() => ({
     items, isLoading, error, reload,
     addVocab, removeVocab, clearVocab, isInVocab,
     updateCardReview, completeLearning, applyQuizRound, reviveVocab,
-  }
+  }), [
+    items, isLoading, error, reload,
+    addVocab, removeVocab, clearVocab, isInVocab,
+    updateCardReview, completeLearning, applyQuizRound, reviveVocab,
+  ])
 
   return (
     <VocabContext.Provider value={value}>

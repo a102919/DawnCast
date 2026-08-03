@@ -1,9 +1,10 @@
 import { Link } from 'react-router-dom'
 import { motion } from 'framer-motion'
 import { Play, Heart, Sparkles, Clock } from 'lucide-react'
-import { CEFR_COLOR, TOPIC_LABELS, formatDateZhTW, formatTime } from '../../lib'
+import { TOPIC_LABELS, formatDateZhTW, formatTime } from '../../lib'
 import type { MockEpisode } from '../../lib'
 import { useFavorites } from '../../state'
+import { CefrBadge } from '../shared/CefrBadge'
 import { EpisodeCover } from '../shared/EpisodeCover'
 import { useSprings } from '../../lib/motion'
 import { HeroLayout } from './HeroLayout'
@@ -61,9 +62,7 @@ export function TodayHeroCard({ ep, duration, orderId }: TodayHeroCardProps) {
       subtitle={ep.titleZh}
       meta={
         <>
-          <span className={`text-[10px] font-semibold px-1.5 py-0.5 rounded ${CEFR_COLOR[ep.cefrLevel]}`}>
-            {ep.cefrLevel}
-          </span>
+          <CefrBadge level={ep.cefrLevel} />
           <span>· {TOPIC_LABELS[ep.topic]}</span>
           <span className="flex items-center gap-0.5">
             · <Clock size={11} />

@@ -46,14 +46,16 @@ function Session() {
     return () => Promise.resolve()
   }
 
-  /** 樂觀寫入結果與前進，背景 work 失敗時整批撤回。 */
+  /** 樂觀寫入結果與前進，背景 work 失敗時只撤回這張卡自己的 entry——不能整批
+   *  回退到呼叫當下的 snapshot，否則同時有多張卡在背景同步時，這張卡失敗會
+   *  連帶把「呼叫之後才成功同步」的下一張卡也從本地狀態抹掉。 */
   const record = (step: SessionStep, outcome: Outcome) => {
-    const captured = results
-    setResults(r => [...r, { step, outcome }])
+    const entry: StepResult = { step, outcome }
+    setResults(r => [...r, entry])
     setIdx(i => i + 1)
     void workFor(step, outcome)().catch((err: unknown) => {
-      setResults(captured)
-      setIdx(captured.length)
+      setResults(r => r.filter(e => e !== entry))
+      setIdx(i => Math.max(0, i - 1))
       toast.error(
         `同步失敗（${err instanceof Error ? err.message : '未知錯誤'}），已退回本卡，請重試`,
       )

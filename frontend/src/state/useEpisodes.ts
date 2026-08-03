@@ -1,8 +1,8 @@
-import { useContext } from 'react'
+import { createContextHook } from './createContextHook'
 import { EpisodesContext, type EpisodesContextValue } from './episodesContextValue'
 
-export function useEpisodes(): EpisodesContextValue {
-  const ctx = useContext(EpisodesContext)
-  if (!ctx) throw new Error('useEpisodes must be used inside EpisodesProvider')
-  return ctx
-}
+export const useEpisodes: () => EpisodesContextValue = createContextHook(
+  EpisodesContext,
+  'useEpisodes',
+  'EpisodesProvider',
+)

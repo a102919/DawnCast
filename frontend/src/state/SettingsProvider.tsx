@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState, type ReactNode } from 'react'
+import { useCallback, useEffect, useMemo, useState, type ReactNode } from 'react'
 import { api, type Settings } from '../api'
 import { SettingsContext, type SettingsContextValue } from './settingsContextValue'
 
@@ -35,7 +35,10 @@ export function SettingsProvider({ children }: { readonly children: ReactNode })
     setSettings(updated)
   }, [])
 
-  const value: SettingsContextValue = { settings, updateSettings }
+  const value = useMemo<SettingsContextValue>(
+    () => ({ settings, updateSettings }),
+    [settings, updateSettings],
+  )
 
   return (
     <SettingsContext.Provider value={value}>

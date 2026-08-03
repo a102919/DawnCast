@@ -1,8 +1,9 @@
 import type { ReactNode } from 'react'
 import { Link } from 'react-router-dom'
 import { Clock } from 'lucide-react'
-import { CEFR_COLOR, TOPIC_LABELS, formatDateZhTW, formatTime } from '../../lib'
+import { TOPIC_LABELS, formatDateZhTW, formatTime } from '../../lib'
 import type { MockEpisode } from '../../lib'
+import { CefrBadge } from '../shared/CefrBadge'
 import { EpisodeCover } from '../shared/EpisodeCover'
 
 interface WeeklyCardProps {
@@ -39,9 +40,7 @@ export function WeeklyCard({ ep, duration, className = '', metaLabel }: WeeklyCa
         <div className="flex-1 min-w-0 flex flex-col justify-between h-full py-0.5">
           <div>
             <div className="flex items-center gap-1.5 text-[10px] text-text-tertiary mb-1">
-              <span className={`font-semibold px-1.5 py-0.5 rounded ${CEFR_COLOR[ep.cefrLevel]}`}>
-                {ep.cefrLevel}
-              </span>
+              <CefrBadge level={ep.cefrLevel} />
               <span>· {TOPIC_LABELS[ep.topic]}</span>
             </div>
             <div className="text-xs sm:text-sm font-semibold text-text-primary line-clamp-2 leading-snug">

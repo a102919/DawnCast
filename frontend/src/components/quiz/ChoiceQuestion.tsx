@@ -13,6 +13,13 @@ const KIND_LABELS = {
   listening: '聽發音選出意思',
 } as const
 
+function optionStateClass(answered: boolean, isAnswer: boolean, isSelected: boolean): string {
+  if (!answered) return 'border-border hover:border-accent/40 hover:bg-accent/5'
+  if (isAnswer) return 'border-success bg-success/10 text-success'
+  if (isSelected) return 'border-warning bg-warning/10 text-warning'
+  return 'border-border opacity-50'
+}
+
 interface ChoiceQuestionProps {
   readonly question: Extract<QuizQuestion, { kind: 'en2zh' | 'zh2en' | 'listening' }>
   readonly onAnswered: (correct: boolean) => void
@@ -26,9 +33,13 @@ export function ChoiceQuestion({ question, onAnswered }: ChoiceQuestionProps) {
   const answered = selectedId !== null
   const isListening = question.kind === 'listening'
 
-  // 聽力題進場自動播一次發音
+  // 聽力題進場自動播一次發音；離開這題（換題重新掛載／整個 quiz 中途離開）時
+  // 要取消還在講的 utterance，否則使用者已經跳到下一步，瀏覽器還在背景唸上一題。
   useEffect(() => {
     if (isListening) speakWord(question.item.word)
+    return () => {
+      if ('speechSynthesis' in window) window.speechSynthesis.cancel()
+    }
   }, [isListening, question.item.word])
 
   return (
@@ -56,13 +67,7 @@ export function ChoiceQuestion({ question, onAnswered }: ChoiceQuestionProps) {
         {question.options.map(option => {
           const isAnswer = option.id === question.answerId
           const isSelected = option.id === selectedId
-          const stateClass = !answered
-            ? 'border-border hover:border-accent/40 hover:bg-accent/5'
-            : isAnswer
-              ? 'border-success bg-success/10 text-success'
-              : isSelected
-                ? 'border-warning bg-warning/10 text-warning'
-                : 'border-border opacity-50'
+          const stateClass = optionStateClass(answered, isAnswer, isSelected)
           return (
             <button
               key={option.id}

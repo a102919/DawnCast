@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from 'react'
 import { motion } from 'framer-motion'
+import { toast } from 'sonner'
 import { Play, Trash2, ExternalLink, RotateCcw } from 'lucide-react'
 import { formatTimestamp, formatPos, formatMultiline, MASTERED_STATUS } from '../../lib'
 import { api } from '../../api'
@@ -156,7 +157,10 @@ export function VocabEntryCard({ item, onSeek, onRemove, onRevive, variant = 'pa
               )}
               <button
                 aria-label="移除單字"
-                onClick={e => { e.stopPropagation(); onRemove(item.id) }}
+                onClick={e => {
+                  e.stopPropagation()
+                  void Promise.resolve(onRemove(item.id)).catch(() => toast.error('移除失敗，請重試'))
+                }}
                 className={`inline-flex items-center justify-center px-2.5 py-1.5 min-h-[44px] min-w-[44px] text-xs text-text-tertiary hover:text-danger hover:bg-danger/10 transition-colors duration-fast focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent ${isDrawer ? 'px-2 rounded' : 'rounded-md'}`}
               >
                 <Trash2 size={isDrawer ? 14 : 11} />

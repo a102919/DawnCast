@@ -3,9 +3,18 @@ import { Volume2 } from 'lucide-react'
 import { speakWord } from '../../lib/speech'
 
 /** 播音檔；載入或播放失敗走 onFail（退 TTS）。error 事件與 play() reject
- *  可能同時發生，settled 旗標保證 onFail 只觸發一次。 */
-async function playAudio(url: string, onEnd: () => void, onFail: () => void): Promise<void> {
+ *  可能同時發生，settled 旗標保證 onFail 只觸發一次。
+ *  audioRef 記著目前正在播的 Audio 元素：開播前先暫停上一個，避免快速連點
+ *  同時有兩顆 Audio 疊音；元件卸載時 caller 也靠這個 ref 暫停掉還在播的音檔。 */
+async function playAudio(
+  url: string,
+  audioRef: { current: HTMLAudioElement | null },
+  onEnd: () => void,
+  onFail: () => void,
+): Promise<void> {
+  audioRef.current?.pause()
   const audio = new Audio(url)
+  audioRef.current = audio
   let settled = false
   const fail = () => {
     if (settled) return
@@ -39,7 +48,11 @@ export function PronounceButton({ audioUrl, text, size = 14, label = '播放發�
   const [playing, setPlaying] = useState(false)
   // 每次播放發一個 id；舊播放的結束回呼若已被新播放取代（或元件卸載）就不動狀態
   const playIdRef = useRef(0)
-  useEffect(() => () => { playIdRef.current += 1 }, [])
+  const audioRef = useRef<HTMLAudioElement | null>(null)
+  useEffect(() => () => {
+    playIdRef.current += 1
+    audioRef.current?.pause()
+  }, [])
 
   if (!audioUrl && !text) return null
 
@@ -62,7 +75,7 @@ export function PronounceButton({ audioUrl, text, size = 14, label = '播放發�
           if (text) speakWord(text, done)
           else done()
         }
-        if (audioUrl) void playAudio(audioUrl, done, tts)
+        if (audioUrl) void playAudio(audioUrl, audioRef, done, tts)
         else tts()
       }}
       aria-label={label}

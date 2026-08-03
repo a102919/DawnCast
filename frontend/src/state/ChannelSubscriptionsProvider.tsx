@@ -1,16 +1,15 @@
-import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
+import { useCallback, useEffect, useMemo, useState, type ReactNode } from 'react'
 import { toast } from 'sonner'
 import { api, type ChannelPublic } from '../api'
 import {
   ChannelSubscriptionsContext,
   type ChannelSubscriptionsContextValue,
 } from './channelSubscriptionsContextValue'
+import { useOptimisticToggle } from './useOptimisticToggle'
 
 export function ChannelSubscriptionsProvider({ children }: { readonly children: ReactNode }) {
   const [subscribed, setSubscribed] = useState<ReadonlyMap<string, ChannelPublic>>(new Map())
-  // 每個 slug 同一時間只送一個請求；連點時只更新這裡記錄的「最新想要的狀態」，
-  // 讓飛行中的請求結束後自己判斷要不要再送一次，而不是讓兩個請求互相競速。
-  const pendingRef = useRef<Map<string, boolean>>(new Map())
+  const runToggle = useOptimisticToggle<string>('channel-subscriptions')
 
   useEffect(() => {
     api
@@ -37,18 +36,11 @@ export function ChannelSubscriptionsProvider({ children }: { readonly children: 
       return next
     })
 
-    if (pendingRef.current.has(slug)) {
-      pendingRef.current.set(slug, willAdd)
-      return
-    }
-    pendingRef.current.set(slug, willAdd)
-
-    let desired = willAdd
-    for (;;) {
-      try {
-        await (desired ? api.subscribeChannel(slug) : api.unsubscribeChannel(slug))
-      } catch (err) {
-        console.warn('[channel-subscriptions] toggle sync failed', err)
+    await runToggle(
+      slug,
+      willAdd,
+      desired => (desired ? api.subscribeChannel(slug) : api.unsubscribeChannel(slug)),
+      desired => {
         setSubscribed(prev => {
           const next = new Map(prev)
           if (desired) {
@@ -59,18 +51,16 @@ export function ChannelSubscriptionsProvider({ children }: { readonly children: 
           return next
         })
         toast.error(desired ? '追蹤失敗，請稍後再試' : '取消追蹤失敗，請稍後再試')
-        break
-      }
-      const latest = pendingRef.current.get(slug)
-      if (latest === desired) break
-      desired = latest as boolean
-    }
-    pendingRef.current.delete(slug)
-  }, [subscribed])
+      },
+    )
+  }, [subscribed, runToggle])
 
   const has = useCallback((slug: string) => subscribed.has(slug), [subscribed])
 
-  const value: ChannelSubscriptionsContextValue = { subscribed, toggle, has }
+  const value = useMemo<ChannelSubscriptionsContextValue>(
+    () => ({ subscribed, toggle, has }),
+    [subscribed, toggle, has],
+  )
 
   return (
     <ChannelSubscriptionsContext.Provider value={value}>

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { api } from '../api'
 import type { MockEpisode } from '../lib'
 import { EpisodesContext, type EpisodesContextValue } from './episodesContextValue'
@@ -31,7 +31,10 @@ export function EpisodesProvider({ children }: { readonly children: ReactNode })
     void refresh()
   }, [refresh])
 
-  const value: EpisodesContextValue = { episodes, loading, error, refresh }
+  const value = useMemo<EpisodesContextValue>(
+    () => ({ episodes, loading, error, refresh }),
+    [episodes, loading, error, refresh],
+  )
 
   return (
     <EpisodesContext.Provider value={value}>

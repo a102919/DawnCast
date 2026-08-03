@@ -30,9 +30,10 @@ function isTopicChoice(s: string): s is Exclude<TopicKey, 'all'> {
 
 // UI 顯示用白名單，對齊後端 ADMIN_EMAIL（backend/app/routers/admin.py require_admin）。
 // 只決定按鈕看不看得到，不是安全邊界——後端 JWT email 比對才是真正的授權。
-const ADMIN_EMAIL = 'q06637557832@gmail.com'
+// 從 env 讀而非硬寫常數，避免管理員信箱明文躺在原始碼／git 歷史裡。
+const ADMIN_EMAIL = (import.meta.env.VITE_ADMIN_EMAIL ?? '').toLowerCase()
 function isAdminEmail(email: string | null | undefined): boolean {
-  return !!email && email.toLowerCase() === ADMIN_EMAIL
+  return !!ADMIN_EMAIL && !!email && email.toLowerCase() === ADMIN_EMAIL
 }
 
 export function SettingsRoute() {

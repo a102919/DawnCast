@@ -218,6 +218,12 @@ const DailyOrderListSchema = z.array(DailyOrderSchema)
 
 const FavoritesSchema = z.array(z.string())
 
+const WordOffsetSchema = z.object({
+  word: z.string(),
+  start: z.number(),
+  end: z.number(),
+})
+
 export const CueSchema = z.object({
   index: z.number(),
   speaker: z.string(),
@@ -225,6 +231,7 @@ export const CueSchema = z.object({
   zh: z.string(),
   start: z.number(),
   end: z.number(),
+  words: z.array(WordOffsetSchema).nullable().optional().transform(v => v ?? undefined),
 }) satisfies z.ZodType<Cue> & z.ZodType<components['schemas']['Cue']>
 
 /** 單行 mp3 對前端契約：index + 已簽章 audioUrl + 真實時長 + 在該集的時間區段。
@@ -235,6 +242,7 @@ export const SegmentSchema = z.object({
   duration: z.number(),
   start: z.number(),
   end: z.number(),
+  wordOffsetsUrl: z.string().nullable().optional(),
 }) satisfies z.ZodType<components['schemas']['Segment']>
 
 /** 資料來源連結 schema。 */

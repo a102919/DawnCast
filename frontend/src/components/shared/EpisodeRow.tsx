@@ -1,8 +1,9 @@
 import { Link } from 'react-router-dom'
 import { Clock, Star, CheckCircle2, Heart, Play } from 'lucide-react'
-import { CEFR_COLOR, TOPIC_LABELS, formatDateZhTW, formatTime } from '../../lib'
+import { TOPIC_LABELS, formatDateZhTW, formatTime } from '../../lib'
 import type { MockEpisode } from '../../lib'
 import { useActivity, useFavorites } from '../../state'
+import { CefrBadge } from './CefrBadge'
 import { EpisodeCover } from './EpisodeCover'
 
 interface EpisodeRowProps {
@@ -108,9 +109,7 @@ function EpisodeMeta({ ep }: { readonly ep: MockEpisode }) {
     <>
       <div className="flex items-center gap-1.5 mb-1.5">
         <span className="text-xs text-text-tertiary">E{ep.episode}</span>
-        <span className={`text-[10px] font-semibold px-1.5 py-0.5 rounded ${CEFR_COLOR[ep.cefrLevel]}`}>
-          {ep.cefrLevel}
-        </span>
+        <CefrBadge level={ep.cefrLevel} />
         <span className="text-xs text-text-tertiary">{TOPIC_LABELS[ep.topic]}</span>
       </div>
       <div className="font-medium text-text-primary text-sm leading-snug">{ep.title}</div>

@@ -1,8 +1,8 @@
-import { useContext } from 'react'
+import { createContextHook } from './createContextHook'
 import { AuthContext, type AuthContextValue } from './authContextValue'
 
-export function useAuth(): AuthContextValue {
-  const ctx = useContext(AuthContext)
-  if (!ctx) throw new Error('useAuth must be used inside AuthProvider')
-  return ctx
-}
+export const useAuth: () => AuthContextValue = createContextHook(
+  AuthContext,
+  'useAuth',
+  'AuthProvider',
+)

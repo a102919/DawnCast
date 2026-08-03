@@ -4,7 +4,7 @@ import type { VocabItem } from '../api'
 export type ReviewMode = 'review' | 'practice'
 
 export type VocabContextValue = {
-  readonly items: VocabItem[]
+  readonly items: readonly VocabItem[]
   readonly isLoading: boolean
   /** 載入失敗訊息；非空時 UI 顯示錯誤空狀態而非「單字本是空的」 */
   readonly error: string | null

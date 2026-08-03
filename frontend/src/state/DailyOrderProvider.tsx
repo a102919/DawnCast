@@ -35,6 +35,9 @@ export function DailyOrderProvider({ children }: { readonly children: ReactNode 
   // resolveOrderEpisode 若只看 state 會重複打同一筆訂單的 API。
   const entriesRef = useRef<Map<string, OrderEpisodeEntry>>(new Map())
   const inflightRef = useRef<Map<string, Promise<Episode | null>>>(new Map())
+  // loadMoreHistory in-flight guard：無限捲動連續觸發時，避免同一頁 cursor
+  // （history 還沒 setState 落地前）打出多次重複的 listOrderHistory。
+  const loadingMoreRef = useRef(false)
 
   const setEntry = useCallback((orderId: string, entry: OrderEpisodeEntry): void => {
     entriesRef.current = new Map(entriesRef.current).set(orderId, entry)
@@ -175,15 +178,18 @@ export function DailyOrderProvider({ children }: { readonly children: ReactNode 
   }, [activeId, resolveOrderEpisode])
 
   const loadMoreHistory = useCallback(async (): Promise<void> => {
-    if (historyExhausted) return
+    if (historyExhausted || loadingMoreRef.current) return
     const last = history.at(-1)
     if (!last) return
+    loadingMoreRef.current = true
     try {
       const more = await api.listOrderHistory(HISTORY_PAGE_SIZE, last.createdAt)
       setHistory(prev => [...prev, ...more])
       if (more.length < HISTORY_PAGE_SIZE) setHistoryExhausted(true)
     } catch (err) {
       console.warn('[daily-order] load more history failed', err)
+    } finally {
+      loadingMoreRef.current = false
     }
   }, [history, historyExhausted])
 

@@ -1,8 +1,8 @@
-import { useContext } from 'react'
+import { createContextHook } from './createContextHook'
 import { ActivityContext, type ActivityContextValue } from './activityContextValue'
 
-export function useActivity(): ActivityContextValue {
-  const ctx = useContext(ActivityContext)
-  if (!ctx) throw new Error('useActivity must be used inside ActivityProvider')
-  return ctx
-}
+export const useActivity: () => ActivityContextValue = createContextHook(
+  ActivityContext,
+  'useActivity',
+  'ActivityProvider',
+)

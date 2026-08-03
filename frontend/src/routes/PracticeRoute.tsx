@@ -12,7 +12,7 @@
  *    Familiarity（沿用 PlayerRoute 的 LyricsView 結構，不重新發明）
  */
 
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
 import { ChevronLeft, Mic, Square, Repeat, Repeat1, Sparkles } from 'lucide-react'
 import { toast } from 'sonner'
@@ -24,6 +24,18 @@ import { useEpisode } from './useEpisode'
 
 /** 練習模式自有的 5 檔 speed（比 PlayerRoute 的 [0.75, 1, 1.25, 1.5] 多 0.5）。 */
 const PRACTICE_RATES = [0.5, 0.75, 1, 1.25, 1.5] as const
+
+function practiceStatusLabel(
+  isRecording: boolean,
+  isPlayingRecording: boolean,
+  isPlaying: boolean,
+  playbackRate: number,
+): string {
+  if (isRecording) return '錄音中…'
+  if (isPlayingRecording) return '正在播放錄音'
+  if (isPlaying) return `播放中（${playbackRate}x）`
+  return '點任一單字開始練習'
+}
 
 /** 隱藏容器：給 practiceEl 一個 DOM 落腳處（iOS Safari 必要），跟 audioEngine.ts
  *  既有 mainA / mainB / previewEl 共享同一個 hidden host。 */
@@ -66,6 +78,15 @@ export function PracticeRoute() {
   const practiceElRef = useRef<HTMLAudioElement | null>(null)
   const [practiceUrl, setPracticeUrl] = useState<string | null>(null)
   const [activeTrack, setActiveTrack] = useState<'model' | 'recording'>('model')
+
+  // 錄音 blob URL 只在換新錄音時手動 revoke 前一個（見 onstop）；離開頁面時最後
+  // 一個還沒被 revoke，靠這個 ref + unmount cleanup 補上，避免每次進出練習模式
+  // 累積一個 blob URL 洩漏。
+  const practiceUrlRef = useRef<string | null>(null)
+  useLayoutEffect(() => { practiceUrlRef.current = practiceUrl })
+  useEffect(() => {
+    return () => { if (practiceUrlRef.current) URL.revokeObjectURL(practiceUrlRef.current) }
+  }, [])
 
   useEffect(() => {
     const el = new Audio()
@@ -301,13 +322,7 @@ export function PracticeRoute() {
           )}
         </div>
         <div className="mt-2 text-center text-xs text-text-tertiary">
-          {isRecording
-            ? '錄音中…'
-            : activeTrack === 'recording' && hasRecording
-              ? '正在播放錄音'
-              : isPlaying
-                ? `播放中（${playbackRate}x）`
-                : '點任一單字開始練習'}
+          {practiceStatusLabel(isRecording, activeTrack === 'recording' && hasRecording, isPlaying, playbackRate)}
         </div>
       </footer>
     </div>

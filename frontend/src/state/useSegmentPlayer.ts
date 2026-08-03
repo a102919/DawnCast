@@ -10,7 +10,7 @@
  * 不再有「自動接播不在 gesture 內」這件事，介面上不再有 unlock()。
  */
 
-import { useCallback, useReducer, useRef, useState } from 'react'
+import { useCallback, useEffect, useReducer, useRef, useState } from 'react'
 import type { Episode } from '../types/episode'
 import { createAudioEngine } from './audioEngine'
 import { playerReducer, toPublicFields, initialMainPlayerState } from './playerIntent'
@@ -83,6 +83,10 @@ export function useSegmentPlayer(): SegmentPlayer {
     })
     return engine
   })
+
+  // engine 跟 App 同壽命，正常執行不會觸發；補上是讓每個 test case 建的 engine
+  // 卸載時釋放 DOM host/listener，不逐 test 累積。
+  useEffect(() => () => engine.dispose(), [engine])
 
   const loadEpisode = useCallback((episode: Episode | null) => {
     episodeRef.current = episode

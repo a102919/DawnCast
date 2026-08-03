@@ -2,7 +2,7 @@ import { RotateCcw, Play, Pause, ChevronRight, Repeat1, BookMarked, MessageCircl
 import { IconButton, ProgressSlider } from '../primitives'
 import { usePlayer } from '../../state'
 import { formatTime } from '../../lib'
-import { RATES, type PlaybackRate } from '../../lib/playback'
+import { RATES } from '../../lib/playback'
 import type { Cue } from '../../types/episode'
 
 interface PlayerBottomBarProps {
@@ -31,7 +31,7 @@ export function PlayerBottomBar({
   const { currentTime, isPlaying, seekTo, play, pause, playbackRate, setPlaybackRate } = usePlayer()
 
   const cycleRate = () => {
-    const idx = RATES.indexOf(playbackRate as PlaybackRate)
+    const idx = RATES.findIndex(r => r === playbackRate)
     setPlaybackRate(RATES[(idx + 1) % RATES.length])
   }
 

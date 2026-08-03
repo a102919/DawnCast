@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { api } from '../api'
 import { useDailyOrder } from '../state'
 import type { Episode } from '../types/episode'
@@ -20,8 +20,12 @@ export function useEpisode(id: string | undefined): UseEpisodeResult {
   const [fetchError, setFetchError] = useState<string | null>(null)
   const [orderId, setOrderId] = useState<string | null>(null)
   const { resolveOrderEpisode } = useDailyOrder()
+  // 每次 reload() 遞增：resolve 時比對自己是不是「最新一次呼叫」，過期的回應
+  // （使用者切集數切太快、舊 id 的回應晚到）不再套用，避免蓋掉新集數的資料。
+  const requestIdRef = useRef(0)
 
   const reload = useCallback(async () => {
+    const requestId = ++requestIdRef.current
     setFetchError(null)
     setOrderId(null)
     try {
@@ -31,6 +35,7 @@ export function useEpisode(id: string | undefined): UseEpisodeResult {
       const orderIdParam = new URLSearchParams(window.location.search).get('orderId')
       if (orderIdParam) {
         const delivered = await resolveOrderEpisode(orderIdParam)
+        if (requestId !== requestIdRef.current) return
         if (delivered) {
           setEpisode(delivered)
           setOrderId(orderIdParam)
@@ -39,17 +44,21 @@ export function useEpisode(id: string | undefined): UseEpisodeResult {
       }
       if (id) {
         const data = await api.getEpisode(id)
+        if (requestId !== requestIdRef.current) return
         setEpisode(data)
         return
       }
       const list = await api.listEpisodes()
+      if (requestId !== requestIdRef.current) return
       if (list.length === 0) {
         setFetchError('目前沒有可播放的集數')
         return
       }
       const data = await api.getEpisode(list[0].id)
+      if (requestId !== requestIdRef.current) return
       setEpisode(data)
     } catch {
+      if (requestId !== requestIdRef.current) return
       setFetchError('節目資料載入失敗，請重新整理頁面')
     }
   }, [id, resolveOrderEpisode])

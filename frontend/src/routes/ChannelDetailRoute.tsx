@@ -20,6 +20,11 @@ export function ChannelDetailRoute() {
   const { has, toggle } = useChannelSubscriptions()
   const springs = useSprings()
 
+  // 記上次抓過的 slug：擋 StrictMode 重複呼叫，同時保留「slug 真的換了要重抓」的行為
+  // （同一個路由元件在 /channels/:slug 之間切換不會重新掛載，光靠 mounted 布林值不夠）。
+  // load() resolve 時也用它擋「切太快、舊 slug 的回應晚到蓋掉新 slug 資料」的競速。
+  const lastSlugRef = useRef<string | null>(null)
+
   const load = useCallback(async (currentSlug: string): Promise<void> => {
     setError(null)
     setChannel(null)
@@ -28,16 +33,14 @@ export function ChannelDetailRoute() {
         api.getChannel(currentSlug),
         api.listEpisodes({ channel: currentSlug }),
       ])
+      if (lastSlugRef.current !== currentSlug) return
       setChannel(c)
       setEpisodes(eps)
     } catch (err) {
+      if (lastSlugRef.current !== currentSlug) return
       setError(err instanceof AppError ? err.message : '找不到這個頻道')
     }
   }, [])
-
-  // 記上次抓過的 slug：擋 StrictMode 重複呼叫，同時保留「slug 真的換了要重抓」的行為
-  // （同一個路由元件在 /channels/:slug 之間切換不會重新掛載，光靠 mounted 布林值不夠）。
-  const lastSlugRef = useRef<string | null>(null)
   useEffect(() => {
     if (!slug || lastSlugRef.current === slug) return
     lastSlugRef.current = slug

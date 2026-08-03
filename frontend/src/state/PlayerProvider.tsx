@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useLayoutEffect, useRef, useState, type ReactNode } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { storageGet, storageSet } from '../lib/storage'
 import { PlayerContext, type PlayerContextValue } from './playerContextValue'
 import { useSegmentPlayer } from './useSegmentPlayer'
@@ -73,11 +73,13 @@ export function PlayerProvider({ children, lastPlayedEpisodeId, lastPlayedPositi
     persistProgress(t, epId)
   }, [player.currentTime, player.loadState, persistProgress])
 
-  // 換分頁 / 關閉分頁前強制 flush
+  // 換分頁 / 關閉分頁前強制 flush。flush 用 playerRef 讀當下 currentTime，不把
+  // player.currentTime 放進 deps——否則每次 timeupdate（每秒多次）都會拆掉重掛
+  // 這兩個 listener。
   useEffect(() => {
     const flush = () => {
       if (currentEpisodeIdRef.current) {
-        persistProgress(player.currentTime, currentEpisodeIdRef.current, { force: true })
+        persistProgress(playerRef.current.currentTime, currentEpisodeIdRef.current, { force: true })
       }
     }
     document.addEventListener('visibilitychange', flush)
@@ -86,7 +88,7 @@ export function PlayerProvider({ children, lastPlayedEpisodeId, lastPlayedPositi
       document.removeEventListener('visibilitychange', flush)
       window.removeEventListener('pagehide', flush)
     }
-  }, [persistProgress, player.currentTime])
+  }, [persistProgress])
 
   const loadProgress = useCallback((episodeId: string) => {
     if (currentEpisodeIdRef.current !== episodeId) {
@@ -133,7 +135,7 @@ export function PlayerProvider({ children, lastPlayedEpisodeId, lastPlayedPositi
     seekTo,
   })
 
-  const value: PlayerContextValue = {
+  const value = useMemo<PlayerContextValue>(() => ({
     currentTime: player.currentTime,
     isPlaying: player.isPlaying,
     duration: player.duration,
@@ -151,7 +153,12 @@ export function PlayerProvider({ children, lastPlayedEpisodeId, lastPlayedPositi
     loadProgress,
     setCurrentEpisode,
     playClip,
-  }
+  }), [
+    player.currentTime, player.isPlaying, player.duration, player.playbackRate,
+    player.muted, player.loadState, player.setPlaybackRate, player.setMuted,
+    currentEpisode, seekTo, seekToWord, play, pause, loadEpisode,
+    loadProgress, setCurrentEpisode, playClip,
+  ])
 
   return (
     <PlayerContext.Provider value={value}>
