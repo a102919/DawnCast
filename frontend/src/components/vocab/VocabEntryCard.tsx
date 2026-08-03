@@ -12,7 +12,7 @@ import { WordCardPanel } from '../wordcard/WordCardPanel'
 export interface VocabEntryCardProps {
   readonly item: VocabItem
   readonly onSeek: (item: VocabItem) => void
-  readonly onRemove: (id: string) => void
+  readonly onRemove: (id: string) => Promise<void>
   /** 已精熟的字提供時顯示「重新複習」鈕（一鍵復活回 SRS 佇列） */
   readonly onRevive?: (id: string) => void
   /** 'page'：單字本頁面（較寬鬆版面）；'drawer'：側邊抽屜（緊湊版面） */
@@ -159,7 +159,7 @@ export function VocabEntryCard({ item, onSeek, onRemove, onRevive, variant = 'pa
                 aria-label="移除單字"
                 onClick={e => {
                   e.stopPropagation()
-                  void Promise.resolve(onRemove(item.id)).catch(() => toast.error('移除失敗，請重試'))
+                  void onRemove(item.id).catch(() => toast.error('移除失敗，請重試'))
                 }}
                 className={`inline-flex items-center justify-center px-2.5 py-1.5 min-h-[44px] min-w-[44px] text-xs text-text-tertiary hover:text-danger hover:bg-danger/10 transition-colors duration-fast focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent ${isDrawer ? 'px-2 rounded' : 'rounded-md'}`}
               >
