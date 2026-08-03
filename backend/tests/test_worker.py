@@ -17,11 +17,13 @@ queue.send 全部 monkeypatch 成假件，只驗 Python 側的分派與參數透
 
 from __future__ import annotations
 
+import asyncio
 from typing import Any
 
 import pytest
 
 from engine import worker
+from shared.db.queue import Msg
 
 
 class _FakeQueue:
@@ -433,6 +435,136 @@ async def test_order_reconcile_promote_failure_does_not_block_downstream(
     await worker._order_reconcile()
 
     assert called == ["expire", "list_pending", "list_queued"]
+
+
+# ── run_worker：generate 併發上限 ────────────────────────────────────
+
+
+async def test_run_worker_caps_generate_concurrency(monkeypatch: pytest.MonkeyPatch) -> None:
+    """7 筆 generate 訊息、上限 3：同時執行數不該超過 3，且全部最終被 delete。"""
+    max_concurrency = 3
+    total_jobs = 7
+
+    class _FakeSettings:
+        generate_max_concurrency = max_concurrency
+        job_timeout_sec = 5
+        dead_letter_after = 3
+
+    monkeypatch.setattr(worker, "get_settings", lambda: _FakeSettings())
+
+    pending = [Msg(msg_id=i, read_ct=1, body={"i": i}) for i in range(total_jobs)]
+    active = 0
+    max_seen = 0
+    deleted: list[int] = []
+
+    class _FakeQueue:
+        async def read(self, name: str, vt: int) -> Msg | None:
+            if name == worker.GENERATE_QUEUE and pending:
+                return pending.pop(0)
+            return None
+
+        async def delete(self, name: str, msg_id: int) -> None:
+            deleted.append(msg_id)
+
+        async def archive(self, name: str, msg_id: int) -> None:
+            pass
+
+    async def fake_handle_generate(
+        body: dict[str, Any], timeout_sec: int, enqueued_at: Any = None
+    ) -> None:
+        nonlocal active, max_seen
+        active += 1
+        max_seen = max(max_seen, active)
+        await asyncio.sleep(0.05)
+        active -= 1
+
+    async def fake_poll_once() -> bool:
+        return False
+
+    async def noop() -> None:
+        return None
+
+    monkeypatch.setattr(worker, "queue", _FakeQueue())
+    monkeypatch.setattr(worker, "_handle_generate", fake_handle_generate)
+    monkeypatch.setattr(worker.dict_translate, "poll_once", fake_poll_once)
+    monkeypatch.setattr(worker, "open_pool", noop)
+    monkeypatch.setattr(worker, "close_pool", noop)
+    monkeypatch.setattr(worker, "IDLE_SLEEP_SEC", 0.01)
+
+    shutdown = worker._Shutdown()
+
+    async def stopper() -> None:
+        while pending or active > 0:
+            await asyncio.sleep(0.01)
+        shutdown.requested = True
+
+    await asyncio.gather(worker.run_worker(shutdown), stopper())
+
+    assert max_seen == max_concurrency
+    assert sorted(deleted) == list(range(total_jobs))
+
+
+async def test_run_worker_drains_inflight_job_before_close_pool(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """優雅關閉：shutdown 訊號在 generate job 執行中途送達，close_pool 要等 job 做完才呼叫。"""
+
+    class _FakeSettings:
+        generate_max_concurrency = 1
+        job_timeout_sec = 5
+        dead_letter_after = 3
+
+    monkeypatch.setattr(worker, "get_settings", lambda: _FakeSettings())
+
+    pending = [Msg(msg_id=1, read_ct=1, body={})]
+    events: list[str] = []
+
+    class _FakeQueue:
+        async def read(self, name: str, vt: int) -> Msg | None:
+            if name == worker.GENERATE_QUEUE and pending:
+                return pending.pop(0)
+            return None
+
+        async def delete(self, name: str, msg_id: int) -> None:
+            events.append("deleted")
+
+        async def archive(self, name: str, msg_id: int) -> None:
+            pass
+
+    job_started = asyncio.Event()
+
+    async def fake_handle_generate(
+        body: dict[str, Any], timeout_sec: int, enqueued_at: Any = None
+    ) -> None:
+        job_started.set()
+        await asyncio.sleep(0.05)
+
+    async def fake_poll_once() -> bool:
+        return False
+
+    async def noop_open() -> None:
+        return None
+
+    async def fake_close() -> None:
+        events.append("closed")
+
+    monkeypatch.setattr(worker, "queue", _FakeQueue())
+    monkeypatch.setattr(worker, "_handle_generate", fake_handle_generate)
+    monkeypatch.setattr(worker.dict_translate, "poll_once", fake_poll_once)
+    monkeypatch.setattr(worker, "open_pool", noop_open)
+    monkeypatch.setattr(worker, "close_pool", fake_close)
+    monkeypatch.setattr(worker, "IDLE_SLEEP_SEC", 0.01)
+
+    shutdown = worker._Shutdown()
+
+    async def stopper() -> None:
+        # shutdown 在 job 還跑到一半時就送達，模擬 SIGTERM 撞上 in-flight job。
+        await job_started.wait()
+        shutdown.requested = True
+
+    await asyncio.gather(worker.run_worker(shutdown), stopper())
+
+    assert events == ["deleted", "closed"]
 
 
 async def test_expire_threshold_is_greater_than_reconcile_window() -> None:

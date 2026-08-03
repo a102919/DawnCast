@@ -10,7 +10,13 @@ pg_cron 只發控制訊息（0003），LLM/嵌入/ffmpeg 全在這裡跑——DB
   - 超時（asyncio.timeout）：同樣不 delete，交給 vt 重投。
 這套讓「成功 / 暫時失敗 / 永久失敗」收斂成 delete / 放著 / archive 三條路。
 
-優雅關閉：收到 SIGTERM/SIGINT 設 stop 旗標，跑完手上這筆再退出。
+generate 佇列有界併發（settings.generate_max_concurrency，預設 5）：不再序列
+await 單筆，改成 asyncio.create_task 丟進 inflight set，數量到上限才停止再讀新
+訊息。pgmq.read 帶 vt 鎖單筆訊息，同一 process 內連續 read 天生不會兩個 task
+拿到同一封。control 佇列仍維持每輪最優先處理，不受 generate 併發上限影響。
+
+優雅關閉：收到 SIGTERM/SIGINT 設 stop 旗標，不再讀新訊息；已在跑的 generate
+job（最多 generate_max_concurrency 筆）會等完才真正退出，不會被腰斬。
 """
 
 from __future__ import annotations
@@ -29,7 +35,7 @@ from engine.pipeline.daily_batch import enqueue_daily_batch
 from engine.pipeline.evergreen import run_evergreen
 from engine.pipeline.generate_job import run_generate_job
 from engine.pipeline.reuse import resolve_for_user
-from shared.config import get_settings
+from shared.config import Settings, get_settings
 from shared.db import queue
 from shared.db import repo as app_repo
 from shared.db.pool import close_pool, open_pool
@@ -356,31 +362,48 @@ async def _process(
 # ── 主迴圈 ─────────────────────────────────────────────────────────
 
 
+async def _run_generate(gen: Msg, settings: Settings) -> None:
+    """單筆 generate job 的併發任務體：跑完 _process 的成功/失敗收斂。
+
+    _process 內部已經吞掉 handler 失敗（compensation + archive/留待重投）；
+    這裡只會接到 queue.delete/archive 本身失敗，併發模式下不能讓它變成沒人
+    接的 Task exception（asyncio 只會在 GC 時印一行警告），要主動記 log。
+    """
+    async def gen_handler(body: dict[str, Any]) -> None:
+        await _handle_generate(body, settings.job_timeout_sec, gen.enqueued_at)
+
+    try:
+        await _process(GENERATE_QUEUE, gen, gen_handler, settings.dead_letter_after)
+    except Exception:
+        logger.exception("generate msg_id=%s 併發任務 queue 層失敗", gen.msg_id)
+
+
 async def run_worker(shutdown: _Shutdown | None = None) -> None:
-    """常駐主迴圈：control 優先於 generate，再輪 dict_translate；全空就小睡。"""
+    """常駐主迴圈：control 優先，generate 有界併發，再輪 dict_translate；全空就小睡。"""
     settings = get_settings()
     shutdown = shutdown or _Shutdown()
+    max_concurrency = settings.generate_max_concurrency
+    inflight: set[asyncio.Task[None]] = set()
     await open_pool()
-    logger.info("worker 啟動，輪詢 control / generate / dict_translate 佇列")
+    logger.info(
+        "worker 啟動，輪詢 control / generate / dict_translate 佇列（generate 併發上限=%d）",
+        max_concurrency,
+    )
 
     try:
         while not shutdown.requested:
+            inflight = {t for t in inflight if not t.done()}
+
             ctrl = await queue.read(CONTROL_QUEUE, CONTROL_VT)
             if ctrl is not None:
                 await _process(CONTROL_QUEUE, ctrl, _handle_control, settings.dead_letter_after)
                 continue
 
-            gen = await queue.read(GENERATE_QUEUE, GENERATE_VT)
-            if gen is not None:
-                # 用 default-arg 把這筆訊息的 enqueued_at 綁進 closure，避免迴圈
-                # late-binding 陷阱（下一輪 gen 換值後這個 handler 早已被呼叫完畢）。
-                async def gen_handler(
-                    body: dict[str, Any], _enqueued_at: datetime | None = gen.enqueued_at
-                ) -> None:
-                    await _handle_generate(body, settings.job_timeout_sec, _enqueued_at)
-
-                await _process(GENERATE_QUEUE, gen, gen_handler, settings.dead_letter_after)
-                continue
+            if len(inflight) < max_concurrency:
+                gen = await queue.read(GENERATE_QUEUE, GENERATE_VT)
+                if gen is not None:
+                    inflight.add(asyncio.create_task(_run_generate(gen, settings)))
+                    continue
 
             # 第三優先：dict_translate 補缺字（batch 內自帶 delete/archive 收斂，
             # 例外只記 log——訊息沒 delete 就會由 vt 到期重投，不需額外補償）。
@@ -392,6 +415,9 @@ async def run_worker(shutdown: _Shutdown | None = None) -> None:
 
             await asyncio.sleep(IDLE_SLEEP_SEC)
     finally:
+        if inflight:
+            logger.info("優雅關閉：等待 %d 筆進行中的 generate job 完成", len(inflight))
+            await asyncio.wait(inflight)
         await close_pool()
         logger.info("worker 已關閉")
 

@@ -176,6 +176,10 @@ class Settings(BaseSettings):
     # worker.py GENERATE_VT 同時調高以維持底下註解的不變式。
     job_timeout_sec: int = 15 * 60
     dead_letter_after: int = 3
+    # 同時處理的 generate job 數上限（worker.py run_worker）。本地測試過
+    # MiniMax TTS 32 併發零失敗（見 scripts/probe_minimax_concurrency.py），
+    # 5 是保守值，留安全邊際給共用額度池的其他呼叫。
+    generate_max_concurrency: int = Field(default=5, ge=1)
     pause_sec: float = 0.3
     # chapter/話題轉換邊界的停頓（ScriptLine.pause_before=True 時套用）。
     long_pause_sec: float = 0.7
