@@ -11,12 +11,12 @@ import json
 import logging
 import re
 import time
+from itertools import pairwise
 from typing import Any, Literal, TypedDict
 
-from langchain_core.messages import HumanMessage, SystemMessage
+from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 from langchain_core.runnables import RunnableConfig
 from langgraph.graph import END
-from pydantic import BaseModel, Field
 from pydantic import ValidationError as PydanticValidationError
 
 from engine.pipeline.langgraph_pod.prompt import _strip_code_fence
@@ -78,12 +78,15 @@ _CEFR_GUIDE: dict[str, str] = {
     "B1": (
         "Use common everyday vocabulary (roughly the 3,000 most common English words), mostly "
         "simple sentences with some compound sentences. Explain any technical term on the spot "
-        "in plain English. Use idioms sparingly and only with a quick natural explanation."
+        "in plain English. Use idioms sparingly and only with a quick natural explanation. "
+        "Keep each line under 12 words — every line is displayed next to its Chinese "
+        "translation, so long lines break the word-by-word alignment learners rely on."
     ),
     "B2": (
         "Use natural, native-like vocabulary; idioms and phrasal verbs are welcome (briefly "
         "gloss only the rare ones). Vary sentence structure freely, but keep a natural spoken "
-        "rhythm — this is audio, not an essay."
+        "rhythm — this is audio, not an essay. Keep each line under 12 words — every line is "
+        "displayed next to its Chinese translation; break longer thoughts across several lines."
     ),
 }
 
@@ -642,9 +645,10 @@ def _build_segment_messages(
 
 
 def _to_lc_messages(msgs: list[dict[str, str]]) -> list[Any]:
-    # [opt-p2] system 區塊掛 cache_control:ephemeral — 跨集跨呼叫命中時
-    # MiniMax / Anthropic 只算 cache_read(輸入計費 10%)；不通就 graceful 退化成
-    # 一般 text block,零影響(詳見 chat.py:_lc_to_anthropic)。
+    # [opt-p2] system 區塊掛 cache_control:ephemeral。注意 MiniMax M3 的 anthropic
+    # 相容端點吃下這個欄位但不做事（實測 cache_creation_input_tokens 恆為 0），真正
+    # 會命中的是它的被動 prefix cache——詳見 _generate_segment 的 history 說明。
+    # 標記留著是為了換供應商/升級時零改動,對 MiniMax 無副作用。
     out: list[Any] = []
     for m in msgs:
         if m["role"] == "system":
@@ -661,6 +665,8 @@ def _to_lc_messages(msgs: list[dict[str, str]]) -> list[Any]:
             )
         elif m["role"] == "user":
             out.append(HumanMessage(content=m["content"]))
+        elif m["role"] == "assistant":
+            out.append(AIMessage(content=m["content"]))
     return out
 
 
@@ -834,13 +840,21 @@ async def _generate_segment(  # type: ignore[return]
     previous_tail_lines: list[ScriptLine],
     extracted_facts: list[SourcedFact] | None = None,
     feedback: list[str] | None = None,
+    history: list[dict[str, str]] | None = None,
     collector: MetricsCollector | None = None,
-) -> tuple[list[ScriptLine], dict[str, int]]:
-    """打 LLM 寫單段對話。回傳 (script_lines, total_usage_for_this_segment)。
+) -> tuple[list[ScriptLine], dict[str, int], list[dict[str, str]]]:
+    """打 LLM 寫單段對話。回傳 (script_lines, total_usage, 接下一段用的 history)。
 
     Level 1 段落內重試：每段生成完立刻做《段內 vocab 命中 + 段內 zh 不重複》
     兩項檢查，沒過帶著具體錯誤內容重打這一段，上限 _MAX_SEGMENT_RETRIES 次。
     RateLimitError 讓 _invoke_writer 整段路由（不 raise 自身）。
+
+    history 非空 = 對話式接龍：system 沿用第一段那份，這段只接上新的 user turn。
+    MiniMax 的被動 prefix cache 是以「整個曾經送出去的 request」為條目，新請求要
+    命中必須有一次過去送過的完整請求剛好是它的前綴——所以 [sys,u1] 會命中
+    [sys,u1,a1,u2]，但同一份 sys 換掉 user 的 [sys,u2] 不會命中（實測 2026-08-04：
+    接龍第 2 通起命中 83-88%，全額計費 input -60%）。重試時取代最後一個 user turn，
+    前面所有輪次仍是合法前綴、照樣命中，壞掉的那版輸出不進 history（免得模型照抄）。
     """
     fmt = state.get("format", "dialogue")
     build_msgs = functools.partial(
@@ -866,7 +880,12 @@ async def _generate_segment(  # type: ignore[return]
         extracted_facts=extracted_facts,
         series_context=tuple(state.get("series_context") or ()),
     )
-    msgs = build_msgs(feedback=feedback)
+
+    def compose(fb: list[str] | None) -> list[dict[str, str]]:
+        built = build_msgs(feedback=fb)
+        return [*history, built[1]] if history else built
+
+    msgs = compose(feedback)
 
     total_usage = {"input_tokens": 0, "output_tokens": 0}
     last_exc: GenerationError | None = None
@@ -910,7 +929,7 @@ async def _generate_segment(  # type: ignore[return]
                 exc,
             )
             if attempt < _MAX_SEGMENT_RETRIES:
-                msgs = build_msgs(feedback=[f"上一版這段 JSON 解析失敗：{exc}"])
+                msgs = compose([f"上一版這段 JSON 解析失敗：{exc}"])
                 continue
             raise
 
@@ -919,7 +938,7 @@ async def _generate_segment(  # type: ignore[return]
         missing_vocab = missing_vocab_words(seg_text, segment_vocab)
         dup_idx = first_duplicate_adjacent_index([ln.zh for ln in lines])
         if not missing_vocab and dup_idx is None:
-            return lines, total_usage
+            return lines, total_usage, [*msgs, {"role": "assistant", "content": ai_msg.content}]
 
         feedback_msgs: list[str] = []
         if missing_vocab:
@@ -941,7 +960,7 @@ async def _generate_segment(  # type: ignore[return]
         )
         last_exc = GenerationError(f"段落 {segment_index + 1} 段內契約失敗：{feedback_msgs}")
         if attempt < _MAX_SEGMENT_RETRIES:
-            msgs = build_msgs(feedback=feedback_msgs)
+            msgs = compose(feedback_msgs)
             continue
         # mypy 不追蹤「for 跑完 last_exc 必非 None」這個 invariant——assert 在 strict
         # 模式不會 narrow，raise last_exc 在 mypy 看來仍可能為 None。
@@ -949,17 +968,17 @@ async def _generate_segment(  # type: ignore[return]
         raise last_exc
 
 
-# ── 短句正規化：把超長 zh 丟回 LLM 切分 2-3 行，不改內容 ────────
+# ── 短句正規化：純 Python 機械切分，內容一字不改 ────────────────
 #
-# LLM 寫稿對「每行 zh <= N 字」只有 soft prompt 約束；實測同 prompt 連跑兩次
-# avg 15.4 vs 23.9 字。在 _invoke_writer 每輪 _merge_outline_and_segments 之
-# 後跑這個 pass 把超長行回丟 LLM 切分，deterministic 驗證「內容字元級一致」
-# 後再回傳。LLM 只負責找切割邊界，所有保真檢查 deterministic 走 code。
+# 中英對照要對得上，每行英文就不能太長。而「切分」只是決定在哪裡斷，內容一字不改，
+# 所以不需要 LLM：英文照詞界切（切點優先落在標點結尾的詞之後），中譯照各段英文詞數
+# 的比例切、再吸附到最近的中文標點。兩邊段數一致、只做字串切片，串回去必然等於原文，
+# 保真由切法本身保證，不需要事後逐字驗證，也沒有「驗不過就整條退回」這回事。
 #
-# 不改 ScriptLine.zh schema（保留 min_length=1）：LLM/網路失敗時 atomic
-# fallback 把原超長腳本交回去，pod 流程不會因輔助切分失敗中止。max_length
-# 寫死會把 fallback 路徑封死，這裡刻意不寫。
-
+# 舊版把切分丟回 LLM 再驗證，實測每集燒 ~43k tokens／260 秒卻幾乎沒效果：規則同時要求
+# 「切 2-3 段」與「每段 ≤12 詞」，兩者相乘代表一行超過 36 詞在規則上就不可能通過驗證，
+# 而實測腳本裡 40-80 詞的行很常見；這些行每輪被送去切、每輪被退回沿用原行，跑滿三層
+# 遞迴後仍有 24-36 行超長。機械切分沒有段數上限，一次就切乾淨。
 
 _TARGET_TEXT_WORD_COUNT = 12
 # A2 等級學習者能消化的英文短句上限（12 詞）：Oxford A2 wordlist 平均句長
@@ -967,328 +986,154 @@ _TARGET_TEXT_WORD_COUNT = 12
 # words 計，LLM 看得到目標、人類驗收看得到指標，跟 LLM-side 的 token metric 解耦。
 # 用法：len(line.text.split()) > _TARGET_TEXT_WORD_COUNT 判定是否需切。
 
+# 切點優先落在這些收尾符號之後（句意較完整）；找不到就照詞數硬切。詞尾可能還帶
+# 引號／括號（例：`words,"`），所以標點後允許再跟一個收尾符號。
+_EN_BREAK_RE = re.compile(r"[.!?,;:—–][\"'’”）)\]]?$")
+_ZH_BREAK_CHARS = "，。！？、；：—…）」』"
+# 在理想切點附近找標點的容忍範圍（英文以詞計、中文以字計）。放太寬會讓段落長度失衡，
+# 放太窄則幾乎都退回硬切；3/4 是「一個短子句」的量級。
+_EN_SNAP_WINDOW = 3
+_ZH_SNAP_WINDOW = 4
 
-class _LineSplitItem(BaseModel):
-    """LLM 對單一超長行的切分結果。source_index 對齊 script.script 絕對位置，
-    不用隱式順序配對，避免多行 batch 對位錯誤。
 
-    不在 schema 層卡 lines 長度：由 _validate_split_item 在 post-parse 階段
-    拒絕單項並 fallback 該行——這樣 bad item 不會讓整個 batch 在解析時被丟掉。
+def _split_en_words(tokens: list[str], n_parts: int) -> list[list[str]]:
+    """把 tokens 切成 n_parts 段，切點優先落在標點結尾的詞之後。
+
+    每輪用「剩餘詞數 / 剩餘段數」無條件進位當本段上限 `even`：只要初始
+    n_parts >= ceil(總詞數 / 12)，這個上限就恆 <= 12，因此每一段都保證不超標
+    （往前吸附標點只會讓本段更短，而 `lo` 保證剩下的詞仍塞得進剩餘段數）。
     """
-
-    source_index: int = Field(ge=0)
-    lines: list[ScriptLine]
-
-
-class _LineSplitBatch(BaseModel):
-    """LLM 一次回傳所有超長行的切分結果。schema 寬鬆，items 至少 1 條。"""
-
-    items: list[_LineSplitItem] = Field(min_length=1)
-
-
-_LINE_SPLIT_SYSTEM = """\
-你是 podcast 英文短句切分器，唯一的任務是把每條超長英文行切成 2 或 3 行短句。
-
-# 背景
-學習者在對照中英學習新單字。每行 text 太長時，聽到一段英文沒對到中譯的單字就過去，
-回頭對單字就很困難。所以要把長英文句切短，讓每段的英文單字數 <= target_max_words，
-這樣單字 ↔ 中譯逐段對得上。
-
-# 嚴格規則（不遵守 = 整批退回）
-- 對 input.items 裡的「每一個」條目，都必須在輸出 items 中給一個對應項目。
-  不可跳過任何條目，也不可輸出 input.items 沒有的 source_index。
-- 每個條目切 2 或 3 行；不可 1 行（= 沒切）也不可 4 行以上。
-- 每個 part 的 speaker 必須與輸入條目的 speaker「完全相同」。
-- 拼接 parts.text 必須 = 輸入條目 text（單字級一致：詞序不變、不增詞、不減詞、不換詞）。
-  用空白斷詞後逐詞比對；標點可微調，但每個英文詞必須完整保留、不能改寫。
-- 拼接 parts.zh 必須 = 輸入條目 zh（中文字元級一致：順序不變、不增字、不減字、不換字）。
-  中譯跟英文切點一致切：英文第 1 段對應 zh 第 1 段，英文第 2 段對應 zh 第 2 段。
-- 不要改寫措辭、不要重新翻譯、不要調換詞序、不要同義替換。
-- 每個 part 的 text 單字數（以空白切開計）必須 <= target_max_words。
-- 中文常見「定語後置」結構（修飾語在前、被修飾的詞在後，例如「在上一代完全沒有的功能」
-  裡「功能」被前面一整串修飾語包住）：切這種句子時，直接在原字串裡找一個逗號或自然停頓
-  機械地切開，即使切出來的某一段單獨看語法不完整也沒關係。絕對不要為了讓每段語法完整，
-  就把被修飾的詞（例句中的「功能」）搬到前一段或同時留在兩段——原字串裡每個字只能出現
-  一次，出現的位置也不能變。
-
-# 反例（錯誤示範，不要這樣做）
-輸入 zh："這家公司昨天發表了一款新產品，它有好幾項在上一代完全沒有的功能。"
-錯誤輸出（把「功能」搬到前面湊語法完整，等於重寫）：
-  第 1 段："它有好幾項沒有的功能"　第 2 段："在上一代完全沒有"　← 錯：字被搬動又重複
-正確輸出（照原字串順序機械切開，就算第 2 段單獨看不像完整句子）：
-  第 1 段："這家公司昨天發表了一款新產品，"
-  第 2 段："它有好幾項在上一代完全沒有的功能。"
-
-# 範例（target_max_words = 12）
-輸入：{"source_index": 0, "speaker": "Sarah",
-       "text": ("Quantum physics describes nature at the smallest scales "
-                "and powers much of modern technology."),
-       "zh": "量子物理描述最小尺度的自然，也支撐了許多現代科技。"}
-正確輸出之一（切成 2 行，每段 ≤12 詞）：
-{"source_index": 0, "lines": [
-  {"speaker": "Sarah",
-   "text": "Quantum physics describes nature at the smallest scales.",
-   "zh": "量子物理描述最小尺度的自然。"},
-  {"speaker": "Sarah",
-   "text": "It also powers much of modern technology.",
-   "zh": "它也支撐了許多現代科技。"}
-]}
-
-# JSON schema
-{"items": [{"source_index": int, "lines": [{"speaker": str, "text": str, "zh": str}]}]}
-"""
+    parts: list[list[str]] = []
+    rest = tokens
+    for remaining in range(n_parts, 1, -1):
+        even = -(-len(rest) // remaining)
+        # 下界：切太少會讓後面的段吃不下（每段最多 even 詞）
+        lo = max(1, len(rest) - (remaining - 1) * even)
+        cut = even
+        for offset in range(1, _EN_SNAP_WINDOW + 1):
+            cand = even - offset
+            if cand < lo:
+                break
+            if _EN_BREAK_RE.search(rest[cand - 1]):
+                cut = cand
+                break
+        parts.append(rest[:cut])
+        rest = rest[cut:]
+    parts.append(rest)
+    return parts
 
 
-# ── 標點容忍比對 ──
-# LLM 切分常常會調整標點位置（例：「地板，莎拉」拆成「地板莎拉」連寫），這個動作不算
-# 改內容，應該放行；嚴格字元級比對會誤殺。規則：去掉所有標點與空白後，剩餘 char 序列
-# 必須逐字相等。Latin 字 / 數字 / CJK ideograph 保留；標點、空格、換行丟掉。
-_PUNCT_PATTERN = re.compile(
-    r"[\s，。！？、；：「」（）()\"'`…—–_\-\\/|,.;:!?]+"
-)
+def _splits_latin_word(zh: str, pos: int) -> bool:
+    """pos 這個切點是否卡在一個拉丁單字/數字中間（例：Hugging Face 被切成 H|ugging）。"""
+    if not 0 < pos < len(zh):
+        return False
+    before, after = zh[pos - 1], zh[pos]
+    return before.isascii() and before.isalnum() and after.isascii() and after.isalnum()
 
 
-def _content_chars(text: str) -> str:
-    return _PUNCT_PATTERN.sub("", text)
+def _avoid_latin_word_cut(zh: str, pos: int, lo: int, hi: int) -> int:
+    """把卡在拉丁單字中間的切點挪到最近的邊界；範圍內都挪不開就原樣回傳。
 
-
-def _validate_split_item(
-    item: _LineSplitItem,
-    original: ScriptLine,
-    *,
-    target_max_words: int,
-) -> list[ScriptLine]:
-    """驗證單一 split item，回傳 metadata 重建後的 parts list。失敗 raise ValueError。"""
-    if not (2 <= len(item.lines) <= 3):
-        raise ValueError(f"切分行數 {len(item.lines)} 不在 2-3 範圍")
-
-    rebuilt: list[ScriptLine] = []
-    for i, part in enumerate(item.lines):
-        if part.speaker != original.speaker:
-            raise ValueError(
-                f"第 {i} 段 speaker={part.speaker!r} 與原行 {original.speaker!r} 不符"
-            )
-        rebuilt.append(
-            part.model_copy(
-                update={
-                    # metadata 強制覆寫，避免 LLM 亂設；語意只有第一段承接原本的
-                    # pause_before/chapter 邊界資訊，其餘段統一 False。
-                    "pause_before": original.pause_before if i == 0 else False,
-                    "emotion": original.emotion,
-                }
-            )
-        )
-
-    joined_zh_chars = _content_chars("".join(p.zh for p in rebuilt))
-    original_zh_chars = _content_chars(original.zh)
-    if joined_zh_chars != original_zh_chars:
-        raise ValueError(
-            f"split 後 zh 內容與原行不一致：{joined_zh_chars!r} vs {original_zh_chars!r}"
-        )
-    joined_text_chars = _content_chars("".join(p.text for p in rebuilt))
-    original_text_chars = _content_chars(original.text)
-    if joined_text_chars != original_text_chars:
-        raise ValueError("split 後 text 內容與原行不一致")
-
-    for i, p in enumerate(rebuilt):
-        if len(p.text.split()) > target_max_words:
-            raise ValueError(
-                f"第 {i} 段 text 單字數 {len(p.text.split())} 超過 {target_max_words}"
-            )
-
-    return rebuilt
-
-
-def _validate_split_batch(
-    originals: list[tuple[int, ScriptLine]],
-    batch: _LineSplitBatch,
-    *,
-    target_max_words: int,
-) -> dict[int, list[ScriptLine]]:
-    """保真檢查 batch.items，per-item 失敗僅丟該行（不改別行）。
-
-    Batch-level（數量、重複 index）失敗 raise → 外層 atomic fallback 回原 ScriptJSON。
-    Item-level（speaker 不符、拼接不一致、長度超限）失敗 log + skip → 該行沿用原行，
-    其他有效 item 仍套用。
-
-    回傳 {source_index: [rebuilt_parts_with_overridden_metadata]}，
-    給 _normalize_line_lengths 重新組裝用。
+    中譯常內嵌英文專有名詞（Hugging Face、GPT-5.5），按字元比例切很容易切在單字中間，
+    顯示出來會很難讀。這是純位置調整，不影響「切片串回去等於原字串」的保證。
     """
-    if not batch.items:
-        raise ValueError("split batch 為空")
+    if not _splits_latin_word(zh, pos):
+        return pos
+    candidates: list[int] = [*range(pos + 1, hi + 1), *range(pos - 1, lo - 1, -1)]
+    for cand in candidates:
+        if not _splits_latin_word(zh, cand):
+            return cand
+    return pos
 
-    seen_index: set[int] = set()
-    for item in batch.items:
-        if item.source_index in seen_index:
-            raise ValueError(f"split batch 重複 source_index={item.source_index}")
-        seen_index.add(item.source_index)
 
-    by_index = {item.source_index: item for item in batch.items}
+def _split_zh_text(zh: str, weights: list[int]) -> list[str] | None:
+    """照 weights（各段英文詞數）比例把 zh 切成同段數，切點吸附到最近的中文標點。
 
-    replacements: dict[int, list[ScriptLine]] = {}
-    for source_index, original in originals:
-        split_item: _LineSplitItem | None = by_index.get(source_index)
-        if split_item is None:
-            # 該行沒給 split → 沿用原行（不算失敗）
-            continue
-        try:
-            replacements[source_index] = _validate_split_item(
-                split_item, original, target_max_words=target_max_words
+    純切片，串回去逐字等於原字串。zh 短到切不出「每段至少 1 字」時回 None，
+    由呼叫端決定不切這行——ScriptLine.zh 有 min_length=1，寧可留長行也不能生空 zh。
+    """
+    n = len(weights)
+    if len(zh) < n:
+        return None
+    total_w = sum(weights)
+    cuts: list[int] = []
+    used = 0
+    for i in range(n - 1):
+        ideal = round(len(zh) * sum(weights[: i + 1]) / total_w)
+        lo, hi = used + 1, len(zh) - (n - 1 - i)
+        pos = min(max(ideal, lo), hi)
+        for offset in range(_ZH_SNAP_WINDOW + 1):
+            snapped = next(
+                (
+                    c
+                    for c in (pos + offset, pos - offset)
+                    if lo <= c <= hi and zh[c - 1] in _ZH_BREAK_CHARS
+                ),
+                None,
             )
-        except ValueError as exc:
-            logger.warning(
-                "source_index=%d split 驗證失敗，沿用原行：%s",
-                source_index,
-                exc,
-            )
-            continue
-
-    return replacements
-
-
-_MAX_NORMALIZE_DEPTH = 3
+            if snapped is not None:
+                pos = snapped
+                break
+        pos = _avoid_latin_word_cut(zh, pos, lo, hi)
+        cuts.append(pos)
+        used = pos
+    bounds = [0, *cuts, len(zh)]
+    return [zh[a:b] for a, b in pairwise(bounds)]
 
 
-async def _normalize_line_lengths(
+def _split_line(line: ScriptLine, target_max_words: int) -> list[ScriptLine]:
+    """單行切分；不需要切（或 zh 短到切不動）時回傳只含原行的 list。"""
+    tokens = line.text.split()
+    if len(tokens) <= target_max_words:
+        return [line]
+
+    n_parts = min(-(-len(tokens) // target_max_words), len(tokens))
+    en_parts = _split_en_words(tokens, n_parts)
+    zh_parts = _split_zh_text(line.zh, [len(p) for p in en_parts])
+    if zh_parts is None:
+        return [line]
+
+    return [
+        line.model_copy(
+            update={
+                "text": " ".join(en),
+                "zh": zh,
+                # 只有第一段承接原行的 pause_before（章節邊界資訊），
+                # 其餘段是同一句話的延續，不該再插停頓。
+                "pause_before": line.pause_before if i == 0 else False,
+            }
+        )
+        for i, (en, zh) in enumerate(zip(en_parts, zh_parts, strict=True))
+    ]
+
+
+def _normalize_line_lengths(
     script: ScriptJSON,
-    chat: Any,
     *,
     target_max_words: int = _TARGET_TEXT_WORD_COUNT,
-    usage_node: str = "writer",
-    collector: MetricsCollector | None = None,
-    _depth: int = 0,
 ) -> ScriptJSON:
-    """把 script.script 裡 text 單字數 > target_max_words 的行回丟 LLM 切分。
+    """把 script.script 裡 text 超過 target_max_words 的行切短。
 
-    學英文 podcast 每段太長就對不到單字 ↔ 中譯，所以切英文；中譯跟著英文切點切。
-
-    - 全短 → 零成本 no-op（return 原 script）
-    - 有長行 → 一次 batch call；不逐行 API
-    - LLM 失敗 / 解析失敗 / 任一項保真檢查失敗 → 該行沿用原行（per-item fallback），
-      其他有效 split 照套用
-    - 仍有部分行超長 → 遞迴叫 _normalize_line_lengths（最多 _MAX_NORMALIZE_DEPTH 層）
-    - 重組 ScriptJSON 失敗 → atomic fallback 回原 script（pod 不會因輔助切分失敗中止）
+    - 全部都短 → 原物件直接回傳（零成本 no-op）
+    - 切完重組 ScriptJSON 驗證失敗（例如切出相鄰重複 zh）→ atomic fallback 回原
+      script：行長是輔助品質目標，不該讓整輪寫稿被判失敗重跑。
     """
-    # 測試模式短路：FakeChatModel 預設自動 no-op，避免污染測試 LLM call 計數
-    # （測試 fixture text 行被灌到 100+ 詞過 word_floor，若每輪都真打 normalize 會
-    # 多耗 LLM call slot）。想真的驗 normalize 走完整 split 路徑：
-    # chat = FakeChatModel(skip_normalize_noop=True, ...)。
-    if getattr(chat, "is_fake", False) and not getattr(chat, "skip_normalize_noop", False):
-        long_items_count = sum(
-            1 for ln in script.script if len(ln.text.split()) > target_max_words
-        )
-        if long_items_count:
-            logger.info(
-                "_normalize_line_lengths fake-mode noop（%d 行超長）— "
-                "未呼叫 LLM；想真跑可設 chat.skip_normalize_noop=True",
-                long_items_count,
-            )
+    lines: list[ScriptLine] = []
+    changed = False
+    for line in script.script:
+        parts = _split_line(line, target_max_words)
+        changed = changed or len(parts) > 1
+        lines.extend(parts)
+    if not changed:
         return script
 
-    long_items = [
-        (idx, line)
-        for idx, line in enumerate(script.script)
-        if len(line.text.split()) > target_max_words
-    ]
-    if not long_items:
-        return script
-    if _depth >= _MAX_NORMALIZE_DEPTH:
-        return script  # 避免無限遞迴：超過深度直接回原 script
-
-    prompt_payload = {
-        "target_max_words": target_max_words,
-        "items": [
-            {
-                "source_index": source_index,
-                "speaker": line.speaker,
-                "text": line.text,
-                "zh": line.zh,
-                "pause_before": line.pause_before,
-                "emotion": line.emotion,
-            }
-            for source_index, line in long_items
-        ],
-    }
-    msgs = [
-        {"role": "system", "content": _LINE_SPLIT_SYSTEM},
-        {"role": "user", "content": json.dumps(prompt_payload, ensure_ascii=False)},
-    ]
-
-    call_start = time.monotonic()
+    payload = script.model_dump()
+    payload["script"] = [line.model_dump() for line in lines]
     try:
-        ai_msg = await chat.ainvoke(_to_lc_messages(msgs))
-    except Exception as exc:
-        # chat transport / RateLimitError / 其他 — fallback 保護 pod 流程
-        logger.warning(
-            "_normalize_line_lengths 第 %d 層 LLM 呼叫失敗，atomic fallback big_topic=%s: %s",
-            _depth,
-            getattr(script, "topic", "?"),
-            exc,
-        )
-        return script
-
-    # 遞迴層數當 attempt 記，讓 cost 報表看得出第幾層切分燒掉多少 token
-    _record_llm_usage(
-        collector,
-        ai_msg,
-        node=usage_node,
-        call="line_split",
-        call_start=call_start,
-        attempt=_depth + 1,
-    )
-
-    try:
-        cleaned = _strip_code_fence(ai_msg.content)
-        batch = _LineSplitBatch.model_validate_json(cleaned)
-        replacements = _validate_split_batch(
-            long_items, batch, target_max_words=target_max_words
-        )
-    except Exception as exc:
-        # 解析 / 保真檢查任何失敗都 atomic fallback，切分是輔助功能不該中止 pod
-        logger.warning(
-            "_normalize_line_lengths 第 %d 層解析/保真檢查失敗，atomic fallback big_topic=%s: %s",
-            _depth,
-            getattr(script, "topic", "?"),
-            exc,
-        )
-        return script
-
-    candidate_lines: list[ScriptLine] = []
-    for idx, original in enumerate(script.script):
-        replacement = replacements.get(idx)
-        if replacement is None:
-            candidate_lines.append(original)
-        else:
-            candidate_lines.extend(replacement)
-
-    candidate_payload = script.model_dump()
-    candidate_payload["script"] = [line.model_dump() for line in candidate_lines]
-    try:
-        new_script = ScriptJSON.model_validate(candidate_payload)
+        return ScriptJSON.model_validate(payload)
     except PydanticValidationError as exc:
-        logger.warning(
-            "_normalize_line_lengths 重新組裝後 ScriptJSON 驗證失敗，atomic fallback: %s",
-            exc,
-        )
+        logger.warning("行長切分後 ScriptJSON 驗證失敗，沿用未切分腳本：%s", exc)
         return script
-
-    # 遞迴：本輪 split 後仍有超長行 → 再丟 LLM 切一次
-    still_long = [ln for ln in new_script.script if len(ln.text.split()) > target_max_words]
-    if still_long and _depth + 1 < _MAX_NORMALIZE_DEPTH:
-        logger.info(
-            "_normalize_line_lengths 第 %d 層仍有 %d 行超長，遞迴繼續切",
-            _depth,
-            len(still_long),
-        )
-        return await _normalize_line_lengths(
-            new_script,
-            chat,
-            target_max_words=target_max_words,
-            usage_node=usage_node,
-            collector=collector,
-            _depth=_depth + 1,
-        )
-    return new_script
 
 
 async def _invoke_writer(
@@ -1321,6 +1166,11 @@ async def _invoke_writer(
     cefr = state.get("cefr") or settings.cefr_level
     length_tier = state.get("length_tier") or "medium"
     fmt = state.get("format", "dialogue")
+    # A/B 開關：state 沒帶就走 settings 預設（見 shared/config.py:writer_conversation_mode）
+    conversation_mode = state.get("writer_conversation", settings.writer_conversation_mode)
+    if collector is not None:
+        # 寫進 metrics 才能事後純用 DB 分組比較，不必回頭對照當初 enqueue 了什麼
+        collector.set_research_summary(writer_conversation=conversation_mode)
     word_floor = _word_floor(cefr, length_tier)
 
     best_result: ScriptJSON | None = None
@@ -1408,6 +1258,9 @@ async def _invoke_writer(
             targets = list(zip(t_list, [b for _, b in targets], strict=True))
 
         segment_scripts: list[list[ScriptLine]] = []
+        # 對話式接龍的累積訊息（None = 每段各自獨立呼叫,現行行為）。每輪重打都從頭
+        # 累積：整輪重打時第一通與上一輪逐字相同,一樣吃得到快取。
+        history: list[dict[str, str]] | None = None
         # [opt-p3] partial_rewrite: 只重生 affected_segments 指定的段,其他段沿用上一輪
         prev_segs_reuse = state.get("previous_segment_scripts") or []
         target_segs = state.get("affected_segments") or []
@@ -1433,7 +1286,7 @@ async def _invoke_writer(
                     segment_scripts.append(prev_segs_reuse[seg_idx])
                     continue
                 prev_tail = segment_scripts[-1][-3:] if segment_scripts else []
-                lines, seg_usage = await _generate_segment(
+                lines, seg_usage, next_history = await _generate_segment(
                     chat,
                     state,
                     usage_node=usage_node,
@@ -1449,11 +1302,17 @@ async def _invoke_writer(
                     previous_tail_lines=prev_tail,
                     extracted_facts=outline.extracted_facts,
                     feedback=base_feedback or None,
+                    history=history,
                     collector=collector,
                 )
                 total_usage["input_tokens"] += seg_usage["input_tokens"]
                 total_usage["output_tokens"] += seg_usage["output_tokens"]
                 segment_scripts.append(lines)
+                # partial_rewrite 時不接龍：被跳過的段沒有 assistant turn,鏈是斷的,
+                # 硬接只會讓前綴對不上白白多送 token。那條路本來就是重打單段,
+                # 而重打的請求與上一輪逐字相同、自己就會命中快取。
+                if conversation_mode and not is_partial:
+                    history = next_history
         except RateLimitError:
             # outline 已生成,後續 retry 可直接跳過重打
             return {
@@ -1477,13 +1336,10 @@ async def _invoke_writer(
         # Level 2：合併後跑 ScriptJSON 三個 validator + 字數 floor
         try:
             full_script = _merge_outline_and_segments(outline, segment_scripts, fmt)
-            # 短句正規化：LLM 寫稿常超過 10 字，丟回 LLM 切 2-3 行；
-            # 失敗一律 atomic fallback 回傳 full_script，不影響主流程。
+            # 短句正規化：純 Python 機械切分，不打 LLM、不影響主流程。
             # 因為覆蓋了所有初次生成與 rewrite（含 partial_rewrite）路徑，
             # 後續 judge 永遠看得到已切分版本，不需改 router / state。
-            full_script = await _normalize_line_lengths(
-                full_script, chat, usage_node=usage_node, collector=collector
-            )
+            full_script = _normalize_line_lengths(full_script)
         except (PydanticValidationError, ValueError) as exc:
             last_exc = GenerationError(f"合併後 ScriptJSON 違反契約：{exc}")
             logger.warning(

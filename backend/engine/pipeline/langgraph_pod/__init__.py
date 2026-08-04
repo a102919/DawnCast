@@ -208,6 +208,10 @@ async def run_pod(
         "cefr": body.get("cefr") or cfg.cefr_level,
         "avoid_facts": list(body.get("avoid_facts") or []),
         "order_id": body.get("order_id"),
+        # A/B：message 沒帶就吃 settings 預設，prod 既有路徑行為不變
+        "writer_conversation": bool(
+            body.get("writer_conversation", cfg.writer_conversation_mode)
+        ),
         "channel_id": channel_id,
         "channel_topic_id": channel_topic_id,
         "series_context": list(series_context or []),

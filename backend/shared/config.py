@@ -119,6 +119,11 @@ class Settings(BaseSettings):
     minimax_anthropic_base_url: str = "https://api.minimax.io/anthropic"
     minimax_auth_token: str = ""
     minimax_model: str = "MiniMax-M3"
+    # 寫稿分段改用「對話式接龍」（system 只送一次,後續段落接在同一串對話後面）。
+    # MiniMax 的被動 prefix cache 只認「過去送過的完整請求是這次請求的前綴」,接龍
+    # 才吃得到（實測全額計費 input -60%,見 scripts/probe_writer_cache.py）。預設關閉,
+    # A/B 期間用 generate message 的 writer_conversation 欄位逐集指定,勝出後再翻預設。
+    writer_conversation_mode: bool = False
 
     # ── MiniMax speech TTS（同一顆訂閱 token；已實測 t2a_v2 可用）──────
     # token 未設或呼叫失敗時整份腳本 fallback 到 edge-tts（見 media/tts.py）。

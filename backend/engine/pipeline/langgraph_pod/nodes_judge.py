@@ -471,6 +471,10 @@ def judge_decision(
             judge_verdict="pass" if verdict == "upsert" else "rewrite",
             rewrite_iterations=iterations,
             engine_used=state.get("engine_used"),
+            # 分數與未驗證宣稱一起落庫：重寫要花掉整輪寫稿的成本，事後得看得出
+            # 是哪一軸沒過門檻（或根本是 claim 沒 grounded）才判得出值不值得重寫。
+            judge_scores=scores,
+            has_unverified_claim=has_unverified_claim,
         )
     return verdict
 
