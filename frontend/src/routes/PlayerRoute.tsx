@@ -13,6 +13,7 @@ import { VocabDrawer } from '../components/vocab/VocabDrawer'
 import type { Cue } from '../types/episode'
 import { usePlayer, useDailyOrder, useSettings, useActivity, useVocab } from '../state'
 import { findActiveCueIndex, buildConversationPrompt, countActionable } from '../lib'
+import { storageGet, storageSet } from '../lib/storage'
 import { useEpisode } from './useEpisode'
 import { useEpisodeProgress } from './useEpisodeProgress'
 import { useCueLoop } from './useCueLoop'
@@ -24,6 +25,11 @@ interface VocabSeekState {
   readonly seekTo: number
   readonly seekLineNo?: number
 }
+
+/** 歌詞中／英顯示偏好。純前端偏好，不進後端 Settings（那是跨裝置同步的契約型別，
+ *  加欄位要動 DB migration + OpenAPI 重新產生）；沿用 dawncast:theme 的 localStorage 前例。 */
+const LS_KEY_LYRICS_DISPLAY = 'dawncast:lyrics:display'
+type LyricsDisplay = { readonly zh: boolean; readonly en: boolean }
 
 function parseVocabSeekState(state: unknown): VocabSeekState | null {
   if (typeof state !== 'object' || state === null) return null
@@ -42,6 +48,11 @@ export function PlayerRoute() {
   // 建新物件，沒 memo 會讓依賴它的 effect 每次 render 都判斷成「變了」而重複 seekTo。
   const pendingSeek = useMemo(() => parseVocabSeekState(location.state), [location.state])
   const [isVocabDrawerOpen, setIsVocabDrawerOpen] = useState(false)
+  // 展開合併預設值：舊的／半殘的 blob 也能補回缺的欄位（同 mockApi 讀 settings 的寫法）。
+  const [display, setDisplay] = useState<LyricsDisplay>(
+    () => ({ zh: true, en: true, ...storageGet<Partial<LyricsDisplay>>(LS_KEY_LYRICS_DISPLAY) }),
+  )
+  useEffect(() => { storageSet(LS_KEY_LYRICS_DISPLAY, display) }, [display])
   const hasNotifiedDueRef = useRef(false)
   const dueNotifiedEpisodeIdRef = useRef<string | null>(null)
 
@@ -146,6 +157,9 @@ export function PlayerRoute() {
     })
   }, [currentTime, duration, episode, vocabItems, navigate])
 
+  const toggleZh = () => setDisplay(d => ({ ...d, zh: !d.zh }))
+  const toggleEn = () => setDisplay(d => ({ ...d, en: !d.en }))
+
   const handleCopyPrompt = async () => {
     if (!episode) return
     const prompt = buildConversationPrompt({
@@ -183,7 +197,8 @@ export function PlayerRoute() {
   const playerDuration = duration > 0 ? duration : cueDuration
 
   return (
-    <div className="bg-bg-canvas h-[calc(100dvh-56px-env(safe-area-inset-top,0px))] overflow-hidden text-text-primary flex flex-col">
+    // 57px = TopBar 的 h-14（56px）＋ border-b 的 1px。少算那 1px 頁面就會多 1px 捲動。
+    <div className="bg-bg-canvas h-[calc(100dvh-57px-env(safe-area-inset-top,0px))] overflow-hidden text-text-primary flex flex-col">
       {/* 大歌詞：佔滿中間剩餘空間，封面與標題作為第一個 scroll item 一起滾動 */}
       <main className="flex-1 min-h-0 overflow-hidden relative">
         <LyricsView
@@ -195,6 +210,10 @@ export function PlayerRoute() {
           onCueClick={handleCueClick}
           onWordSeek={handleWordSeek}
           references={episode.references}
+          showEn={display.en}
+          showZh={display.zh}
+          isCueLooping={cueLoop.isCueLooping}
+          onCueLoopToggle={cueLoop.toggle}
         />
       </main>
 
@@ -207,6 +226,25 @@ export function PlayerRoute() {
           onCueLoopToggle={cueLoop.toggle}
         />
         <div className="flex items-center justify-center gap-4 mt-3">
+          {/* 中／EN 顯示開關（桌面）：行動版對應 PlayerBottomBar 左側同名兩顆 */}
+          <div className="flex items-center gap-1">
+            <button
+              onClick={toggleZh}
+              aria-pressed={display.zh}
+              aria-label={display.zh ? '隱藏中文翻譯' : '顯示中文翻譯'}
+              className={`px-2 py-1 rounded text-xs font-medium transition-colors hover:bg-bg-secondary ${display.zh ? 'text-text-primary' : 'text-text-tertiary line-through'}`}
+            >
+              中
+            </button>
+            <button
+              onClick={toggleEn}
+              aria-pressed={display.en}
+              aria-label={display.en ? '隱藏英文字幕' : '顯示英文字幕'}
+              className={`px-2 py-1 rounded text-xs font-medium transition-colors hover:bg-bg-secondary ${display.en ? 'text-text-primary' : 'text-text-tertiary line-through'}`}
+            >
+              EN
+            </button>
+          </div>
           <button
             onClick={() => void handleCopyPrompt()}
             className="flex items-center gap-1.5 text-xs text-text-secondary hover:text-text-primary transition-colors"
@@ -248,6 +286,10 @@ export function PlayerRoute() {
         onNextCue={cueLoop.next}
         onCopyPrompt={() => void handleCopyPrompt()}
         onVocabOpen={() => setIsVocabDrawerOpen(true)}
+        showZh={display.zh}
+        showEn={display.en}
+        onToggleZh={toggleZh}
+        onToggleEn={toggleEn}
       />
 
       {/* 詞卡面板 */}

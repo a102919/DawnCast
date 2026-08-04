@@ -78,8 +78,11 @@ function AuthenticatedContent() {
   return (
     <div className={isImmersive ? 'bg-bg-primary text-text-primary font-sans' : 'min-h-screen bg-bg-primary text-text-primary font-sans'}>
       <TopBar />
+      {/* /player 的 BottomNav 回 null（見 BottomNav.tsx），底部留白會變成整整 56px
+          的死空間，把 <main> 撐得比視窗高 → 頁面本身多出一段捲動，半透明 TopBar
+          底下會透出捲過去的封面。播放頁自己用 fixed 的 PlayerBottomBar，不需要留白。 */}
       <main className={
-        isImmersive
+        isImmersive || isPlayer
           ? ''
           : hasMiniPlayer
             ? 'pb-[calc(7.125rem+env(safe-area-inset-bottom))] lg:pb-0'

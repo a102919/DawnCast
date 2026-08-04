@@ -1,4 +1,4 @@
-import { RotateCcw, Play, Pause, ChevronRight, Repeat1, BookMarked, MessageCircle } from 'lucide-react'
+import { RotateCcw, Play, Pause, ChevronRight, Repeat1, MessageCircle, BookMarked } from 'lucide-react'
 import { IconButton, ProgressSlider } from '../primitives'
 import { usePlayer } from '../../state'
 import { formatTime } from '../../lib'
@@ -15,7 +15,15 @@ interface PlayerBottomBarProps {
   readonly onNextCue: () => void
   readonly onCopyPrompt: () => void
   readonly onVocabOpen: () => void
+  /** 重複聽的練習開關：關掉的那一層在歌詞裡變模糊佔位（見 LyricsView）。 */
+  readonly showZh: boolean
+  readonly showEn: boolean
+  readonly onToggleZh: () => void
+  readonly onToggleEn: () => void
 }
+
+/** 文字型工具鈕（速度、中/EN 開關共用）：44px 觸控目標，樣式對齊 IconButton。 */
+const TEXT_BTN = 'inline-flex items-center justify-center min-h-[44px] px-1 text-xs font-medium rounded-md transition-colors duration-fast ease-apple focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-1 hover:bg-bg-secondary'
 
 export function PlayerBottomBar({
   duration,
@@ -27,6 +35,10 @@ export function PlayerBottomBar({
   onNextCue,
   onCopyPrompt,
   onVocabOpen,
+  showZh,
+  showEn,
+  onToggleZh,
+  onToggleEn,
 }: PlayerBottomBarProps) {
   const { currentTime, isPlaying, seekTo, play, pause, playbackRate, setPlaybackRate } = usePlayer()
 
@@ -60,16 +72,34 @@ export function PlayerBottomBar({
           <button
             onClick={cycleRate}
             aria-label={`播放速度 ${playbackRate} 倍，點擊切換`}
-            className="inline-flex items-center justify-center min-w-[44px] min-h-[44px] px-1 text-xs font-mono font-medium text-text-secondary hover:text-text-primary hover:bg-bg-secondary rounded-md transition-colors duration-fast ease-apple focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-1"
+            className={`${TEXT_BTN} min-w-[44px] font-mono text-text-secondary hover:text-text-primary`}
           >
             {playbackRate}x
           </button>
           <div className="w-px h-6 bg-border mx-1 shrink-0" />
-          <IconButton label="我的單字本" onClick={onVocabOpen}>
-            <BookMarked size={20} />
-          </IconButton>
+          {/* 中／EN 顯示開關：四種組合＝四種練法（雙語／只英文／只中文／全隱藏）。
+              關閉狀態用刪除線＋淡色，一眼看得出「這層現在是藏起來的」。 */}
+          <button
+            onClick={onToggleZh}
+            aria-pressed={showZh}
+            aria-label={showZh ? '隱藏中文翻譯' : '顯示中文翻譯'}
+            className={`${TEXT_BTN} min-w-[40px] ${showZh ? 'text-text-primary' : 'text-text-tertiary line-through'}`}
+          >
+            中
+          </button>
+          <button
+            onClick={onToggleEn}
+            aria-pressed={showEn}
+            aria-label={showEn ? '隱藏英文字幕' : '顯示英文字幕'}
+            className={`${TEXT_BTN} min-w-[40px] ${showEn ? 'text-text-primary' : 'text-text-tertiary line-through'}`}
+          >
+            EN
+          </button>
           <IconButton label="複製英文對話練習 Prompt" onClick={onCopyPrompt}>
             <MessageCircle size={20} />
+          </IconButton>
+          <IconButton label="我的單字本" onClick={onVocabOpen}>
+            <BookMarked size={20} />
           </IconButton>
         </div>
 

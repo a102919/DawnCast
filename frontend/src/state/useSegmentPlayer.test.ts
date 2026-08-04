@@ -6,7 +6,7 @@
 ;(globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
 
 import { describe, expect, it, vi } from 'vitest'
-import { act, createElement } from 'react'
+import { act, createElement, StrictMode } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { useSegmentPlayer } from './useSegmentPlayer'
 import type { Episode } from '../types/episode'
@@ -276,6 +276,25 @@ describe('useSegmentPlayer', () => {
     await act(async () => { els[0]!.dispatch('ended') })
     expect(h.getPlayer().isPlaying).toBe(false)
     h.unmount()
+  })
+
+  // dev 就是跑在 <StrictMode> 底下（main.tsx），mount→模擬 unmount→remount 會把
+  // 只在 cleanup 拆東西、卻沒有在 effect body 重新裝回去的引擎打成啞巴：timeupdate
+  // 收不到 → currentTime 不動 → 歌詞不跟著音檔跑。React 保留的是第一次 initializer
+  // 產生的那顆 engine（els[0]/els[1]），所以事件要推在 els[0]。
+  it('StrictMode 双跑 mount/unmount 後仍收得到 timeupdate（歌詞跟播的生命線）', async () => {
+    setupGlobalMock()
+    let lastPlayer: ReturnType<typeof useSegmentPlayer> | null = null
+    function Probe() {
+      lastPlayer = useSegmentPlayer()
+      return null
+    }
+    const root = createRoot(document.createElement('div'))
+    act(() => { root.render(createElement(StrictMode, null, createElement(Probe))) })
+    await act(async () => { lastPlayer!.loadEpisode(makeEpisode()) })
+    await act(async () => { advanceTime(els[0]!, 1.5) })
+    expect(lastPlayer!.currentTime).toBe(1.5)
+    act(() => root.unmount())
   })
 
   it('play：沒有載入集數時呼叫是安全 no-op', async () => {

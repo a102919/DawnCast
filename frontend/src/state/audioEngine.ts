@@ -45,10 +45,6 @@ export interface AudioEngine {
   /** 試聽：previewEl seek 到 startSec 開始播，`playing` 事件（真的出聲，非 loading
    *  等待）後起算 durationSec 限長自動停止。不動主播放的 src / currentTime / 狀態。 */
   playClip(startSec: number, durationSec: number): void
-  /** 拆掉 mainEl/previewEl 的事件監聽、停止播放、把 DOM host 移除。目前唯一呼叫方
-   *  （useSegmentPlayer）跟 App 同壽命，正常執行不會觸發；補上是為了測試環境
-   *  每個 test case 都會建一顆新 engine，沒有 dispose 舊 host/listener 會逐 test 累積。 */
-  dispose(): void
 }
 
 /** preservesPitch 未進所有 TS lib / 瀏覽器版本，連同 webkit 前綴一起設，
@@ -61,17 +57,21 @@ function setPreservesPitch(el: HTMLAudioElement): void {
 
 /** 隱形容器：給 audio 元素一個 DOM 落腳處（iOS Safari 必要）；不影響 layout、不
  *  阻擋點擊、不被輔助技術讀到。測試環境（happy-dom/jsdom）沒 document.body 時
- *  降級成 detached（host 仍會建立，但 fake Audio 不是真 Element，不會被 append）。 */
+ *  降級成 detached（host 仍會建立，但 fake Audio 不是真 Element，不會被 append）。
+ *
+ *  有既有 host 就沿用，不能把它移除重建：dev 的 <StrictMode> 會把 useSegmentPlayer
+ *  的 useState initializer 跑兩次，React 只留第一顆 engine——第二顆若把第一顆的 host
+ *  拔掉，真正在用的 <audio> 就變 detached，iOS Safari 會靜默 reject 它的 play()。 */
 function attachToDOM(els: readonly HTMLAudioElement[]): void {
   const body = typeof document !== 'undefined' ? document.body : null
   if (!body) return
-  // 防止 HMR / Vitest 多 describe 重複掛載時 body 累積舊 host：拔掉舊的，元素斷開
-  // parent 後可 GC。
-  body.querySelectorAll('[data-audio-host]').forEach(el => el.remove())
-  const host = document.createElement('div')
+  const existing = body.querySelector('[data-audio-host]')
+  const host = existing ?? document.createElement('div')
   host.setAttribute('aria-hidden', 'true')
   host.setAttribute('data-audio-host', '')
-  host.style.cssText = 'position:absolute;width:0;height:0;opacity:0;pointer-events:none;overflow:hidden;'
+  if (host instanceof HTMLElement) {
+    host.style.cssText = 'position:absolute;width:0;height:0;opacity:0;pointer-events:none;overflow:hidden;'
+  }
   for (const el of els) {
     if (!(el instanceof Element)) continue
     host.appendChild(el)
@@ -184,23 +184,6 @@ export function createAudioEngine(handlers: MainEventHandlers): AudioEngine {
     void previewEl.play().catch(() => undefined)
   }
 
-  function dispose(): void {
-    if (previewStopTimer !== null) { window.clearTimeout(previewStopTimer); previewStopTimer = null }
-    if (previewPlayingListener !== null) {
-      previewEl.removeEventListener('playing', previewPlayingListener)
-      previewPlayingListener = null
-    }
-    mainEl.removeEventListener('timeupdate', handlers.onTimeUpdate)
-    mainEl.removeEventListener('seeked', handlers.onSeeked)
-    mainEl.removeEventListener('play', handlers.onPlay)
-    mainEl.removeEventListener('pause', handlers.onPause)
-    mainEl.removeEventListener('ended', handlers.onEnded)
-    mainEl.pause()
-    previewEl.pause()
-    const body = typeof document !== 'undefined' ? document.body : null
-    body?.querySelectorAll('[data-audio-host]').forEach(el => el.remove())
-  }
-
   return {
     load,
     play,
@@ -211,6 +194,5 @@ export function createAudioEngine(handlers: MainEventHandlers): AudioEngine {
     currentTime: () => mainEl.currentTime,
     duration: () => mainEl.duration,
     playClip,
-    dispose,
   }
 }
