@@ -3,7 +3,7 @@ import { computeProgress } from '../../lib/playback'
 interface ProgressSliderProps {
   readonly currentTime: number
   readonly duration: number
-  onSeek(time: number): void
+  readonly onSeek: (time: number) => void
   /** 外層 wrapper 額外 class（例：行動版 bottom bar 需要 flex-1 撐滿列寬）。 */
   readonly className?: string
 }

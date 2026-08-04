@@ -144,7 +144,8 @@ export function buildSessionSteps(
       return an.localeCompare(bn)
     })
   // ponytail: 已排序的 due 全部留下、new 補到 SESSION_LIMIT、不夠才進練習池——
-  // 學理上「同字本非空必有一個 status=2 可用」保證佇列≥1。
+  // 前提是字本裡還有 status=1/2 的字；若全部字都是 status=5（已精熟封存），
+  // due/learned/practice 三組皆空，filled 正確回傳 []（沒東西可學可複習）。
   const dueSteps: SessionStep[] = due.map(item => ((item.interval ?? 1) >= GRADUATION_INTERVAL
     ? { kind: 'quiz' as const, item }
     : { kind: 'recognize' as const, item }))
@@ -155,8 +156,8 @@ export function buildSessionSteps(
   if (filled.length < SESSION_LIMIT) {
     filled.push(...newSteps.slice(0, SESSION_LIMIT - filled.length))
   }
-  // 補到 SESSION_LIMIT：先給練習池補；學理上「永不為 0」已由 due 全部留下保證
-  // （同字單本非空必有一個 status=2 可用——見 srs.test.ts 對應案例）。
+  // 補到 SESSION_LIMIT：先給練習池補；同前段註解，僅在字本裡仍有 status=1/2
+  // 的字時才保證非空，全部精熟封存時 filled 維持空陣列是預期行為。
   if (filled.length < SESSION_LIMIT) {
     filled.push(...practice.slice(0, SESSION_LIMIT - filled.length).map(item => ({ kind: 'recognize' as const, item })))
   }
