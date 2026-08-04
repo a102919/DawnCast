@@ -95,6 +95,16 @@ function methodNotAllowed(env: Env): Response {
   });
 }
 
+/** R2 呼叫失敗 / URL 解碼失敗等非預期例外的 fallback。沒有這層的話例外會變成
+ *  Cloudflare 預設的無 CORS header 500，瀏覽器直接擋掉 response——這支檔案
+ *  本來要修的 Safari NotSupportedError 症狀又會以另一種方式重現。 */
+function serverError(env: Env): Response {
+  return new Response("Internal Server Error", {
+    status: 502,
+    headers: corsHeaders(env),
+  });
+}
+
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     // OPTIONS preflight：跨 origin audio 必須通過的握手。
@@ -105,68 +115,78 @@ export default {
       return methodNotAllowed(env);
     }
 
-    // pathname → R2 key。Worker host 之後的路徑直接當 key（含 /dawncast/... 多層）。
-    const url = new URL(request.url);
-    const key = decodeURIComponent(url.pathname.replace(/^\//, ""));
-    if (!key) return notFound(env);
+    // catch 裡要能 cancel 掉已開啟的 R2 body stream，宣告在 try 外層。
+    let obj: R2ObjectBody | null = null;
+    try {
+      // pathname → R2 key。Worker host 之後的路徑直接當 key（含 /dawncast/... 多層）。
+      const url = new URL(request.url);
+      const key = decodeURIComponent(url.pathname.replace(/^\//, ""));
+      if (!key) return notFound(env);
 
-    // head() 先拿 size：省 R2 read ops，又能正確填 Content-Range 的 total。
-    const meta = await env.AUDIO.head(key);
-    if (!meta) return notFound(env);
-    const total = meta.size;
+      // head() 先拿 size：省 R2 read ops，又能正確填 Content-Range 的 total。
+      const meta = await env.AUDIO.head(key);
+      if (!meta) return notFound(env);
+      const total = meta.size;
 
-    if (request.method === "HEAD") {
+      if (request.method === "HEAD") {
+        const h = corsHeaders(env);
+        h.set("Accept-Ranges", "bytes");
+        h.set("Content-Length", String(total));
+        meta.writeHttpMetadata(h);
+        h.set("etag", meta.httpEtag);
+        h.set("Cache-Control", "public, max-age=31536000, immutable");
+        return new Response(null, { status: 200, headers: h });
+      }
+
+      // 有 Range → parse。有 Range 但解析失敗（多 range / 格式錯 / start 超 total）→ 416。
+      const rangeHeader = request.headers.get("Range");
+      const parsed = rangeHeader ? parseSingleRange(rangeHeader, total) : null;
+      if (rangeHeader && !parsed) {
+        const h = corsHeaders(env);
+        // RFC 7233 §4.4：416 帶 Content-Range: bytes */{total}，Safari 才能拿到正確大小。
+        h.set("Content-Range", `bytes */${total}`);
+        h.set("Accept-Ranges", "bytes");
+        return new Response("Range Not Satisfiable", {
+          status: 416,
+          headers: h,
+        });
+      }
+
+      // 從 R2 拿 bytes。range 帶 offset/length 給 R2。
+      obj = parsed
+        ? await env.AUDIO.get(key, {
+            range: { offset: parsed.offset, length: parsed.length },
+          })
+        : await env.AUDIO.get(key);
+      if (!obj || !obj.body) return notFound(env);
+
       const h = corsHeaders(env);
       h.set("Accept-Ranges", "bytes");
-      h.set("Content-Length", String(total));
-      meta.writeHttpMetadata(h);
-      h.set("etag", meta.httpEtag);
+      obj.writeHttpMetadata(h);
+      h.set("etag", obj.httpEtag);
+      // 音檔內容不可變（r2 key 含 episode uuid + segment index），一年 cache 直接命中。
       h.set("Cache-Control", "public, max-age=31536000, immutable");
-      return new Response(null, { status: 200, headers: h });
+
+      if (parsed) {
+        // obj.size 在 R2 SDK 對 range 請求不一定等於實際回傳 bytes（某些版本會回
+        // object 的 total size），用 parsed.length 才是「真的回多少 bytes」的可靠來源。
+        // end byte 不超過 total - 1（撞 EOF 的話 parsed.length < requested length，
+        // 但 Safari 仍可接受：它的 range 請求是 best-effort，只要看到 Content-Range
+        // 跟 Content-Length 一致就 happy）。
+        const actualLength = Math.min(parsed.length, total - parsed.offset);
+        const endByte = parsed.offset + actualLength - 1;
+        h.set("Content-Range", `bytes ${parsed.offset}-${endByte}/${total}`);
+        h.set("Content-Length", String(actualLength));
+        return new Response(obj.body, { status: 206, headers: h });
+      }
+      h.set("Content-Length", String(total));
+      return new Response(obj.body, { status: 200, headers: h });
+    } catch (err) {
+      // header 組裝階段（writeHttpMetadata 等）拋例外時，obj.body 這條 R2 stream
+      // 還沒被讀取也沒被回進 Response，得手動 cancel 掉才不會留下懸空連線。
+      if (obj?.body) await obj.body.cancel().catch(() => {});
+      console.error("audio-proxy fetch failed:", err);
+      return serverError(env);
     }
-
-    // 有 Range → parse。有 Range 但解析失敗（多 range / 格式錯 / start 超 total）→ 416。
-    const rangeHeader = request.headers.get("Range");
-    const parsed = rangeHeader ? parseSingleRange(rangeHeader, total) : null;
-    if (rangeHeader && !parsed) {
-      const h = corsHeaders(env);
-      // RFC 7233 §4.4：416 帶 Content-Range: bytes */{total}，Safari 才能拿到正確大小。
-      h.set("Content-Range", `bytes */${total}`);
-      h.set("Accept-Ranges", "bytes");
-      return new Response("Range Not Satisfiable", {
-        status: 416,
-        headers: h,
-      });
-    }
-
-    // 從 R2 拿 bytes。range 帶 offset/length 給 R2。
-    const obj = parsed
-      ? await env.AUDIO.get(key, {
-          range: { offset: parsed.offset, length: parsed.length },
-        })
-      : await env.AUDIO.get(key);
-    if (!obj || !obj.body) return notFound(env);
-
-    const h = corsHeaders(env);
-    h.set("Accept-Ranges", "bytes");
-    obj.writeHttpMetadata(h);
-    h.set("etag", obj.httpEtag);
-    // 音檔內容不可變（r2 key 含 episode uuid + segment index），一年 cache 直接命中。
-    h.set("Cache-Control", "public, max-age=31536000, immutable");
-
-    if (parsed) {
-      // obj.size 在 R2 SDK 對 range 請求不一定等於實際回傳 bytes（某些版本會回
-      // object 的 total size），用 parsed.length 才是「真的回多少 bytes」的可靠來源。
-      // end byte 不超過 total - 1（撞 EOF 的話 parsed.length < requested length，
-      // 但 Safari 仍可接受：它的 range 請求是 best-effort，只要看到 Content-Range
-      // 跟 Content-Length 一致就 happy）。
-      const actualLength = Math.min(parsed.length, total - parsed.offset);
-      const endByte = parsed.offset + actualLength - 1;
-      h.set("Content-Range", `bytes ${parsed.offset}-${endByte}/${total}`);
-      h.set("Content-Length", String(actualLength));
-      return new Response(obj.body, { status: 206, headers: h });
-    }
-    h.set("Content-Length", String(total));
-    return new Response(obj.body, { status: 200, headers: h });
   },
 };
