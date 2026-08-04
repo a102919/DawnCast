@@ -135,6 +135,11 @@ class ScriptLine(BaseModel):
     # chapter/話題轉換邊界：True 時時間軸計算在這行「之前」插入較長停頓。
     # 預設 False（沿用現有均一停頓行為），只有 long tier 的 chapter 分界會標 True。
     pause_before: bool = False
+    # 這行是不是機械切分（_split_line）從上一行斷開的延續片段——同一句話被切開，
+    # 前面完全不該插停頓（連 short_gap 都不要）。跟 pause_before 語意正交：後者管
+    # 「要不要插長停頓」，這個管「要不要完全不插停頓」，兩者都可能是 False（普通換行）。
+    # 只有後製切分邏輯會設，LLM 不產這個欄位。
+    continuation: bool = False
     # MiniMax voice_setting.emotion 逐行標註，讓語氣不再整集一個模板。刻意用 str
     # 不用 Literal[7 值]：LLM 是 prompt-instructed JSON，不是 schema-enforced structured
     # output，拼錯值不該讓整份腳本 parse 失敗——無效值在 TTS payload 組裝那層忽略即可。

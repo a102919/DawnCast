@@ -980,10 +980,9 @@ async def _generate_segment(  # type: ignore[return]
 # 而實測腳本裡 40-80 詞的行很常見；這些行每輪被送去切、每輪被退回沿用原行，跑滿三層
 # 遞迴後仍有 24-36 行超長。機械切分沒有段數上限，一次就切乾淨。
 
-_TARGET_TEXT_WORD_COUNT = 12
-# A2 等級學習者能消化的英文短句上限（12 詞）：Oxford A2 wordlist 平均句長
-# 8-12 詞；每段 >12 詞的中英對照翻頁就難對齊單字。改字而非改 tokens：以
-# words 計，LLM 看得到目標、人類驗收看得到指標，跟 LLM-side 的 token metric 解耦。
+_TARGET_TEXT_WORD_COUNT = 20
+# 每段英文詞數上限（20 詞）：改字而非改 tokens：以 words 計，LLM 看得到目標、
+# 人類驗收看得到指標，跟 LLM-side 的 token metric 解耦。
 # 用法：len(line.text.split()) > _TARGET_TEXT_WORD_COUNT 判定是否需切。
 
 # 切點優先落在這些收尾符號之後（句意較完整）；找不到就照詞數硬切。詞尾可能還帶
@@ -991,31 +990,40 @@ _TARGET_TEXT_WORD_COUNT = 12
 _EN_BREAK_RE = re.compile(r"[.!?,;:—–][\"'’”）)\]]?$")
 _ZH_BREAK_CHARS = "，。！？、；：—…）」』"
 # 在理想切點附近找標點的容忍範圍（英文以詞計、中文以字計）。放太寬會讓段落長度失衡，
-# 放太窄則幾乎都退回硬切；3/4 是「一個短子句」的量級。
-_EN_SNAP_WINDOW = 3
-_ZH_SNAP_WINDOW = 4
+# 放太窄則幾乎都退回硬切；6/8 是「一個完整子句」的量級。
+_EN_SNAP_WINDOW = 6
+_ZH_SNAP_WINDOW = 8
 
 
-def _split_en_words(tokens: list[str], n_parts: int) -> list[list[str]]:
+def _split_en_words(tokens: list[str], n_parts: int, target_max_words: int) -> list[list[str]]:
     """把 tokens 切成 n_parts 段，切點優先落在標點結尾的詞之後。
 
-    每輪用「剩餘詞數 / 剩餘段數」無條件進位當本段上限 `even`：只要初始
-    n_parts >= ceil(總詞數 / 12)，這個上限就恆 <= 12，因此每一段都保證不超標
-    （往前吸附標點只會讓本段更短，而 `lo` 保證剩下的詞仍塞得進剩餘段數）。
+    每輪算「剩餘詞數 / 剩餘段數」當平衡切點 `even`，在 [lo, hi] 範圍內雙向找標點：
+    hi 保證本段 <= target_max_words，lo 保證剩下的詞仍塞得進剩餘段數（各段也
+    <= target_max_words）。範圍內找不到標點就落在夾進 [lo, hi] 的 even，改硬切。
+
+    早期版本 lo 是拿當輪 `even` 反推（而非固定的 target_max_words），導致均分後
+    的 2 段切分幾乎沒有可搜尋空間（window 實質塌縮成 0-1 詞），_EN_SNAP_WINDOW
+    設多大都沒用；改用 target_max_words 當真正的不變量上下界後才有實際搜尋範圍。
     """
     parts: list[list[str]] = []
     rest = tokens
     for remaining in range(n_parts, 1, -1):
         even = -(-len(rest) // remaining)
-        # 下界：切太少會讓後面的段吃不下（每段最多 even 詞）
-        lo = max(1, len(rest) - (remaining - 1) * even)
-        cut = even
-        for offset in range(1, _EN_SNAP_WINDOW + 1):
-            cand = even - offset
-            if cand < lo:
-                break
-            if _EN_BREAK_RE.search(rest[cand - 1]):
-                cut = cand
+        lo = max(1, len(rest) - (remaining - 1) * target_max_words)
+        hi = min(target_max_words, len(rest) - (remaining - 1))
+        cut = min(max(even, lo), hi)
+        for offset in range(_EN_SNAP_WINDOW + 1):
+            snapped = next(
+                (
+                    c
+                    for c in (cut + offset, cut - offset)
+                    if lo <= c <= hi and _EN_BREAK_RE.search(rest[c - 1])
+                ),
+                None,
+            )
+            if snapped is not None:
+                cut = snapped
                 break
         parts.append(rest[:cut])
         rest = rest[cut:]
@@ -1088,7 +1096,7 @@ def _split_line(line: ScriptLine, target_max_words: int) -> list[ScriptLine]:
         return [line]
 
     n_parts = min(-(-len(tokens) // target_max_words), len(tokens))
-    en_parts = _split_en_words(tokens, n_parts)
+    en_parts = _split_en_words(tokens, n_parts, target_max_words)
     zh_parts = _split_zh_text(line.zh, [len(p) for p in en_parts])
     if zh_parts is None:
         return [line]
@@ -1101,6 +1109,9 @@ def _split_line(line: ScriptLine, target_max_words: int) -> list[ScriptLine]:
                 # 只有第一段承接原行的 pause_before（章節邊界資訊），
                 # 其餘段是同一句話的延續，不該再插停頓。
                 "pause_before": line.pause_before if i == 0 else False,
+                # 延續段標記 continuation：plan_layout 靠這個判斷完全不插停頓
+                # （連 short_gap 都不要），否則同一句話會被切開後聽到機械停頓。
+                "continuation": i > 0,
             }
         )
         for i, (en, zh) in enumerate(zip(en_parts, zh_parts, strict=True))

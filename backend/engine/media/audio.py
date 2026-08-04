@@ -136,8 +136,9 @@ def plan_layout(
     short_gap / long_gap 必須是 synthesize_silence 的量測回傳值，不是名目值
     （否則 concat_episode 併進去的靜音實際時長會跟這裡預測的時間戳飄移）。
 
-    gap_after 依下一行 pause_before 決定：True → long，否則 short；末行固定
-    none（最後一行後不留靜音，cues[-1].end 直接等於整集檔物理時長）。
+    gap_after 依下一行決定：continuation（機械切分延續片段）→ none，
+    否則 pause_before → True 為 long、False 為 short；末行固定 none
+    （最後一行後不留靜音，cues[-1].end 直接等於整集檔物理時長）。
     """
     if not segs:
         raise TTSError("plan_layout：沒有任何 segment")
@@ -149,6 +150,9 @@ def plan_layout(
         end = round(start + seg.duration, 3)
         if idx == last:
             gap_after: GapKind = "none"
+            gap = 0.0
+        elif segs[idx + 1].continuation:
+            gap_after = "none"
             gap = 0.0
         elif segs[idx + 1].pause_before:
             gap_after = "long"

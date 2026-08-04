@@ -98,6 +98,7 @@ class SynthSegment:
     audio_path: Path
     duration: float
     pause_before: bool = False
+    continuation: bool = False
     word_offsets: list[WordOffset] = field(default_factory=list)
 
 
@@ -430,6 +431,7 @@ async def _run_lines(
                 audio_path=out_path,
                 duration=duration,
                 pause_before=line.pause_before,
+                continuation=line.continuation,
                 word_offsets=word_offsets,
             )
         )

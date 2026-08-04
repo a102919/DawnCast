@@ -1259,7 +1259,7 @@ async def test_pod_pre_upsert_failure_leaves_forensic_run(pod_mocks: PodMocks) -
 
 
 def _short_script(n: int = 8) -> list[dict[str, Any]]:
-    """造一段全短的 ScriptJSON.script：text ≤12 詞（不觸發 normalize）、≥8 行、speaker 交替。
+    """造一段全短的 ScriptJSON.script：text ≤20 詞（不觸發 normalize）、≥8 行、speaker 交替。
 
     每行 text 含 "quantum"（target_vocab 檢查）；每行 zh 不重複（_no_duplicate_adjacent_zh）。
     """
@@ -1268,7 +1268,7 @@ def _short_script(n: int = 8) -> list[dict[str, Any]]:
     for i in range(n):
         out.append({
             "speaker": speakers[i % 2],
-            "text": f"quantum line {i}",  # 3 詞，遠低於 12 上限
+            "text": f"quantum line {i}",  # 3 詞，遠低於 20 上限
             "zh": f"短句{i}",
         })
     return out
@@ -1295,10 +1295,13 @@ def test_normalize_line_lengths_noop_returns_same_object() -> None:
 
 
 def test_normalize_line_lengths_splits_long_line_faithfully() -> None:
-    """超長行被切成 ≤12 詞的多段，英文逐詞、中文逐字串回去等於原行。"""
+    """超長行被切成 ≤20 詞的多段，英文逐詞、中文逐字串回去等於原行。"""
     from engine.pipeline.langgraph_pod.nodes import _normalize_line_lengths
 
-    long_text = "quantum reveals your dreams tie very strongly to REM sleep cycles every night"
+    long_text = (
+        "quantum reveals your dreams tie very strongly to REM sleep cycles every "
+        "night and scientists have been studying this connection for decades now"
+    )
     long_zh = "夢境記憶與REM睡眠週期在夜晚有關聯"
     short = _short_script(8)
     short[0] = {"speaker": "Sarah", "text": long_text, "zh": long_zh}
@@ -1307,17 +1310,17 @@ def test_normalize_line_lengths_splits_long_line_faithfully() -> None:
     parts = out.script[:2]  # 被切的是 script[0]，切出來的段落排在最前面
     assert len(out.script) == len(short) + 1
     assert all(p.speaker == "Sarah" for p in parts)
-    assert all(len(p.text.split()) <= 12 for p in parts)
+    assert all(len(p.text.split()) <= 20 for p in parts)
     assert " ".join(p.text for p in parts) == long_text
     assert "".join(p.zh for p in parts) == long_zh
 
 
 def test_normalize_line_lengths_splits_beyond_three_parts() -> None:
-    """本次修的核心：>36 詞的行需要 4 段以上。舊版硬限「2-3 段」永遠切不動，
+    """本次修的核心：>60 詞的行需要 4 段以上。舊版硬限「2-3 段」永遠切不動，
     只能整條沿用原行；機械切分沒有這個上限。"""
     from engine.pipeline.langgraph_pod.nodes import _normalize_line_lengths
 
-    long_text = " ".join(["quantum"] + [f"word{i}" for i in range(59)])  # 60 詞 → 需要 5 段
+    long_text = " ".join(["quantum"] + [f"word{i}" for i in range(83)])  # 84 詞 → 需要 5 段
     long_zh = "".join(f"中文{i}" for i in range(30))
     short = _short_script(8)
     short[0] = {"speaker": "Sarah", "text": long_text, "zh": long_zh}
@@ -1325,16 +1328,19 @@ def test_normalize_line_lengths_splits_beyond_three_parts() -> None:
 
     parts = out.script[:5]
     assert len(out.script) == len(short) + 4  # 一行變五行
-    assert all(len(p.text.split()) <= 12 for p in parts)
+    assert all(len(p.text.split()) <= 20 for p in parts)
     assert " ".join(p.text for p in parts) == long_text
     assert "".join(p.zh for p in parts) == long_zh
 
 
 def test_normalize_line_lengths_prefers_punctuation_break() -> None:
-    """切點優先落在標點結尾的詞之後，而不是硬切在第 12 詞。"""
+    """切點優先落在標點結尾的詞之後，而不是硬切在第 20 詞。"""
     from engine.pipeline.langgraph_pod.nodes import _normalize_line_lengths
 
-    long_text = "quantum sleep matters a lot to memory, and dreams help us learn new things"
+    long_text = (
+        "quantum deep sleep matters a lot when it comes to memory, and dreams "
+        "help us learn new things while we rest quietly peacefully"
+    )
     long_zh = "睡眠對記憶很重要，而夢境幫助我們學習新事物"
     short = _short_script(8)
     short[0] = {"speaker": "Sarah", "text": long_text, "zh": long_zh}
@@ -1352,7 +1358,8 @@ def test_normalize_line_lengths_does_not_cut_inside_latin_word() -> None:
 
     long_text = (
         "quantum rogue agents hid inside Hugging Face for three days and "
-        "the lesson was not malice"
+        "the lesson was not malice but rather a simple misunderstanding "
+        "that spiraled quickly out of control"
     )
     long_zh = "有失控的 agent 在 Hugging Face 裡躲了三天，教訓不是惡意"
     short = _short_script(8)
@@ -1372,7 +1379,10 @@ def test_normalize_line_lengths_preserves_speaker_and_metadata() -> None:
     lines: list[dict[str, Any]] = [{"speaker": "Alex", "text": "quantum intro", "zh": "量子引子"}]
     lines.append({
         "speaker": "Sarah",
-        "text": "quantum see we knew it all along since the very start of this journey",
+        "text": (
+            "quantum see we knew it all along since the very start of this "
+            "journey and nothing could have stopped us from finding out eventually"
+        ),
         "zh": "不然你其實早就知道答案了。",
         "pause_before": True,
         "emotion": "happy",
@@ -1411,16 +1421,17 @@ async def test_invoke_writer_normalizes_long_lines_in_returned_script(
     pod_mocks: PodMocks,
 ) -> None:
     """_invoke_writer 回傳的腳本已經過 _normalize_line_lengths：LLM 給的超長行
-    被切成 ≤12 詞的 2 段，而且不會為此多打任何一次 LLM。
+    被切成 ≤20 詞的 2 段，而且不會為此多打任何一次 LLM。
     """
     from engine.pipeline.langgraph_pod.nodes import _invoke_writer
 
     long_zh = "夢境記憶跟REM睡眠週期在夜晚有關聯"
     long_text = (
-        "quantum reveals your dreams tie very strongly to REM sleep "
-        "cycles every single night"
+        "quantum reveals your dreams connect to memory formation and this "
+        "pattern has been observed by researchers for decades but the exact "
+        "REM sleep cycles link remains debated today"
     )
-    assert len(long_text.split()) > 12
+    assert len(long_text.split()) > 20
 
     # filler 用 60× 'quantum filler text ' 撐過 word_floor=216（short × A2）；
     # 它的 zh 只有幾個字，切不出對應段數 → 整行沿用（本測試只驗 long_text 那行被切）。
@@ -1468,7 +1479,7 @@ async def test_invoke_writer_normalizes_long_lines_in_returned_script(
     )
     assert "script" in result
     out_script = result["script"]
-    # 長行必須被切成 ≤12 詞的 2 段，且拼接保真
+    # 長行必須被切成 ≤20 詞的 2 段，且拼接保真
     split_pairs = [
         ln.text for ln in out_script.script
         if "quantum reveals" in ln.text or "sleep cycles" in ln.text
@@ -1477,7 +1488,7 @@ async def test_invoke_writer_normalizes_long_lines_in_returned_script(
     for ln in out_script.script:
         if "quantum reveals" in ln.text or "sleep cycles" in ln.text:
             assert ln.speaker == "Sarah", ln
-            assert len(ln.text.split()) <= 12, f"split 段仍超 12 詞: {ln.text!r}"
+            assert len(ln.text.split()) <= 20, f"split 段仍超 20 詞: {ln.text!r}"
     assert " ".join(split_pairs) == long_text
     # 切分不打 LLM：writer 只有 outline + segment 兩次呼叫
     assert chat._writer_count == 2, f"expected 2 calls, got {chat._writer_count}"
