@@ -11,6 +11,7 @@ export type {
   AdminEpisodeGeneration,
   AdminEpisodeStats,
   AdminEpisodeStatsResponse,
+  AdminRunningJob,
   Api,
   CefrLevel,
   Channel,

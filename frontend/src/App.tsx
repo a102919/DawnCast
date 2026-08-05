@@ -5,7 +5,7 @@ import { useEffect, type ReactNode } from 'react'
 import { AuthProvider, ActivityProvider, EpisodesProvider, PlayerProvider, VocabProvider, SettingsProvider, FavoritesProvider, ChannelSubscriptionsProvider, DailyOrderProvider, useAuth, usePlayer, useActivity } from './state'
 import { TopBar, BottomNav, isImmersivePath } from './components/layout'
 import { MiniPlayer } from './components/player'
-import { HomeRoute, PlayerRoute, PracticeRoute, VocabRoute, FavoritesRoute, SettingsRoute, ProgressRoute, SessionRoute, DailyRoute, ChannelsRoute, ChannelDetailRoute, LoginRoute, AdminLayout, AdminEpisodesPage, AdminChannelsPage } from './routes'
+import { HomeRoute, PlayerRoute, PracticeRoute, VocabRoute, FavoritesRoute, SettingsRoute, ProgressRoute, SessionRoute, DailyRoute, ChannelsRoute, ChannelDetailRoute, LoginRoute, AdminLayout, AdminGeneratingPage, AdminEpisodesPage, AdminChannelsPage } from './routes'
 import { useSprings } from './lib/motion'
 import { UpdatePrompt } from './components/UpdatePrompt'
 import { PushPrompt } from './components/PushPrompt'
@@ -58,7 +58,8 @@ function AnimatedRoutes() {
           <Route path="/session" element={<SessionRoute />} />
           <Route path="/login" element={<LoginRoute />} />
           <Route path="/admin" element={<AdminLayout />}>
-            <Route index element={<Navigate to="episodes" replace />} />
+            <Route index element={<Navigate to="generating" replace />} />
+            <Route path="generating" element={<AdminGeneratingPage />} />
             <Route path="episodes" element={<AdminEpisodesPage />} />
             <Route path="channels" element={<AdminChannelsPage />} />
           </Route>

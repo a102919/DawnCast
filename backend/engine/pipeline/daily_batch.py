@@ -36,22 +36,32 @@ _SERIES_CONTEXT_SIZE = 3
 _AVOID_FACTS_LOOKBACK = 5
 
 
-async def _build_message(candidate: dict[str, Any], deliver_date: str) -> dict[str, Any]:
-    """把 pick_daily_topics 選出的一筆候選轉成完整 generate contract。
+async def build_message_for_topic(
+    *,
+    channel_id: str,
+    big_topic: str,
+    topic_type: str,
+    length_tier: str,
+    cefr_level: str,
+    channel_topic_id: str,
+    canonical_topic: str,
+    angle: str,
+    deliver_date: str,
+) -> dict[str, Any]:
+    """把「一個頻道 + 該頻道底下一筆選題」轉成完整 generate contract。
 
-    同一次查詢餵兩個用途：series_context 取最近幾集的標題讓寫稿能呼應系列脈絡，
-    avoid_facts 取更廣範圍的既有事實避免相鄰集重複——頻道是「同一主題連續出刊」，
-    比舊的固定 slot 更容易撞同一批事實，所以避重不能省。
+    共用邏輯給兩個呼叫端：`_build_message`（deliver_date 批次，candidate 來自
+    pick_daily_topics 的投影列）與 admin 手動觸發單一候選生成（channel/topic
+    是各自查出的原始 row，欄位名不盡相同，故用具名參數而非直接丟 dict 對齊）。
     """
-    channel_id = candidate["channel_id"]
     recent = await channels.list_recent_channel_episodes(channel_id, _AVOID_FACTS_LOOKBACK)
     return {
-        "big_topic": candidate["topic"],
-        "canonical_topic": candidate["canonical_topic"],
-        "angle": candidate["angle"],
-        "topic_type": candidate["topic_type"],
-        "length_tier": candidate["length_tier"],
-        "cefr": candidate["cefr_level"],
+        "big_topic": big_topic,
+        "canonical_topic": canonical_topic,
+        "angle": angle,
+        "topic_type": topic_type,
+        "length_tier": length_tier,
+        "cefr": cefr_level,
         # 公開集來源（不是用戶下單）；upsert_episode_node 用 source != "specified" 推 is_free=true
         "source": "daily_batch",
         "deliver_date": deliver_date,
@@ -59,9 +69,29 @@ async def _build_message(candidate: dict[str, Any], deliver_date: str) -> dict[s
         "cluster_id": None,
         "avoid_facts": collect_avoid_facts(recent),
         "channel_id": str(channel_id),
-        "channel_topic_id": str(candidate["topic_id"]),
+        "channel_topic_id": str(channel_topic_id),
         "series_context": [ep["title"] for ep in recent[:_SERIES_CONTEXT_SIZE]],
     }
+
+
+async def _build_message(candidate: dict[str, Any], deliver_date: str) -> dict[str, Any]:
+    """把 pick_daily_topics 選出的一筆候選轉成完整 generate contract。
+
+    同一次查詢餵兩個用途：series_context 取最近幾集的標題讓寫稿能呼應系列脈絡，
+    avoid_facts 取更廣範圍的既有事實避免相鄰集重複——頻道是「同一主題連續出刊」，
+    比舊的固定 slot 更容易撞同一批事實，所以避重不能省。
+    """
+    return await build_message_for_topic(
+        channel_id=candidate["channel_id"],
+        big_topic=candidate["topic"],
+        topic_type=candidate["topic_type"],
+        length_tier=candidate["length_tier"],
+        cefr_level=candidate["cefr_level"],
+        channel_topic_id=candidate["topic_id"],
+        canonical_topic=candidate["canonical_topic"],
+        angle=candidate["angle"],
+        deliver_date=deliver_date,
+    )
 
 
 async def build_daily_messages(deliver_date: str) -> list[dict[str, Any]]:

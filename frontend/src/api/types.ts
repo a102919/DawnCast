@@ -165,6 +165,18 @@ export type AdminEpisodeStatsResponse = {
   readonly items: readonly AdminEpisodeStats[]
 }
 
+/** GET /admin/jobs/running 一列：正在跑的生成任務，鏡像後端 AdminRunningJob。
+ *  idempotencyKey 已含 topic 文字，這張表在 upsert_episode 之前就存在，join
+ *  不到 channel/episode，只能給到「跑了多久」而非「跑到哪個階段」。 */
+export type AdminRunningJob = {
+  readonly runId: string
+  readonly idempotencyKey: string
+  readonly attempt: number
+  readonly enqueuedAt?: string | null
+  readonly startedAt?: string | null
+  readonly elapsedSec?: number | null
+}
+
 /** 單次 LLM 呼叫；鏡像後端 AdminLlmCall（gen_metrics->'llm_calls'）。 */
 export type AdminLlmCall = {
   readonly node: string
@@ -328,6 +340,14 @@ export type ChannelPlanResponse = {
   readonly status: 'queued'
 }
 
+/** 202 response：從選題庫挑一筆候選手動觸發生成，已入 generate 佇列。 */
+export type ChannelTopicGenerateResponse = {
+  readonly channelId: string
+  readonly topicId: string
+  readonly msgId: number
+  readonly status: 'queued'
+}
+
 /** 瀏覽器 PushSubscription.toJSON() 的必要欄位（送給後端登錄推播訂閱）。 */
 export type PushSubscriptionInput = {
   readonly endpoint: string
@@ -406,6 +426,14 @@ export interface Api {
     topicId: string,
     patch: { readonly status?: 'candidate' | 'rejected'; readonly canonicalTopic?: string },
   ): Promise<ChannelTopic>
+  /** 挑一筆候選手動觸發生成單集；202 只代表已入列，音檔要等 worker 跑完才會出現。 */
+  generateChannelTopicEpisode(channelId: string, topicId: string): Promise<ChannelTopicGenerateResponse>
+  /** 刪除單集（episodeId 是 slug）。 */
+  deleteAdminEpisode(episodeId: string): Promise<void>
+  /** 目前正在生成中的集數列表；只有「跑了多久」，沒有階段細節（見 AdminRunningJob）。 */
+  listAdminRunningJobs(): Promise<readonly AdminRunningJob[]>
+  /** 從追蹤表移除一筆卡住的 running 紀錄；不會真的中止 worker（無取消點），只是別再顯示成生成中。 */
+  cancelAdminRunningJob(runId: string): Promise<void>
   // Web Push：一台裝置一筆訂閱。「有沒有訂閱」就是通知開關狀態，沒有額外欄位。
   subscribePush(subscription: PushSubscriptionInput): Promise<void>
   unsubscribePush(endpoint: string): Promise<void>

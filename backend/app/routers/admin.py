@@ -28,17 +28,25 @@ from app.schemas import (
     UpdateChannelBody,
     UpdateChannelTopicBody,
 )
+from engine.pipeline.daily_batch import build_message_for_topic
 from shared.config import get_settings
 from shared.db import channels as channels_db
 from shared.db import queue
 from shared.db.pool import connection
-from shared.errors import AuthError, NotFoundError, PayloadTooLargeError, ValidationError
+from shared.errors import (
+    AuthError,
+    ConflictError,
+    NotFoundError,
+    PayloadTooLargeError,
+    ValidationError,
+)
 from shared.models import (
     AdminEpisodeGeneration,
     AdminEpisodeStats,
     AdminEpisodeStatsResponse,
     AdminEpsGenerateResponse,
     AdminJobQueue,
+    AdminRunningJob,
     CamelModel,
     Channel,
     ChannelTopic,
@@ -158,6 +166,23 @@ _JOBS_SQL = """
   from pgmq.metrics_all()
 """
 
+# 只查 running：worker 是同步跑完整條 LangGraph 才落地一次，這張表拿不到「目前
+# 跑到哪個 node」，能給的就是「哪幾集正在跑、跑了多久」——夠列表頁用。
+_RUNNING_JOBS_LIMIT = 50
+_RUNNING_JOBS_SQL = f"""
+  select
+    run_id::text as run_id,
+    idempotency_key,
+    attempt,
+    to_char(enqueued_at, 'YYYY-MM-DD"T"HH24:MI:SS"Z"') as enqueued_at,
+    to_char(started_at, 'YYYY-MM-DD"T"HH24:MI:SS"Z"') as started_at,
+    extract(epoch from (now() - started_at))::int as elapsed_sec
+  from public.episode_pipeline_runs
+  where status = 'running'
+  order by started_at asc nulls last
+  limit {_RUNNING_JOBS_LIMIT}
+"""
+
 
 @router.get("/episodes", response_model=ApiResponse[AdminEpisodeStatsResponse])
 async def get_admin_episode_stats() -> ApiResponse[AdminEpisodeStatsResponse]:
@@ -207,6 +232,25 @@ async def get_admin_episode_generation(episode_id: str) -> ApiResponse[AdminEpis
     return ok(AdminEpisodeGeneration.model_validate({**gen, "research": research}))
 
 
+@router.delete("/episodes/{episode_id}", response_model=ApiResponse[None])
+async def delete_admin_episode(episode_id: str) -> ApiResponse[None]:
+    """刪除單集。episode_id 是 slug（同 GET .../generation 的參數語意）。
+
+    單一原子 DELETE...RETURNING 判斷成功與否，抓不到再查一次分辨「本來就沒有」。
+    不額外寫級聯清理：deliveries/user_favorites 是 on delete cascade，
+    user_vocab/user_heard_topics/channel_topics 的關聯欄位是 on delete set null
+    （見 scripts/migrations/0001_init.sql），R2 上的音檔/字幕物件不主動清——
+    ponytail: 留孤兒物件在 R2，儲存費用低，真的要清再寫批次腳本掃孤兒 key。
+    """
+    async with connection() as conn, conn.cursor(row_factory=dict_row) as cur:
+        await cur.execute("delete from public.episodes where slug = %s returning id", (episode_id,))
+        deleted = await cur.fetchone()
+        await conn.commit()
+    if deleted is None:
+        raise NotFoundError("查無此集數")
+    return ok(None)
+
+
 @router.get("/jobs", response_model=ApiResponse[list[AdminJobQueue]])
 async def list_admin_jobs() -> ApiResponse[list[AdminJobQueue]]:
     """所有 pgmq 佇列的度量（metrics_all，不硬寫佇列名，新增佇列免改程式碼）。"""
@@ -214,6 +258,34 @@ async def list_admin_jobs() -> ApiResponse[list[AdminJobQueue]]:
         await cur.execute(_JOBS_SQL)
         rows = await cur.fetchall()
     return ok([AdminJobQueue.model_validate(r) for r in rows])
+
+
+@router.get("/jobs/running", response_model=ApiResponse[list[AdminRunningJob]])
+async def list_running_admin_jobs() -> ApiResponse[list[AdminRunningJob]]:
+    """目前正在生成中的集數（episode_pipeline_runs.status='running'）。"""
+    async with connection() as conn, conn.cursor(row_factory=dict_row) as cur:
+        await cur.execute(_RUNNING_JOBS_SQL)
+        rows = await cur.fetchall()
+    return ok([AdminRunningJob.model_validate(r) for r in rows])
+
+
+@router.delete("/jobs/running/{run_id}", response_model=ApiResponse[None])
+async def cancel_running_admin_job(run_id: str) -> ApiResponse[None]:
+    """把卡住的 running 列從追蹤表拿掉。
+
+    這不會真的中止 worker 裡在跑的 LangGraph（同步跑完整條、沒有取消點），
+    只是清掉這筆 forensic 紀錄，讓它別再顯示成「正在生成」——worker 若真的還
+    活著，之後 finalize 時 upsert 這個 run_id 會失敗但不影響集數本身落地。
+    """
+    async with connection() as conn, conn.cursor(row_factory=dict_row) as cur:
+        await cur.execute(
+            "delete from public.episode_pipeline_runs where run_id = %s returning run_id", (run_id,)
+        )
+        deleted = await cur.fetchone()
+        await conn.commit()
+    if deleted is None:
+        raise NotFoundError("查無此執行紀錄")
+    return ok(None)
 
 
 @router.post(
@@ -533,6 +605,80 @@ async def plan_channel_endpoint(channel_id: str) -> ApiResponse[ChannelPlanRespo
         raise  # 走全站 unhandled_handler → 500 internal_error
 
     return ok(ChannelPlanResponse(channel_id=channel_id, msg_id=msg_id, status="queued"))
+
+
+class ChannelTopicGenerateResponse(CamelModel):
+    """手動挑選候選生成單集已排入 generate 佇列的確認資訊。202 僅表示已入列，
+    音檔完成後 worker 端既有的回填邏輯會把該 topic 狀態轉成 published。
+    """
+
+    channel_id: str
+    topic_id: str
+    msg_id: int
+    status: Literal["queued"] = "queued"
+
+
+@router.post(
+    "/channels/{channel_id}/topics/{topic_id}/generate",
+    status_code=status.HTTP_202_ACCEPTED,
+    response_model=ApiResponse[ChannelTopicGenerateResponse],
+)
+async def generate_channel_topic_endpoint(
+    channel_id: str, topic_id: str
+) -> ApiResponse[ChannelTopicGenerateResponse]:
+    """管理員從選題庫挑一筆候選，手動觸發生成單集（不必等每日批次挑中它）。
+
+    只放行 candidate 狀態的選題——已經 scheduled/published/rejected 的選題
+    再次觸發會造成重複生成或語意混亂，一律 409。
+    """
+    channel = await _get_channel_or_404(channel_id)
+    topic = await _find_channel_topic(channel_id, topic_id)
+    if topic is None:
+        raise NotFoundError("選題不存在")
+    if topic["status"] != "candidate":
+        raise ConflictError("此選題已處理過，無法重複觸發生成")
+
+    tz = ZoneInfo(get_settings().app_timezone)
+    deliver_date = datetime.now(tz).date().isoformat()
+
+    queue_body = await build_message_for_topic(
+        channel_id=channel_id,
+        big_topic=channel["topic"],
+        topic_type=channel["topic_type"],
+        length_tier=channel["length_tier"],
+        cefr_level=channel["cefr_level"],
+        channel_topic_id=topic_id,
+        canonical_topic=topic["canonical_topic"],
+        angle=topic["angle"],
+        deliver_date=deliver_date,
+    )
+
+    try:
+        msg_id = await queue.send("generate", queue_body)
+    except Exception:
+        logger.exception(
+            "admin 選題手動生成 enqueue 失敗（channel_id=%s, topic_id=%s）", channel_id, topic_id
+        )
+        raise  # 走全站 unhandled_handler → 500 internal_error
+
+    try:
+        await channels_db.update_topic_status(topic_id, "scheduled")
+    except Exception:
+        # ponytail: 訊息已入隊，這裡失敗只留紀錄不擋請求，避免對已成功的操作回 500；
+        # 代價是選題會卡在 candidate、可能被重複觸發生成，需要人工排查
+        logger.exception(
+            "admin 選題手動生成 enqueue 成功但狀態更新失敗，選題可能被重複觸發"
+            "（channel_id=%s, topic_id=%s, msg_id=%s）",
+            channel_id,
+            topic_id,
+            msg_id,
+        )
+
+    return ok(
+        ChannelTopicGenerateResponse(
+            channel_id=channel_id, topic_id=topic_id, msg_id=msg_id, status="queued"
+        )
+    )
 
 
 @router.post("/channels/{channel_id}/cover", response_model=ApiResponse[Channel])

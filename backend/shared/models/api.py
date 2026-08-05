@@ -289,6 +289,21 @@ class AdminJobQueue(CamelModel):
     total_messages: int | None = None
 
 
+class AdminRunningJob(CamelModel):
+    """一筆正在執行中的生成任務（episode_pipeline_runs.status='running'）。
+
+    idempotency_key 已含 topic 文字（見 compute_idempotency_key），列表頁夠用，
+    不另外 join channel/episode——這張表在 upsert_episode 之前就存在，join 不到。
+    """
+
+    run_id: str
+    idempotency_key: str
+    attempt: int
+    enqueued_at: str | None = None
+    started_at: str | None = None
+    elapsed_sec: int | None = None
+
+
 class StageMetric(CamelModel):
     """單一 LangGraph node 的耗時；來自 episodes.gen_metrics->'stages'。"""
 

@@ -1,5 +1,5 @@
 import { z } from 'zod'
-import type { AccountInfo, Activity, ActivityPatch, AdminEpisodeGeneration, AdminEpisodeStatsResponse, Api, Channel, ChannelPlanResponse, ChannelPublic, ChannelTopic, DailyOrder, DictEntry, RecommendedEpisode, Settings, VocabItem } from './types'
+import type { AccountInfo, Activity, ActivityPatch, AdminEpisodeGeneration, AdminEpisodeStatsResponse, AdminRunningJob, Api, Channel, ChannelPlanResponse, ChannelPublic, ChannelTopic, ChannelTopicGenerateResponse, DailyOrder, DictEntry, RecommendedEpisode, Settings, VocabItem } from './types'
 import type { Episode } from '../types/episode'
 import { CueSchema, SegmentSchema, SourceReferenceSchema } from './httpApi'
 import type { MockEpisode } from '../lib/episode'
@@ -583,6 +583,22 @@ export const mockApi: Api = {
 
   async updateAdminChannelTopic(): Promise<ChannelTopic> {
     mockUnsupported('頻道管理')
+  },
+
+  async generateChannelTopicEpisode(): Promise<ChannelTopicGenerateResponse> {
+    mockUnsupported('頻道管理')
+  },
+
+  async deleteAdminEpisode(): Promise<void> {
+    mockUnsupported('管理員查詢')
+  },
+
+  async listAdminRunningJobs(): Promise<readonly AdminRunningJob[]> {
+    mockUnsupported('管理員查詢')
+  },
+
+  async cancelAdminRunningJob(): Promise<void> {
+    mockUnsupported('管理員查詢')
   },
 
   // 使用者端公開頻道：訂閱狀態比照 favorites 存 localStorage，讓 mock 模式也能完整走過

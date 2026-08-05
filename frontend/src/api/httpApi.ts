@@ -5,11 +5,13 @@ import type {
   AdminEpisodeGeneration,
   AdminEpisodeStats,
   AdminEpisodeStatsResponse,
+  AdminRunningJob,
   Api,
   Channel,
   ChannelPlanResponse,
   ChannelPublic,
   ChannelTopic,
+  ChannelTopicGenerateResponse,
   CreateChannelInput,
   DailyOrder,
   DailyOrderStatus,
@@ -414,6 +416,16 @@ const AdminEpisodeStatsResponseSchema = z.object({
   items: z.array(AdminEpisodeStatsSchema),
 }) satisfies z.ZodType<AdminEpisodeStatsResponse> & z.ZodType<components['schemas']['AdminEpisodeStatsResponse']>
 
+const AdminRunningJobSchema = z.object({
+  runId: z.string(),
+  idempotencyKey: z.string(),
+  attempt: z.number(),
+  enqueuedAt: z.string().nullable().optional(),
+  startedAt: z.string().nullable().optional(),
+  elapsedSec: z.number().nullable().optional(),
+}) satisfies z.ZodType<AdminRunningJob> & z.ZodType<components['schemas']['AdminRunningJob']>
+const AdminRunningJobListSchema = z.array(AdminRunningJobSchema)
+
 const ChannelSchema = z.object({
   id: z.string(),
   slug: z.string(),
@@ -455,6 +467,14 @@ const ChannelPlanResponseSchema = z.object({
   msgId: z.number(),
   status: z.literal('queued'),
 }) satisfies z.ZodType<ChannelPlanResponse> & z.ZodType<components['schemas']['ChannelPlanResponse']>
+
+const ChannelTopicGenerateResponseSchema = z.object({
+  channelId: z.string(),
+  topicId: z.string(),
+  msgId: z.number(),
+  status: z.literal('queued'),
+}) satisfies z.ZodType<ChannelTopicGenerateResponse> &
+  z.ZodType<components['schemas']['ChannelTopicGenerateResponse']>
 
 const ChannelPublicSchema = z.object({
   slug: z.string(),
@@ -664,6 +684,29 @@ export const httpApi: Api = {
     )
   },
 
+  async deleteAdminEpisode(episodeId: string) {
+    await request<null>(`/admin/episodes/${encodeURIComponent(episodeId)}`, {
+      method: 'DELETE',
+      schema: null,
+      extraHeaders: adminHeaders(),
+    })
+  },
+
+  async listAdminRunningJobs() {
+    return request<readonly AdminRunningJob[]>('/admin/jobs/running', {
+      schema: AdminRunningJobListSchema,
+      extraHeaders: adminHeaders(),
+    })
+  },
+
+  async cancelAdminRunningJob(runId: string) {
+    await request<null>(`/admin/jobs/running/${encodeURIComponent(runId)}`, {
+      method: 'DELETE',
+      schema: null,
+      extraHeaders: adminHeaders(),
+    })
+  },
+
   async listAdminChannels() {
     return request<readonly Channel[]>('/admin/channels', {
       schema: ChannelListSchema,
@@ -727,6 +770,13 @@ export const httpApi: Api = {
     return request<ChannelTopic>(
       `/admin/channels/${encodeURIComponent(channelId)}/topics/${encodeURIComponent(topicId)}`,
       { method: 'PATCH', body, schema: ChannelTopicSchema, extraHeaders: adminHeaders() },
+    )
+  },
+
+  async generateChannelTopicEpisode(channelId: string, topicId: string) {
+    return request<ChannelTopicGenerateResponse>(
+      `/admin/channels/${encodeURIComponent(channelId)}/topics/${encodeURIComponent(topicId)}/generate`,
+      { method: 'POST', schema: ChannelTopicGenerateResponseSchema, extraHeaders: adminHeaders() },
     )
   },
 

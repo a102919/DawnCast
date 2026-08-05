@@ -5,7 +5,9 @@
 // 兩個數字不會一致，是預期行為。
 
 import { useEffect, useState } from 'react'
-import { BarChart3, ChevronRight, Cpu, Headphones, Heart, Play, RefreshCw } from 'lucide-react'
+import { AnimatePresence, motion } from 'framer-motion'
+import { toast } from 'sonner'
+import { BarChart3, ChevronRight, Cpu, Headphones, Heart, Play, RefreshCw, Trash2 } from 'lucide-react'
 import { api, AppError } from '../../api'
 import type { AdminEpisodeStats, AdminEpisodeStatsResponse } from '../../api'
 import { Button, Card, Chip, EmptyState, ErrorBanner, SectionLabel, StatCard } from '../../components/primitives'
@@ -112,7 +114,12 @@ export function EpisodesPage() {
 
         <div className="space-y-2">
           {sorted.map(item => (
-            <EpisodeStatsRow key={item.id} item={item} onOpen={() => setDetailItem(item)} />
+            <EpisodeStatsRow
+              key={item.id}
+              item={item}
+              onOpen={() => setDetailItem(item)}
+              onDeleted={() => setReloadKey(k => k + 1)}
+            />
           ))}
         </div>
       </Card>
@@ -122,52 +129,120 @@ export function EpisodesPage() {
   )
 }
 
-function EpisodeStatsRow({ item, onOpen }: { readonly item: AdminEpisodeStats; readonly onOpen: () => void }) {
+function EpisodeStatsRow({
+  item,
+  onOpen,
+  onDeleted,
+}: {
+  readonly item: AdminEpisodeStats
+  readonly onOpen: () => void
+  readonly onDeleted: () => void
+}) {
+  const [confirming, setConfirming] = useState(false)
+  const [deleting, setDeleting] = useState(false)
+
+  const handleDelete = async () => {
+    setDeleting(true)
+    try {
+      await api.deleteAdminEpisode(item.id)
+      toast.success('已刪除單集')
+      onDeleted()
+    } catch (err) {
+      toast.error(errorMessage(err))
+      setDeleting(false)
+    }
+  }
+
   return (
     <div className="border border-border rounded-lg overflow-hidden">
-      <button
-        type="button"
-        onClick={onOpen}
-        className="w-full flex flex-wrap items-center gap-x-4 gap-y-2 px-3 py-2.5 text-left transition-colors duration-fast ease-apple hover:bg-bg-secondary"
-      >
-        <div className="flex items-center gap-2 min-w-0">
-          <ChevronRight size={14} className="shrink-0 text-text-secondary" />
-          <div className="min-w-0">
-            <p className="text-sm text-text-primary truncate">{item.title}</p>
-            <p className="text-[11px] text-text-secondary truncate">
-              {item.channelName ?? '無頻道'}
-              <span className="mx-1.5">·</span>
-              EP {item.episodeNo}
-              <span className="mx-1.5">·</span>
-              {item.publishedAt || '未發布'}
-              <span className="mx-1.5">·</span>
-              {item.isFree ? '公開' : '私有'}
-            </p>
+      <div className="flex items-center transition-colors duration-fast ease-apple hover:bg-bg-secondary">
+        <button
+          type="button"
+          onClick={onOpen}
+          className="flex-1 min-w-0 flex flex-wrap items-center gap-x-4 gap-y-2 px-3 py-2.5 text-left"
+        >
+          <div className="flex items-center gap-2 min-w-0">
+            <ChevronRight size={14} className="shrink-0 text-text-secondary" />
+            <div className="min-w-0">
+              <p className="text-sm text-text-primary truncate">{item.title}</p>
+              <p className="text-[11px] text-text-secondary truncate">
+                {item.channelName ?? '無頻道'}
+                <span className="mx-1.5">·</span>
+                EP {item.episodeNo}
+                <span className="mx-1.5">·</span>
+                {item.publishedAt || '未發布'}
+                <span className="mx-1.5">·</span>
+                {item.isFree ? '公開' : '私有'}
+              </p>
+            </div>
           </div>
-        </div>
 
-        <div className="flex items-center gap-3 text-[11px] text-text-secondary ml-auto tabular-nums">
-          <span className="flex items-center gap-1" title="播放次數（僅計 migration 0023 部署後）">
-            <Play size={12} />
-            {item.playCount}
-          </span>
-          <span className="flex items-center gap-1" title="聽完人數">
-            <Headphones size={12} />
-            {item.listenerCount}
-          </span>
-          <span className="flex items-center gap-1" title="收藏數">
-            <Heart size={12} />
-            {item.favoriteCount}
-          </span>
-          <span className="text-right">
-            <div>入 {item.inputTokens.toLocaleString()}</div>
-            <div>出 {item.outputTokens.toLocaleString()}</div>
-          </span>
-          <span className="w-14 text-right shrink-0">
-            {item.wallMs !== null && item.wallMs !== undefined ? formatDuration(item.wallMs) : '—'}
-          </span>
-        </div>
-      </button>
+          <div className="flex items-center gap-3 text-[11px] text-text-secondary ml-auto tabular-nums">
+            <span className="flex items-center gap-1" title="播放次數（僅計 migration 0023 部署後）">
+              <Play size={12} />
+              {item.playCount}
+            </span>
+            <span className="flex items-center gap-1" title="聽完人數">
+              <Headphones size={12} />
+              {item.listenerCount}
+            </span>
+            <span className="flex items-center gap-1" title="收藏數">
+              <Heart size={12} />
+              {item.favoriteCount}
+            </span>
+            <span className="text-right">
+              <div>入 {item.inputTokens.toLocaleString()}</div>
+              <div>出 {item.outputTokens.toLocaleString()}</div>
+            </span>
+            <span className="w-14 text-right shrink-0">
+              {item.wallMs !== null && item.wallMs !== undefined ? formatDuration(item.wallMs) : '—'}
+            </span>
+          </div>
+        </button>
+
+        <button
+          type="button"
+          onClick={() => setConfirming(true)}
+          disabled={confirming || deleting}
+          aria-label={`刪除「${item.title}」`}
+          className="shrink-0 p-2 mr-2 rounded text-text-secondary transition-[color,transform] duration-fast ease-apple hover:text-danger active:scale-[0.9] disabled:opacity-40 disabled:cursor-not-allowed focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+        >
+          <Trash2 size={14} />
+        </button>
+      </div>
+
+      <AnimatePresence>
+        {confirming && (
+          <motion.div
+            key="confirm-delete-episode"
+            initial={{ opacity: 0, height: 0 }}
+            animate={{ opacity: 1, height: 'auto' }}
+            exit={{ opacity: 0, height: 0 }}
+            transition={{ duration: 0.2, ease: [0.2, 0.8, 0.2, 1] }}
+            className="overflow-hidden"
+          >
+            <div className="flex items-center gap-3 px-3 py-2.5 border-t border-border bg-bg-secondary">
+              <span className="text-xs text-danger mr-auto">此操作無法復原</span>
+              <button
+                type="button"
+                onClick={() => setConfirming(false)}
+                disabled={deleting}
+                className="text-sm text-text-secondary px-3 py-1.5 rounded-lg border border-border bg-bg-primary hover:bg-bg-secondary transition-colors min-h-[36px] disabled:opacity-40 disabled:cursor-not-allowed"
+              >
+                取消
+              </button>
+              <button
+                type="button"
+                onClick={() => void handleDelete()}
+                disabled={deleting}
+                className="text-sm text-white font-medium px-3 py-1.5 rounded-lg bg-danger hover:opacity-90 transition-opacity min-h-[36px] disabled:opacity-40 disabled:cursor-not-allowed"
+              >
+                {deleting ? '刪除中…' : '確定刪除'}
+              </button>
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
     </div>
   )
 }

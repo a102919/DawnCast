@@ -522,6 +522,32 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/admin/episodes/{episode_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /**
+         * Delete Admin Episode
+         * @description 刪除單集。episode_id 是 slug（同 GET .../generation 的參數語意）。
+         *
+         *     單一原子 DELETE...RETURNING 判斷成功與否，抓不到再查一次分辨「本來就沒有」。
+         *     不額外寫級聯清理：deliveries/user_favorites 是 on delete cascade，
+         *     user_vocab/user_heard_topics/channel_topics 的關聯欄位是 on delete set null
+         *     （見 scripts/migrations/0001_init.sql），R2 上的音檔/字幕物件不主動清——
+         *     ponytail: 留孤兒物件在 R2，儲存費用低，真的要清再寫批次腳本掃孤兒 key。
+         */
+        delete: operations["delete_admin_episode_admin_episodes__episode_id__delete"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/admin/jobs": {
         parameters: {
             query?: never;
@@ -537,6 +563,50 @@ export interface paths {
         put?: never;
         post?: never;
         delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/admin/jobs/running": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List Running Admin Jobs
+         * @description 目前正在生成中的集數（episode_pipeline_runs.status='running'）。
+         */
+        get: operations["list_running_admin_jobs_admin_jobs_running_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/admin/jobs/running/{run_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /**
+         * Cancel Running Admin Job
+         * @description 把卡住的 running 列從追蹤表拿掉。
+         *
+         *     這不會真的中止 worker 裡在跑的 LangGraph（同步跑完整條、沒有取消點），
+         *     只是清掉這筆 forensic 紀錄，讓它別再顯示成「正在生成」——worker 若真的還
+         *     活著，之後 finalize 時 upsert 這個 run_id 會失敗但不影響集數本身落地。
+         */
+        delete: operations["cancel_running_admin_job_admin_jobs_running__run_id__delete"];
         options?: never;
         head?: never;
         patch?: never;
@@ -677,6 +747,29 @@ export interface paths {
          *     只入 control 佇列，實際選題由 worker 執行（仿 POST /admin/eps/generate）。
          */
         post: operations["plan_channel_endpoint_admin_channels__channel_id__plan_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/admin/channels/{channel_id}/topics/{topic_id}/generate": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Generate Channel Topic Endpoint
+         * @description 管理員從選題庫挑一筆候選，手動觸發生成單集（不必等每日批次挑中它）。
+         *
+         *     只放行 candidate 狀態的選題——已經 scheduled/published/rejected 的選題
+         *     再次觸發會造成重複生成或語意混亂，一律 409。
+         */
+        post: operations["generate_channel_topic_endpoint_admin_channels__channel_id__topics__topic_id__generate_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -1224,6 +1317,27 @@ export interface components {
             errors?: string[];
         };
         /**
+         * AdminRunningJob
+         * @description 一筆正在執行中的生成任務（episode_pipeline_runs.status='running'）。
+         *
+         *     idempotency_key 已含 topic 文字（見 compute_idempotency_key），列表頁夠用，
+         *     不另外 join channel/episode——這張表在 upsert_episode 之前就存在，join 不到。
+         */
+        AdminRunningJob: {
+            /** Runid */
+            runId: string;
+            /** Idempotencykey */
+            idempotencyKey: string;
+            /** Attempt */
+            attempt: number;
+            /** Enqueuedat */
+            enqueuedAt?: string | null;
+            /** Startedat */
+            startedAt?: string | null;
+            /** Elapsedsec */
+            elapsedSec?: number | null;
+        };
+        /**
          * AdminTtsUsage
          * @description TTS 用量；provider="edge" 表示 MiniMax 失敗整份 fallback（該集 TTS 免費）。
          */
@@ -1286,6 +1400,13 @@ export interface components {
             /** Ok */
             ok: boolean;
             data?: components["schemas"]["ChannelPublic"] | null;
+            error?: components["schemas"]["ErrorBody"] | null;
+        };
+        /** ApiResponse[ChannelTopicGenerateResponse] */
+        ApiResponse_ChannelTopicGenerateResponse_: {
+            /** Ok */
+            ok: boolean;
+            data?: components["schemas"]["ChannelTopicGenerateResponse"] | null;
             error?: components["schemas"]["ErrorBody"] | null;
         };
         /** ApiResponse[ChannelTopic] */
@@ -1375,6 +1496,14 @@ export interface components {
             ok: boolean;
             /** Data */
             data?: components["schemas"]["AdminJobQueue"][] | null;
+            error?: components["schemas"]["ErrorBody"] | null;
+        };
+        /** ApiResponse[list[AdminRunningJob]] */
+        ApiResponse_list_AdminRunningJob__: {
+            /** Ok */
+            ok: boolean;
+            /** Data */
+            data?: components["schemas"]["AdminRunningJob"][] | null;
             error?: components["schemas"]["ErrorBody"] | null;
         };
         /** ApiResponse[list[ChannelPublic]] */
@@ -1574,6 +1703,25 @@ export interface components {
             createdAt: string;
             /** Decidedat */
             decidedAt?: string | null;
+        };
+        /**
+         * ChannelTopicGenerateResponse
+         * @description 手動挑選候選生成單集已排入 generate 佇列的確認資訊。202 僅表示已入列，
+         *     音檔完成後 worker 端既有的回填邏輯會把該 topic 狀態轉成 published。
+         */
+        ChannelTopicGenerateResponse: {
+            /** Channelid */
+            channelId: string;
+            /** Topicid */
+            topicId: string;
+            /** Msgid */
+            msgId: number;
+            /**
+             * Status
+             * @default queued
+             * @constant
+             */
+            status: "queued";
         };
         /**
          * CreateChannelBody
@@ -3325,6 +3473,39 @@ export interface operations {
             };
         };
     };
+    delete_admin_episode_admin_episodes__episode_id__delete: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path: {
+                episode_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiResponse_NoneType_"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     list_admin_jobs_admin_jobs_get: {
         parameters: {
             query?: never;
@@ -3343,6 +3524,70 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ApiResponse_list_AdminJobQueue__"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_running_admin_jobs_admin_jobs_running_get: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiResponse_list_AdminRunningJob__"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    cancel_running_admin_job_admin_jobs_running__run_id__delete: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path: {
+                run_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiResponse_NoneType_"];
                 };
             };
             /** @description Validation Error */
@@ -3589,6 +3834,40 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ApiResponse_ChannelPlanResponse_"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    generate_channel_topic_endpoint_admin_channels__channel_id__topics__topic_id__generate_post: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path: {
+                channel_id: string;
+                topic_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiResponse_ChannelTopicGenerateResponse_"];
                 };
             };
             /** @description Validation Error */

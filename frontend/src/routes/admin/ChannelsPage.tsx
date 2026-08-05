@@ -7,7 +7,7 @@
 import { useCallback, useEffect, useState } from 'react'
 import { toast } from 'sonner'
 import {
-  ChevronDown, ChevronRight, Image as ImageIcon, Pause, Play,
+  ChevronDown, ChevronRight, Image as ImageIcon, Mic, Pause, Play,
   Plus, RadioTower, RefreshCw, Sparkles, X,
 } from 'lucide-react'
 import { api, AppError } from '../../api'
@@ -305,6 +305,17 @@ function TopicBacklog({ channelId, onChanged }: TopicBacklogProps) {
     }
   }
 
+  const generate = async (topic: ChannelTopic) => {
+    try {
+      await api.generateChannelTopicEpisode(channelId, topic.id)
+      toast.success('已排入生成佇列，音檔完成後會出現在單集數據')
+      setReloadKey(k => k + 1)
+      onChanged()
+    } catch (err) {
+      toast.error(errorMessage(err))
+    }
+  }
+
   if (error) return <ErrorBanner message={error} variant="inline" />
   if (topics === null) return <p className="text-[11px] text-text-secondary py-2">載入選題庫…</p>
 
@@ -341,14 +352,24 @@ function TopicBacklog({ channelId, onChanged }: TopicBacklogProps) {
             </p>
           </div>
           {topic.status === 'candidate' && (
-            <button
-              type="button"
-              onClick={() => void reject(topic)}
-              aria-label={`否決「${topic.canonicalTopic}」`}
-              className="shrink-0 p-2 -m-1 rounded text-text-secondary transition-[color,transform] duration-fast ease-apple hover:text-danger active:scale-[0.9] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
-            >
-              <X size={14} />
-            </button>
+            <>
+              <button
+                type="button"
+                onClick={() => void generate(topic)}
+                aria-label={`用「${topic.canonicalTopic}」建立單集`}
+                className="shrink-0 p-2 -m-1 rounded text-text-secondary transition-[color,transform] duration-fast ease-apple hover:text-accent active:scale-[0.9] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+              >
+                <Mic size={14} />
+              </button>
+              <button
+                type="button"
+                onClick={() => void reject(topic)}
+                aria-label={`否決「${topic.canonicalTopic}」`}
+                className="shrink-0 p-2 -m-1 rounded text-text-secondary transition-[color,transform] duration-fast ease-apple hover:text-danger active:scale-[0.9] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+              >
+                <X size={14} />
+              </button>
+            </>
           )}
         </div>
       ))}
