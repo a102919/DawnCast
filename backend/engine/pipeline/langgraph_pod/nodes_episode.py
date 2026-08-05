@@ -65,7 +65,6 @@ async def upsert_episode_node(state: PodState, config: RunnableConfig) -> dict[s
     source = state.get("source") or "fallback"
     is_free = source != "specified"
     channel_id = state.get("channel_id")
-    channel_topic_id = state.get("channel_topic_id")
 
     # format 是 derived（=resolve_format(topic_type, length_tier)），不重複併入 idem_key。
     # channel_id 同理絕對不可進 idem_key：canonical_topic 已足以區分內容，把 channel
@@ -126,38 +125,12 @@ async def upsert_episode_node(state: PodState, config: RunnableConfig) -> dict[s
     if run_id is not None and not already_rendered:
         await repo.attach_pipeline_run_episode(run_id, episode_id)
 
-    # 頻道選題回填：只在「這次真的新產出」時才回填（already_rendered=True 代表撞到
-    # 既有集，選題狀態 / 頻道進度早該在第一次成功時就已回填過，這裡不重複做）。
-    # 兩個回填呼叫都必須容錯——這集已經產出來了，回填失敗是「選題庫狀態沒更新」
-    # 這種可事後修的次要問題，不可讓它拖垮整條已經成功的 graph（同 2026-07-20
-    # FK violation 死循環教訓：compensation / 回填一律 try/except 記 warning 就好）。
-    if not already_rendered:
-        if channel_topic_id is not None:
-            try:
-                from shared.db import channels  # noqa: PLC0415 lazy import
-
-                await channels.update_topic_status(
-                    channel_topic_id, "published", episode_id=episode_id
-                )
-            except Exception:
-                logger.warning(
-                    "頻道選題狀態回填失敗（不影響本集產出）channel_topic_id=%s episode_id=%s",
-                    channel_topic_id,
-                    episode_id,
-                    exc_info=True,
-                )
-        if channel_id is not None:
-            try:
-                from shared.db import channels  # noqa: PLC0415 lazy import
-
-                await channels.mark_channel_published(channel_id, deliver_date)
-            except Exception:
-                logger.warning(
-                    "頻道出版狀態回填失敗（不影響本集產出）channel_id=%s deliver_date=%s",
-                    channel_id,
-                    deliver_date,
-                    exc_info=True,
-                )
+    # 頻道選題回填（update_topic_status / mark_channel_published）刻意不在這裡做：
+    # 這時 episode row 才剛落庫，TTS/R2 上傳都還沒開始，過早標記 published 會在
+    # render/upload 失敗時留下「published 但沒有音檔」的孤兒選題（episode row 被
+    # 補償刪除後，FK ON DELETE SET NULL 只會清 episode_id，不會把 status 改回
+    # candidate，pick_daily_topics 也不會再選到它）。回填改到 update_episode_keys_node
+    # （音檔/字幕都寫完之後）才做，見該處註解。
 
     if usage_log:
         logger.info(
@@ -387,7 +360,49 @@ async def update_episode_keys_node(state: PodState, config: RunnableConfig) -> d
             gen_metrics=collector.gen_metrics(),
             research_metrics=collector.research_metrics(),
         )
+
+    # 這裡是本節點會執行到就代表音檔/字幕都已成功寫完（storage_decision 只在
+    # not storage_failed 時才路由到這裡；already_rendered 也會直接跳過整個
+    # render/upload/update_keys，見 graph.py render_branch_decision）——所以能
+    # 安全地把 published 落到 channel_topics，不會再出現「published 但沒有音檔」
+    # 的孤兒選題。
+    await _backfill_channel_topic_status(state)
+
     return {}
+
+
+async def _backfill_channel_topic_status(state: PodState) -> None:
+    """頻道選題回填。兩個呼叫都必須容錯——這集已經產出來了，回填失敗是「選題庫狀態
+    沒更新」這種可事後修的次要問題，不可讓它拖垮整條已經成功的 graph（同 2026-07-20
+    FK violation 死循環教訓：compensation / 回填一律 try/except 記 warning 就好）。
+    """
+    from shared.db import channels  # noqa: PLC0415 lazy import（頻道機制專用）
+
+    channel_topic_id = state.get("channel_topic_id")
+    channel_id = state.get("channel_id")
+    episode_id = state["episode_id"]
+    if channel_topic_id is not None:
+        try:
+            await channels.update_topic_status(
+                channel_topic_id, "published", episode_id=episode_id
+            )
+        except Exception:
+            logger.warning(
+                "頻道選題狀態回填失敗（不影響本集產出）channel_topic_id=%s episode_id=%s",
+                channel_topic_id,
+                episode_id,
+                exc_info=True,
+            )
+    if channel_id is not None:
+        try:
+            await channels.mark_channel_published(channel_id, state["deliver_date"])
+        except Exception:
+            logger.warning(
+                "頻道出版狀態回填失敗（不影響本集產出）channel_id=%s deliver_date=%s",
+                channel_id,
+                state["deliver_date"],
+                exc_info=True,
+            )
 
 
 # ── Node 9: insert_deliveries ─────────────────────────────

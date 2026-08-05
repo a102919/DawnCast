@@ -916,6 +916,48 @@ async def test_generate_job_topic_status_backfill_failure_does_not_break_episode
     assert calls["mark_channel_published"] == [("chan-1", "2026-07-29")]
 
 
+async def test_generate_job_storage_failure_leaves_topic_candidate(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """R2 上傳失敗 → dead_letter graceful END：episode row 被刪，channel_topics
+    完全沒被碰過（停在 candidate，下次 pick_daily_topics 還能選到）。
+
+    這是回填時機從 upsert_episode_node（音檔/字幕都還沒寫）搬到
+    update_episode_keys_node（音檔/字幕都寫完才算數）修好的孤兒選題 bug：舊版
+    會先標記 published，上傳失敗後 episode row 被補償刪除，FK ON DELETE SET
+    NULL 只清得掉 episode_id，status='published' 永遠回不去 candidate。
+    """
+    script = _sample_script()
+    repo_spy = _GenRepoSpy()
+
+    async def fake_delete_episode_by_idem(idem_key: str) -> None:
+        return None
+
+    repo_spy.delete_episode_by_idem = fake_delete_episode_by_idem  # type: ignore[attr-defined]
+
+    mocks, _ = _patch_generate_job(monkeypatch, script=script, repo_spy=repo_spy)
+
+    def fake_put_fails(key: str, data: bytes, content_type: str) -> None:
+        raise RuntimeError("R2 down")
+
+    mocks["r2"].put_object = fake_put_fails  # type: ignore[method-assign]
+    calls = _patch_channels(monkeypatch, next_no=1)
+
+    body = {
+        "big_topic": "科技",
+        "angle": "定義",
+        "deliver_date": "2026-07-29",
+        "user_ids": ["u1"],
+        "channel_id": "chan-1",
+        "channel_topic_id": "topic-9",
+    }
+    episode_id = await generate_job.run_generate_job(body, **mocks)
+
+    assert episode_id is None  # dead_letter_node 明確把 episode_id 清成 None
+    assert calls["update_topic_status"] == []  # 從沒被標記 published，仍是 candidate
+    assert calls["mark_channel_published"] == []
+
+
 async def test_generate_job_degrade_gives_up(monkeypatch: pytest.MonkeyPatch) -> None:
     """failover_mode=degrade：限流直接放棄（raise RateLimitError），不落庫、不交付。"""
     script = _sample_script()
