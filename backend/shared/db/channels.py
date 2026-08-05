@@ -338,14 +338,17 @@ async def pick_daily_topics(*, min_score: float, max_slots: int) -> list[dict[st
       2. 飢餓因子 `least(3.0, 距上次發布天數 / target_interval_days)` 乘上
          score 當排序用的 priority：距離自己的目標間隔越久沒發布，priority
          被放大越多（上限 3 倍，避免長期停更的頻道一回歸就無限期霸榜），
-         讓慢節奏／冷門頻道不會被熱門頻道長期壓著排不到。
+         讓慢節奏／冷門頻道排序上更容易贏過剛發布不久的頻道——純粹是
+         排序權重，不是硬性資格門檻（見下）。
       3. 候選不足（不到 max_slots 筆，甚至 0 筆）就照實回傳少於 max_slots
          筆——「沒內容就不產」是刻意的設計，不是 bug；上層不該為了湊數硬塞
          低分主題進生成佇列。
 
     篩選條件：頻道 status='active'、選題 status='candidate'、score >= 門檻
-    （對齊 Settings.channel_min_topic_score），且該頻道已經到了 / 超過
-    target_interval_days（或從未發布過）才有資格入選。
+    （對齊 Settings.channel_min_topic_score）。`target_interval_days` 只影響
+    飢餓因子的排序權重，不再是「未到間隔天數就整個排除」的硬門檻——每天都
+    讓 worker 自己依候選庫存與分數判斷要不要產，避免多個頻道剛好同步到同一
+    個發布日、之後全部一起卡在冷卻期裡好幾天生不出東西。
     """
     async with connection() as conn, conn.cursor(row_factory=dict_row) as cur:
         await cur.execute(
@@ -363,8 +366,6 @@ async def pick_daily_topics(*, min_score: float, max_slots: int) -> list[dict[st
                where ct.status = 'candidate'
                  and ct.score >= %s
                  and c.status = 'active'
-                 and (c.last_published_at is null
-                      or current_date - c.last_published_at >= c.target_interval_days)
                order by c.id, ct.score desc
             )
             select * from eligible order by priority desc limit %s
