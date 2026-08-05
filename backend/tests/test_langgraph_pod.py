@@ -13,6 +13,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 from typing import TYPE_CHECKING, Any, cast
 
@@ -1253,6 +1254,41 @@ async def test_pod_pre_upsert_failure_leaves_forensic_run(pod_mocks: PodMocks) -
     assert run.error["type"] == "GenerationError"
 
 
+async def test_pod_timeout_cancellation_leaves_forensic_run(
+    monkeypatch: pytest.MonkeyPatch, pod_mocks: PodMocks
+) -> None:
+    """worker 端 asyncio.timeout 逾時取消 run_pod 時拋出的是 asyncio.CancelledError
+    （繼承 BaseException，不是 Exception），forensic run 仍要即時收斂成
+    status=timeout，而不是永遠卡 running——這是 admin「執行中任務監控頁」
+    卡死列表累積的根因回歸測試（見 __init__.py 的 CancelledError handler）。
+    """
+    import engine.pipeline.langgraph_pod as pod_module
+
+    class _CancellingGraph:
+        async def ainvoke(self, *args: Any, **kwargs: Any) -> Any:
+            raise asyncio.CancelledError()
+
+    monkeypatch.setattr(pod_module, "build_pod", lambda **kw: _CancellingGraph())
+
+    chat = FakeChatModel(responses=["not json"], judge_responses=[_judge_json(0.8)])
+    repo, r2, queue, renderer = pod_mocks
+
+    with pytest.raises(asyncio.CancelledError):
+        await run_pod(
+            _body(),
+            chat=chat,
+            repo=repo,
+            r2=r2,
+            queue=queue,
+            renderer=renderer,
+        )
+
+    assert len(repo.pipeline_runs) == 1
+    run = next(iter(repo.pipeline_runs.values()))
+    assert run.status == "timeout"
+    assert run.episode_id is None
+    assert run.error is not None
+    assert run.error["type"] == "CancelledError"
 
 
 # ── _normalize_line_lengths 行為測試 ──────────────────────────────────
@@ -1266,24 +1302,28 @@ def _short_script(n: int = 8) -> list[dict[str, Any]]:
     speakers = ["Alex", "Sarah"]
     out = []
     for i in range(n):
-        out.append({
-            "speaker": speakers[i % 2],
-            "text": f"quantum line {i}",  # 3 詞，遠低於 20 上限
-            "zh": f"短句{i}",
-        })
+        out.append(
+            {
+                "speaker": speakers[i % 2],
+                "text": f"quantum line {i}",  # 3 詞，遠低於 20 上限
+                "zh": f"短句{i}",
+            }
+        )
     return out
 
 
 def _build_script(lines: list[dict[str, Any]]) -> ScriptJSON:
-    return ScriptJSON.model_validate({
-        "topic": "Quantum",
-        "topic_zh": "量子",
-        "category": "science",
-        "extracted_facts": [{"claim": "f", "source_ids": []}],
-        "target_vocab": [{"word": "quantum", "explanation": "tiny unit"}],
-        "format": "dialogue",
-        "script": lines,
-    })
+    return ScriptJSON.model_validate(
+        {
+            "topic": "Quantum",
+            "topic_zh": "量子",
+            "category": "science",
+            "extracted_facts": [{"claim": "f", "source_ids": []}],
+            "target_vocab": [{"word": "quantum", "explanation": "tiny unit"}],
+            "format": "dialogue",
+            "script": lines,
+        }
+    )
 
 
 def test_normalize_line_lengths_noop_returns_same_object() -> None:
@@ -1377,23 +1417,27 @@ def test_normalize_line_lengths_preserves_speaker_and_metadata() -> None:
     from engine.pipeline.langgraph_pod.nodes import _normalize_line_lengths
 
     lines: list[dict[str, Any]] = [{"speaker": "Alex", "text": "quantum intro", "zh": "量子引子"}]
-    lines.append({
-        "speaker": "Sarah",
-        "text": (
-            "quantum see we knew it all along since the very start of this "
-            "journey and nothing could have stopped us from finding out eventually"
-        ),
-        "zh": "不然你其實早就知道答案了。",
-        "pause_before": True,
-        "emotion": "happy",
-    })
+    lines.append(
+        {
+            "speaker": "Sarah",
+            "text": (
+                "quantum see we knew it all along since the very start of this "
+                "journey and nothing could have stopped us from finding out eventually"
+            ),
+            "zh": "不然你其實早就知道答案了。",
+            "pause_before": True,
+            "emotion": "happy",
+        }
+    )
     while len(lines) < 8:
         i = len(lines)
-        lines.append({
-            "speaker": "Alex" if i % 2 == 0 else "Sarah",
-            "text": f"quantum filler {i}",
-            "zh": f"短{i}",
-        })
+        lines.append(
+            {
+                "speaker": "Alex" if i % 2 == 0 else "Sarah",
+                "text": f"quantum filler {i}",
+                "zh": f"短{i}",
+            }
+        )
     out = _normalize_line_lengths(_build_script(lines))
 
     assert out.script[1].pause_before is True
@@ -1435,7 +1479,7 @@ async def test_invoke_writer_normalizes_long_lines_in_returned_script(
 
     # filler 用 60× 'quantum filler text ' 撐過 word_floor=216（short × A2）；
     # 它的 zh 只有幾個字，切不出對應段數 → 整行沿用（本測試只驗 long_text 那行被切）。
-    filler_long = 'quantum filler text ' * 60
+    filler_long = "quantum filler text " * 60
     seg_lines = [
         {"speaker": "Alex", "text": filler_long, "zh": "量子開場一", "pause_before": False},
         {"speaker": "Sarah", "text": long_text, "zh": long_zh, "pause_before": False},
@@ -1481,7 +1525,8 @@ async def test_invoke_writer_normalizes_long_lines_in_returned_script(
     out_script = result["script"]
     # 長行必須被切成 ≤20 詞的 2 段，且拼接保真
     split_pairs = [
-        ln.text for ln in out_script.script
+        ln.text
+        for ln in out_script.script
         if "quantum reveals" in ln.text or "sleep cycles" in ln.text
     ]
     assert len(split_pairs) == 2, f"split 兩段未找到: {split_pairs}"
@@ -1515,17 +1560,19 @@ class _RecordingChat(FakeChatModel):
 
 def _seg_response(prefix: str, *, start: int = 0, n_lines: int = 5) -> str:
     """一段合法的段落回應；每行 60 詞讓兩段合起來過 word_floor。"""
-    return json.dumps({
-        "script": [
-            {
-                "speaker": "Alex" if (i + start) % 2 == 0 else "Sarah",
-                "text": "quantum filler text " * 20,
-                "zh": f"{prefix}填充{i}",
-                "pause_before": False,
-            }
-            for i in range(n_lines)
-        ]
-    })
+    return json.dumps(
+        {
+            "script": [
+                {
+                    "speaker": "Alex" if (i + start) % 2 == 0 else "Sarah",
+                    "text": "quantum filler text " * 20,
+                    "zh": f"{prefix}填充{i}",
+                    "pause_before": False,
+                }
+                for i in range(n_lines)
+            ]
+        }
+    )
 
 
 def _writer_state(**overrides: Any) -> dict[str, Any]:

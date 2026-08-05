@@ -392,6 +392,34 @@ async def finalize_pipeline_run(
         )
 
 
+async def finalize_stuck_pipeline_runs(older_than_sec: int) -> list[dict[str, Any]]:
+    """把跑超過門檻仍卡 running 的 forensic row 收斂成 timeout（reconcile 兜底）。
+
+    正常路徑（run_pod 的 CancelledError/Exception handler）會即時 finalize；這裡
+    只接漏網之魚（worker process 被 OOM-kill/SIGKILL、未來程式碼路徑漏呼叫）。
+    單一原子 UPDATE...RETURNING，不會跟正在正常收尾的 run 搶同一筆。
+    """
+    async with connection() as conn, conn.cursor(row_factory=dict_row) as cur:
+        await cur.execute(
+            """
+            update public.episode_pipeline_runs
+            set status = 'timeout',
+                finished_at = now(),
+                error = jsonb_build_object(
+                    'node', 'reconcile', 'type', 'StuckTimeout',
+                    'message', 'started_at 超過門檻仍未 finalize'
+                ),
+                updated_at = now()
+            where status = 'running'
+              and started_at < now() - make_interval(secs => %s)
+            returning run_id, idempotency_key, attempt
+            """,
+            (older_than_sec,),
+        )
+        rows = await cur.fetchall()
+    return [dict(r) for r in rows]
+
+
 async def find_reusable_episode(
     big_topic: str,
     user_id: str,

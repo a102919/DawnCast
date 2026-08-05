@@ -284,6 +284,27 @@ async def update_topic_status(topic_id: str, status: str, *, episode_id: str | N
         return cur.rowcount > 0
 
 
+async def revert_stuck_scheduled_topics(older_than_sec: int) -> list[dict[str, Any]]:
+    """卡在 scheduled 超過門檻仍沒有 episode_id 的選題，判定生成已逾時失敗，
+    退回 candidate 讓 pick_daily_topics／admin 手動觸發能再選到它，而不是
+    永遠從候選庫消失（decided_at 由 update_topic_status 在轉 scheduled 時蓋過）。
+    """
+    async with connection() as conn, conn.cursor(row_factory=dict_row) as cur:
+        await cur.execute(
+            """
+            update public.channel_topics
+            set status = 'candidate', decided_at = now()
+            where status = 'scheduled'
+              and episode_id is null
+              and decided_at < now() - make_interval(secs => %s)
+            returning id, channel_id, canonical_topic
+            """,
+            (older_than_sec,),
+        )
+        rows = await cur.fetchall()
+    return [dict(r) for r in rows]
+
+
 async def count_candidates(channel_id: str) -> int:
     """該頻道目前 candidate 狀態的選題庫存量，給 Settings.channel_backlog_target 比對。"""
     async with connection() as conn, conn.cursor(row_factory=dict_row) as cur:

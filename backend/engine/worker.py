@@ -36,6 +36,7 @@ from engine.pipeline.evergreen import run_evergreen
 from engine.pipeline.generate_job import run_generate_job
 from engine.pipeline.reuse import resolve_for_user
 from shared.config import Settings, get_settings
+from shared.db import channels as channels_db
 from shared.db import queue
 from shared.db import repo as app_repo
 from shared.db.pool import close_pool, open_pool
@@ -62,6 +63,12 @@ STUCK_QUEUED_SEC = 1200
 EXPIRE_AFTER_SEC = 1800
 # push_daily 整合通知的 body 一次最多列幾集標題；超過時標題仍寫「等 N 集」提示還有更多。
 MAX_BODY_TITLES = 3
+# episode_pipeline_runs / channel_topics reconcile 逾時門檻（migration 0029）：
+# dead_letter_after(3) 次重試 × GENERATE_VT(1100s) ≈ 55 分鐘是 pgmq 層真正判定
+# 「永久失敗」的世界觀上限；60 分鐘留一點餘裕，避免誤判仍在正常重試中的 run。
+# 正常路徑（run_pod 的 CancelledError/Exception handler）本來就會即時 finalize，
+# 這只是接漏網之魚（worker process 被 OOM-kill、未來程式碼路徑漏寫）。
+PIPELINE_RUN_STUCK_SEC = 3600
 
 
 class _Shutdown:
@@ -105,6 +112,8 @@ async def _handle_control(body: dict[str, Any]) -> None:
         await run_evergreen(anchor)
     elif task == "order_reconcile":
         await _order_reconcile()
+    elif task == "pipeline_reconcile":
+        await _pipeline_reconcile()
     elif task == "daily_podcast":
         # 02:00 每日公開批次：DB function 用 deliver_date 做 atomic claim，
         # duplicate control 會回傳 -1（未送出任何訊息），不會重送 generate。
@@ -278,6 +287,45 @@ async def _order_reconcile() -> None:
         logger.warning("order_reconcile：訂單 %s 逾時，補墊檔常青集 %s", o["id"], episode_id)
 
 
+async def _pipeline_reconcile() -> None:
+    """每 10 分鐘（migration 0029）：收斂卡死超過門檻的生成任務 forensic 紀錄與選題狀態。
+
+    正常逾時走 run_pod 的 CancelledError/Exception handler 就會即時 finalize；
+    這裡只接漏網之魚（worker process 被 OOM-kill、未來程式碼路徑漏寫）。兩步
+    互相獨立，各自 try/except，其中一步失敗不拖垮另一步——下一輪（10 分鐘後）
+    會再試。穩態應該都是 0 筆，命中即代表某條寫入路徑漏收斂，才需要 warning 級。
+    """
+    try:
+        stuck_runs = await repo.finalize_stuck_pipeline_runs(PIPELINE_RUN_STUCK_SEC)
+    except Exception:
+        logger.exception("pipeline_reconcile：finalize_stuck_pipeline_runs 失敗，本輪略過")
+    else:
+        for r in stuck_runs:
+            logger.warning(
+                "pipeline_reconcile：run_id=%s（idem=%s, attempt=%d）跑超過 %ds 仍未 finalize，"
+                "已收斂成 timeout",
+                r["run_id"],
+                r["idempotency_key"],
+                r["attempt"],
+                PIPELINE_RUN_STUCK_SEC,
+            )
+
+    try:
+        reverted = await channels_db.revert_stuck_scheduled_topics(PIPELINE_RUN_STUCK_SEC)
+    except Exception:
+        logger.exception("pipeline_reconcile：revert_stuck_scheduled_topics 失敗，本輪略過")
+    else:
+        for t in reverted:
+            logger.warning(
+                "pipeline_reconcile：選題 %s（channel_id=%s, %s）scheduled 超過 %ds 仍無 episode，"
+                "已退回 candidate",
+                t["id"],
+                t["channel_id"],
+                t["canonical_topic"],
+                PIPELINE_RUN_STUCK_SEC,
+            )
+
+
 # ── 生成訊息處理 ───────────────────────────────────────────────────
 
 
@@ -369,6 +417,7 @@ async def _run_generate(gen: Msg, settings: Settings) -> None:
     這裡只會接到 queue.delete/archive 本身失敗，併發模式下不能讓它變成沒人
     接的 Task exception（asyncio 只會在 GC 時印一行警告），要主動記 log。
     """
+
     async def gen_handler(body: dict[str, Any]) -> None:
         await _handle_generate(body, settings.job_timeout_sec, gen.enqueued_at)
 
@@ -400,9 +449,7 @@ async def run_worker(shutdown: _Shutdown | None = None) -> None:
                 # 本身失敗（同 _run_generate 的理由），不能讓它冒出主迴圈把整個
                 # worker process（含 generate/dict_translate）一起拖死。
                 try:
-                    await _process(
-                        CONTROL_QUEUE, ctrl, _handle_control, settings.dead_letter_after
-                    )
+                    await _process(CONTROL_QUEUE, ctrl, _handle_control, settings.dead_letter_after)
                 except Exception:
                     logger.exception("control msg_id=%s queue 層失敗", ctrl.msg_id)
                 continue

@@ -9,6 +9,7 @@ checkpointer 替換）。
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from collections.abc import Callable
 from datetime import datetime
@@ -35,6 +36,11 @@ from .mock import MockRenderer, get_mocks, make_mock_workdir
 SourceProviderFactory = Callable[[str, Settings], Any]
 
 logger = logging.getLogger(__name__)
+
+# CancelledError 收尾寫入的逾時保護：worker 端 asyncio.timeout 已經判定超時，
+# 這裡不能再無界等待 DB（連線池打不到就會讓 job_timeout_sec 形同虛設）。
+# 逾時就放棄，交給 pipeline_reconcile cron（0029 migration）兜底收斂。
+_CANCEL_FINALIZE_TIMEOUT_SEC = 5
 
 
 def _build_runtime_context(
@@ -178,14 +184,14 @@ async def run_pod(
     runtime["metrics_collector"] = collector
     runtime["pipeline_run_id"] = run_id
 
-    async def _finalize_run_failed(exc_type: str, message: str) -> None:
+    async def _finalize_run_failed(status: str, exc_type: str, message: str) -> None:
         collector.finalize(
-            "failed", error={"node": "run_pod", "type": exc_type, "message": message[:500]}
+            status, error={"node": "run_pod", "type": exc_type, "message": message[:500]}
         )
         try:
             await runtime["repo"].finalize_pipeline_run(
                 run_id,
-                status="failed",
+                status=status,
                 gen_metrics=collector.gen_metrics(),
                 research_metrics=collector.research_metrics(),
                 error=collector.error,
@@ -209,9 +215,7 @@ async def run_pod(
         "avoid_facts": list(body.get("avoid_facts") or []),
         "order_id": body.get("order_id"),
         # A/B：message 沒帶就吃 settings 預設，prod 既有路徑行為不變
-        "writer_conversation": bool(
-            body.get("writer_conversation", cfg.writer_conversation_mode)
-        ),
+        "writer_conversation": bool(body.get("writer_conversation", cfg.writer_conversation_mode)),
         "channel_id": channel_id,
         "channel_topic_id": channel_topic_id,
         "series_context": list(series_context or []),
@@ -243,10 +247,22 @@ async def run_pod(
 
     try:
         final: Any = await graph.ainvoke(initial, config=config)
+    except asyncio.CancelledError as exc:
+        # worker 端 asyncio.timeout 逾時會對這個 task 呼叫 cancel()，CancelledError
+        # 繼承 BaseException、不會被下面 except Exception 接住——漏接就是
+        # episode_pipeline_runs 永遠卡 status='running' 的根因，raise 前務必先收斂。
+        try:
+            await asyncio.wait_for(
+                asyncio.shield(_finalize_run_failed("timeout", type(exc).__name__, str(exc))),
+                timeout=_CANCEL_FINALIZE_TIMEOUT_SEC,
+            )
+        except (TimeoutError, asyncio.CancelledError):
+            logger.warning("finalize_run_failed 逾時未完成 run_id=%s，交由 reconcile 兜底", run_id)
+        raise
     except Exception as exc:
         # graph 整個炸掉（多半發生在 upsert_episode 之前，例如 write_script 重試
         # 耗盡）：episode row 可能還沒建立，forensic run row 是唯一留得住的紀錄。
-        await _finalize_run_failed(type(exc).__name__, str(exc))
+        await _finalize_run_failed("failed", type(exc).__name__, str(exc))
         raise
     finally:
         if not effective_mock:
@@ -272,7 +288,7 @@ async def run_pod(
         # worker 端 vt-retry 機制會接手重投；rate limit 也要明確 raise 讓
         # production 觀測能正確分流。這條路徑通常發生在 upsert_episode 之前，
         # 尚未有其他 node 幫忙 finalize forensic run，這裡補上。
-        await _finalize_run_failed("NoEpisodeId", str(errors))
+        await _finalize_run_failed("failed", "NoEpisodeId", str(errors))
         if final.get("rate_limited"):
             raise RateLimitError(f"pod 限流且未啟用 failover：{errors}")
         raise RuntimeError(f"pod 沒產出 episode_id：errors={errors}")

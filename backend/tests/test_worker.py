@@ -437,6 +437,68 @@ async def test_order_reconcile_promote_failure_does_not_block_downstream(
     assert called == ["expire", "list_pending", "list_queued"]
 
 
+# ── _pipeline_reconcile ──────────────────────────────────────────────
+
+
+async def test_pipeline_reconcile_finalizes_stuck_runs_and_reverts_topics(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """兩步各自獨立呼叫，都命中門檻資料就都要跑到（正常逾時走 run_pod 的
+    CancelledError handler 就會即時收斂，這裡只是接漏網之魚）。"""
+    stuck_runs = [{"run_id": "r1", "idempotency_key": "idem1", "attempt": 2}]
+    reverted_topics = [{"id": "t1", "channel_id": "c1", "canonical_topic": "量子力學"}]
+
+    async def fake_finalize_stuck(older_than_sec: int) -> list[dict[str, Any]]:
+        assert older_than_sec == worker.PIPELINE_RUN_STUCK_SEC
+        return stuck_runs
+
+    async def fake_revert(older_than_sec: int) -> list[dict[str, Any]]:
+        assert older_than_sec == worker.PIPELINE_RUN_STUCK_SEC
+        return reverted_topics
+
+    monkeypatch.setattr(worker.repo, "finalize_stuck_pipeline_runs", fake_finalize_stuck)
+    monkeypatch.setattr(worker.channels_db, "revert_stuck_scheduled_topics", fake_revert)
+
+    await worker._pipeline_reconcile()  # 不拋例外即代表兩步都正常跑完
+
+
+async def test_pipeline_reconcile_run_finalize_failure_does_not_block_topic_revert(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """finalize_stuck_pipeline_runs 失敗不能拖垮 revert_stuck_scheduled_topics——
+    兩步互相獨立，下一輪（10 分鐘後）會再試失敗的那步。"""
+    called: list[str] = []
+
+    async def fake_finalize_stuck(older_than_sec: int) -> list[dict[str, Any]]:
+        raise RuntimeError("db down")
+
+    async def fake_revert(older_than_sec: int) -> list[dict[str, Any]]:
+        called.append("revert")
+        return []
+
+    monkeypatch.setattr(worker.repo, "finalize_stuck_pipeline_runs", fake_finalize_stuck)
+    monkeypatch.setattr(worker.channels_db, "revert_stuck_scheduled_topics", fake_revert)
+
+    await worker._pipeline_reconcile()
+
+    assert called == ["revert"]
+
+
+async def test_handle_control_dispatches_pipeline_reconcile(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    called: list[str] = []
+
+    async def fake_reconcile() -> None:
+        called.append("pipeline_reconcile")
+
+    monkeypatch.setattr(worker, "_pipeline_reconcile", fake_reconcile)
+
+    await worker._handle_control({"task": "pipeline_reconcile"})
+
+    assert called == ["pipeline_reconcile"]
+
+
 # ── run_worker：generate 併發上限 ────────────────────────────────────
 
 
