@@ -1070,7 +1070,11 @@ def _split_zh_text(zh: str, weights: list[int]) -> list[str] | None:
         ideal = round(len(zh) * sum(weights[: i + 1]) / total_w)
         lo, hi = used + 1, len(zh) - (n - 1 - i)
         pos = min(max(ideal, lo), hi)
-        for offset in range(_ZH_SNAP_WINDOW + 1):
+        # window 隨句長縮放：ideal 是按「英文詞數」比例推的，但中譯內嵌的拉丁字
+        # （codebase 是 1 個英文詞卻佔 8 個中文字位）會讓比例位置系統性偏離真正的
+        # 子句邊界，偏移量隨句長成長；固定 8 字對長句永遠差那麼一兩步找不到標點。
+        window = max(_ZH_SNAP_WINDOW, len(zh) // 4)
+        for offset in range(window + 1):
             snapped = next(
                 (
                     c
