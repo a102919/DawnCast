@@ -21,7 +21,7 @@ from pydantic import ValidationError as PydanticValidationError
 
 from engine.pipeline.langgraph_pod.prompt import _strip_code_fence
 from shared.config import Settings
-from shared.errors import GenerationError, RateLimitError
+from shared.errors import EngineError, GenerationError, RateLimitError
 from shared.models import (
     ScriptFormat,
     ScriptJSON,
@@ -458,7 +458,7 @@ def _build_outline_messages(
     # 抓到也只能整輪重打——因為失衡是均勻分佈在每一段，不是某幾段特別壞。改在這裡
     # 逐段指派 primary_speaker，讓失衡在生成前就不會發生。
     speaker_task = (
-        "\nFor each segment also assign `primary_speaker` (\"Alex\" or \"Sarah\") — "
+        '\nFor each segment also assign `primary_speaker` ("Alex" or "Sarah") — '
         "whoever explains most of that segment's content; the other host mainly asks "
         "questions / reacts. ALTERNATE this across segments (don't pick the same host "
         "for every segment) so total explaining time ends up roughly balanced between "
@@ -1019,17 +1019,21 @@ async def _generate_segment(  # type: ignore[return]
         raise last_exc
 
 
-# ── 短句正規化：純 Python 機械切分，內容一字不改 ────────────────
+# ── 短句正規化：LLM 分句（保真驗證）＋機械兜底 ────────────────
 #
-# 中英對照要對得上，每行英文就不能太長。而「切分」只是決定在哪裡斷，內容一字不改，
-# 所以不需要 LLM：英文照詞界切（切點優先落在標點結尾的詞之後），中譯照各段英文詞數
-# 的比例切、再吸附到最近的中文標點。兩邊段數一致、只做字串切片，串回去必然等於原文，
-# 保真由切法本身保證，不需要事後逐字驗證，也沒有「驗不過就整條退回」這回事。
+# 中英對照要對得上，每行英文就不能太長。「切在哪裡」需要語意判斷——中英句子順序
+# 有時會被翻譯調換，純位置/比例猜測配不出正確的句子對應（見 2026-08-06 使用者
+# 回報：中文翻譯貼到錯的英文段）——所以交給 LLM 分句，但只驗證「內容一字不改
+# ＋段數一致」這種可以字串比對的硬條件，不要求段數/每段字數（那是舊版失敗的
+# 根因，見下段）。驗證不過的行、或 LLM 呼叫失敗（限流/解析錯誤），退回
+# `_split_line` 的機械切分頂上——保證不管 LLM 好不好用，這條路徑都不會讓一集
+# 卡住或內容遺失。
 #
-# 舊版把切分丟回 LLM 再驗證，實測每集燒 ~43k tokens／260 秒卻幾乎沒效果：規則同時要求
-# 「切 2-3 段」與「每段 ≤12 詞」，兩者相乘代表一行超過 36 詞在規則上就不可能通過驗證，
-# 而實測腳本裡 40-80 詞的行很常見；這些行每輪被送去切、每輪被退回沿用原行，跑滿三層
-# 遞迴後仍有 24-36 行超長。機械切分沒有段數上限，一次就切乾淨。
+# 舊版（純 LLM，無機械兜底）實測每集燒 ~43k tokens／260 秒卻幾乎沒效果：規則同時
+# 要求「切 2-3 段」與「每段 ≤12 詞」，兩者相乘代表一行超過 36 詞在規則上就不可能
+# 通過驗證，而實測腳本裡 40-80 詞的行很常見；這些行每輪被送去切、每輪被退回沿用
+# 原行，跑滿三層遞迴後仍有 24-36 行超長。這次改法只驗證內容保真（不驗證段數/字數），
+# 且驗不過就有機械兜底頂住，不會出現「整條退回原行」的死結。
 
 _TARGET_TEXT_WORD_COUNT = 20
 # 每段英文詞數上限（20 詞）：改字而非改 tokens：以 words 計，LLM 看得到目標、
@@ -1144,22 +1148,74 @@ def _split_zh_text(zh: str, weights: list[int]) -> list[str] | None:
     return [zh[a:b] for a, b in pairwise(bounds)]
 
 
-def _split_line(line: ScriptLine, target_max_words: int) -> list[ScriptLine]:
-    """單行切分；不需要切（或 zh 短到切不動）時回傳只含原行的 list。"""
-    tokens = line.text.split()
-    if len(tokens) <= target_max_words:
-        return [line]
+# 英文句尾標點（跳過刪節號 ... ，避免把 "just... handled" 切成兩句）＋其後空白，
+# 空白併入前一句尾端使 "".join(結果) 恆等於原文。中文句尾標點是零寬斷點，
+# 不吃字元，切完直接 "".join 也恆等於原文。
+_EN_SENTENCE_SPLIT_RE = re.compile(r"(?<!\.\.)(?<=[.!?])\s+")
+_ZH_SENTENCE_SPLIT_RE = re.compile(r"(?<=[。！？])")
 
-    n_parts = min(-(-len(tokens) // target_max_words), len(tokens))
-    en_parts = _split_en_words(tokens, n_parts, target_max_words)
-    zh_parts = _split_zh_text(line.zh, [len(p) for p in en_parts])
-    if zh_parts is None:
-        return [line]
 
+def _split_sentences_en(text: str) -> list[str]:
+    pieces = _EN_SENTENCE_SPLIT_RE.split(text)
+    seps = _EN_SENTENCE_SPLIT_RE.findall(text)
+    merged = [piece + sep for piece, sep in zip(pieces, seps, strict=False)]
+    merged.append(pieces[-1])
+    return merged
+
+
+def _split_sentences_zh(text: str) -> list[str]:
+    return [s for s in _ZH_SENTENCE_SPLIT_RE.split(text) if s]
+
+
+def _split_by_sentences(
+    en_sentences: list[str], zh_sentences: list[str], target_max_words: int
+) -> list[tuple[str, str]]:
+    """句子數對得上時，切點鎖在真正的句界（.!?／。！？），不會讓英文段落停在
+    句子中間、中文卻是完整的下一句——那正是純比例切分會錯位的地方（見本函式
+    群組上方模組說明）。單一句子本身仍超字數上限，才在句內用詞數比例切，
+    風險只留在句內、不會跨句傳染到相鄰句子的翻譯。
+    """
+    units: list[tuple[str, str]] = []
+    for en_sent, zh_sent in zip(en_sentences, zh_sentences, strict=True):
+        core = en_sent.rstrip()
+        trail = en_sent[len(core) :]
+        words = core.split()
+        if len(words) <= target_max_words:
+            units.append((core + trail, zh_sent))
+            continue
+        n = min(-(-len(words) // target_max_words), len(words))
+        en_sub = _split_en_words(words, n, target_max_words)
+        zh_sub = _split_zh_text(zh_sent, [len(p) for p in en_sub])
+        if zh_sub is None:
+            units.append((core + trail, zh_sent))
+            continue
+        sub_units = [(" ".join(en), zh) for en, zh in zip(en_sub, zh_sub, strict=True)]
+        last_en, last_zh = sub_units[-1]
+        sub_units[-1] = (last_en + trail, last_zh)
+        units.extend(sub_units)
+
+    # 相鄰短句合併回 <= target_max_words 的段，貼近原本「一段一個閱讀節奏」的長度目標。
+    parts: list[tuple[str, str]] = []
+    cur_en: list[str] = []
+    cur_zh: list[str] = []
+    cur_words = 0
+    for en, zh in units:
+        w = len(en.split())
+        if cur_en and cur_words + w > target_max_words:
+            parts.append(("".join(cur_en), "".join(cur_zh)))
+            cur_en, cur_zh, cur_words = [], [], 0
+        cur_en.append(en)
+        cur_zh.append(zh)
+        cur_words += w
+    parts.append(("".join(cur_en), "".join(cur_zh)))
+    return parts
+
+
+def _finalize_parts(line: ScriptLine, pairs: list[tuple[str, str]]) -> list[ScriptLine]:
     return [
         line.model_copy(
             update={
-                "text": " ".join(en),
+                "text": en,
                 "zh": zh,
                 # 只有第一段承接原行的 pause_before（章節邊界資訊），
                 # 其餘段是同一句話的延續，不該再插停頓。
@@ -1169,37 +1225,237 @@ def _split_line(line: ScriptLine, target_max_words: int) -> list[ScriptLine]:
                 "continuation": i > 0,
             }
         )
-        for i, (en, zh) in enumerate(zip(en_parts, zh_parts, strict=True))
+        for i, (en, zh) in enumerate(pairs)
     ]
 
 
-def _normalize_line_lengths(
+def _split_line(line: ScriptLine, target_max_words: int) -> list[ScriptLine]:
+    """單行切分；不需要切（或 zh 短到切不動）時回傳只含原行的 list。
+
+    英文／中文句子數對得上時優先照真正句界切（見 `_split_by_sentences`）；
+    句子數對不上（翻譯合併/拆句了）或整行本來就只有一句，才退回舊版整行按
+    詞數比例＋標點吸附（純比例位置猜測，只在沒有更可靠訊號時使用）。
+    """
+    tokens = line.text.split()
+    if len(tokens) <= target_max_words:
+        return [line]
+
+    en_sentences = _split_sentences_en(line.text)
+    zh_sentences = _split_sentences_zh(line.zh)
+    if len(en_sentences) > 1 and len(en_sentences) == len(zh_sentences):
+        pairs = _split_by_sentences(en_sentences, zh_sentences, target_max_words)
+        return _finalize_parts(line, pairs)
+
+    n_parts = min(-(-len(tokens) // target_max_words), len(tokens))
+    en_parts = _split_en_words(tokens, n_parts, target_max_words)
+    zh_parts = _split_zh_text(line.zh, [len(p) for p in en_parts])
+    if zh_parts is None:
+        return [line]
+
+    pairs = [(" ".join(en), zh) for en, zh in zip(en_parts, zh_parts, strict=True)]
+    return _finalize_parts(line, pairs)
+
+
+# 分句失敗（LLM 給的切法內容跟原文對不上）只重打一次，超過直接退回機械切分——
+# 分句是品質加分項不是硬契約，不該像大綱/段落那樣燒到 2-3 次重試額度。
+_MAX_SPLIT_RETRIES = 1
+
+
+def _build_split_messages(
+    entries: list[tuple[int, ScriptLine]],
+    target_max_words: int,
+    feedback: list[str] | None = None,
+) -> list[dict[str, str]]:
+    items = [{"id": idx, "text": line.text, "zh": line.zh} for idx, line in entries]
+    system = (
+        "You split overlong bilingual subtitle lines into shorter pieces for display. "
+        "Rules:\n"
+        "1. Do NOT reword, translate, summarize, or change any character — every output "
+        "piece must be an exact substring of the original `text` / `zh`.\n"
+        "2. Split at natural sentence or clause boundaries so `text_parts[i]` and "
+        "`zh_parts[i]` are still a matched translation of each other, in the same order "
+        "(watch out for cases where the translation reorders clauses across sentences).\n"
+        f"3. Prefer pieces around {target_max_words} words or fewer, but never break a "
+        "matched translation pair apart just to hit that number — correct pairing and "
+        "content fidelity matter more than the exact word count.\n"
+        "4. `text_parts` joined back together must reproduce the original `text` "
+        "word-for-word; `zh_parts` joined back together (in order, no separator) must "
+        "equal the original `zh` character-for-character.\n"
+        'Return ONLY JSON: {"splits": [{"id": <int>, "text_parts": [...], '
+        '"zh_parts": [...]}]}'
+    )
+    user = json.dumps({"target_max_words": target_max_words, "lines": items}, ensure_ascii=False)
+    msgs = [{"role": "system", "content": system}, {"role": "user", "content": user}]
+    if feedback:
+        msgs.append({"role": "user", "content": "上一版有問題，請修正：\n" + "\n".join(feedback)})
+    return msgs
+
+
+def _parse_split_response(raw_text: str) -> dict[int, tuple[list[str], list[str]]]:
+    cleaned = _strip_code_fence(raw_text)
+    try:
+        data = json.loads(cleaned)
+        splits = data["splits"]
+    except (json.JSONDecodeError, KeyError, TypeError) as exc:
+        raise GenerationError(f"分句回應不是合法 JSON 物件含 splits 陣列：{exc}") from exc
+    out: dict[int, tuple[list[str], list[str]]] = {}
+    try:
+        for item in splits:
+            idx = int(item["id"])
+            out[idx] = (
+                [str(p) for p in item["text_parts"]],
+                [str(p) for p in item["zh_parts"]],
+            )
+    except (KeyError, TypeError, ValueError) as exc:
+        raise GenerationError(f"分句回應格式錯誤：{exc}") from exc
+    return out
+
+
+def _validate_split(line: ScriptLine, text_parts: list[str], zh_parts: list[str]) -> bool:
+    """只驗證「內容一字不改」：英文比對詞序（忽略空白格式差異），中文比對逐字。"""
+    if not text_parts or len(text_parts) != len(zh_parts):
+        return False
+    if any(not p.strip() for p in text_parts) or any(not p.strip() for p in zh_parts):
+        return False
+    flat_words = [w for part in text_parts for w in part.split()]
+    if flat_words != line.text.split():
+        return False
+    return "".join(zh_parts) == line.zh
+
+
+async def _split_lines_via_llm(
+    chat: Any,
+    entries: list[tuple[int, ScriptLine]],
+    target_max_words: int,
+    *,
+    usage_node: str,
+    collector: MetricsCollector | None,
+) -> tuple[dict[int, list[tuple[str, str]]], dict[str, int]]:
+    """一次打包所有超長行給 LLM 分句。驗證不過的行重打一次，仍不過就不放進回傳的
+    dict——呼叫端對缺席的 id 用 `_split_line` 機械兜底，這裡不 raise。
+    """
+    remaining = dict(entries)
+    verified: dict[int, list[tuple[str, str]]] = {}
+    total_usage = {"input_tokens": 0, "output_tokens": 0}
+    feedback: list[str] | None = None
+
+    for attempt in range(_MAX_SPLIT_RETRIES + 1):
+        if not remaining:
+            break
+        batch = list(remaining.items())
+        msgs = _build_split_messages(batch, target_max_words, feedback)
+        call_start = time.monotonic()
+        try:
+            ai_msg = await chat.ainvoke(_to_lc_messages(msgs))
+        except RateLimitError:
+            logger.warning("%s 分句呼叫撞限流，剩餘 %d 行退回機械切分", usage_node, len(remaining))
+            break
+        except EngineError as exc:
+            logger.warning(
+                "%s 分句呼叫失敗（%s），剩餘 %d 行退回機械切分", usage_node, exc, len(remaining)
+            )
+            break
+
+        usage = _record_llm_usage(
+            collector,
+            ai_msg,
+            node=usage_node,
+            call="line_split",
+            call_start=call_start,
+            attempt=attempt + 1,
+        )
+        total_usage["input_tokens"] += usage["input_tokens"]
+        total_usage["output_tokens"] += usage["output_tokens"]
+
+        try:
+            parsed = _parse_split_response(ai_msg.content)
+        except GenerationError as exc:
+            logger.warning("%s 分句第 %d 次回應解析失敗：%s", usage_node, attempt + 1, exc)
+            feedback = [f"回應無法解析成合法 JSON：{exc}"]
+            continue
+
+        failed_ids: list[str] = []
+        for idx, line in batch:
+            parts = parsed.get(idx)
+            if parts is not None and _validate_split(line, *parts):
+                verified[idx] = list(zip(*parts, strict=True))
+                del remaining[idx]
+            else:
+                failed_ids.append(str(idx))
+        if failed_ids:
+            ids = ", ".join(failed_ids)
+            feedback = [f"這些 id 的切法內容跟原文對不上，請重切（不能改字）：{ids}"]
+
+    return verified, total_usage
+
+
+def _finalize_llm_pairs(
+    line: ScriptLine, pairs: list[tuple[str, str]], target_max_words: int
+) -> list[ScriptLine]:
+    """LLM 已保證每段內容忠實、中英句子對應正確；單段仍超字數上限才在段內用既有
+    機械邏輯細切（風險侷限在段內，不會像整行比例切分那樣跨段配錯）。
+    """
+    final_pairs: list[tuple[str, str]] = []
+    for text, zh in pairs:
+        words = text.split()
+        if len(words) <= target_max_words:
+            final_pairs.append((" ".join(words), zh))
+            continue
+        n = min(-(-len(words) // target_max_words), len(words))
+        en_sub = _split_en_words(words, n, target_max_words)
+        zh_sub = _split_zh_text(zh, [len(p) for p in en_sub])
+        if zh_sub is None:
+            final_pairs.append((" ".join(words), zh))
+            continue
+        final_pairs.extend((" ".join(en), z) for en, z in zip(en_sub, zh_sub, strict=True))
+    return _finalize_parts(line, final_pairs)
+
+
+async def _normalize_line_lengths(
+    chat: Any,
     script: ScriptJSON,
     *,
     target_max_words: int = _TARGET_TEXT_WORD_COUNT,
-) -> ScriptJSON:
+    usage_node: str = "writer",
+    collector: MetricsCollector | None = None,
+) -> tuple[ScriptJSON, dict[str, int]]:
     """把 script.script 裡 text 超過 target_max_words 的行切短。
 
-    - 全部都短 → 原物件直接回傳（零成本 no-op）
+    - 全部都短 → 原物件直接回傳、不打 LLM（零成本 no-op）
+    - 超長行打包成一次 LLM 呼叫分句；驗證不過或呼叫失敗的行退回 `_split_line` 機械切分
     - 切完重組 ScriptJSON 驗證失敗（例如切出相鄰重複 zh）→ atomic fallback 回原
       script：行長是輔助品質目標，不該讓整輪寫稿被判失敗重跑。
     """
+    to_split = [
+        (i, line)
+        for i, line in enumerate(script.script)
+        if len(line.text.split()) > target_max_words
+    ]
+    no_usage = {"input_tokens": 0, "output_tokens": 0}
+    if not to_split:
+        return script, no_usage
+
+    verified, usage = await _split_lines_via_llm(
+        chat, to_split, target_max_words, usage_node=usage_node, collector=collector
+    )
+
     lines: list[ScriptLine] = []
-    changed = False
-    for line in script.script:
-        parts = _split_line(line, target_max_words)
-        changed = changed or len(parts) > 1
+    for i, line in enumerate(script.script):
+        pairs = verified.get(i)
+        parts = (
+            _finalize_llm_pairs(line, pairs, target_max_words)
+            if pairs is not None
+            else _split_line(line, target_max_words)
+        )
         lines.extend(parts)
-    if not changed:
-        return script
 
     payload = script.model_dump()
     payload["script"] = [line.model_dump() for line in lines]
     try:
-        return ScriptJSON.model_validate(payload)
+        return ScriptJSON.model_validate(payload), usage
     except PydanticValidationError as exc:
         logger.warning("行長切分後 ScriptJSON 驗證失敗，沿用未切分腳本：%s", exc)
-        return script
+        return script, usage
 
 
 async def _invoke_writer(
@@ -1403,10 +1659,14 @@ async def _invoke_writer(
         # Level 2：合併後跑 ScriptJSON 三個 validator + 字數 floor
         try:
             full_script = _merge_outline_and_segments(outline, segment_scripts, fmt)
-            # 短句正規化：純 Python 機械切分，不打 LLM、不影響主流程。
-            # 因為覆蓋了所有初次生成與 rewrite（含 partial_rewrite）路徑，
+            # 短句正規化：超長行打包成一次 LLM 呼叫分句（保真驗證＋機械兜底，見上方
+            # 模組說明）。因為覆蓋了所有初次生成與 rewrite（含 partial_rewrite）路徑，
             # 後續 judge 永遠看得到已切分版本，不需改 router / state。
-            full_script = _normalize_line_lengths(full_script)
+            full_script, split_usage = await _normalize_line_lengths(
+                chat, full_script, usage_node=usage_node, collector=collector
+            )
+            total_usage["input_tokens"] += split_usage["input_tokens"]
+            total_usage["output_tokens"] += split_usage["output_tokens"]
         except (PydanticValidationError, ValueError) as exc:
             last_exc = GenerationError(f"合併後 ScriptJSON 違反契約：{exc}")
             logger.warning(

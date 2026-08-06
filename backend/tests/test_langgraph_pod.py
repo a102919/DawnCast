@@ -33,7 +33,7 @@ from engine.pipeline.langgraph_pod.mock import (
 from engine.pipeline.langgraph_pod.nodes import storage_decision
 from shared.config import get_settings
 from shared.errors import RateLimitError
-from shared.models import ScriptJSON
+from shared.models import ScriptJSON, ScriptLine
 
 if TYPE_CHECKING:
     from engine.pipeline.langgraph_pod.state import PodState
@@ -133,12 +133,19 @@ def _segment_json(
     """
     if total_words is None:
         total_words = _SEGMENT_WORDS
-    words_per_line = max(1, total_words // n_lines)
+    # 每行字幕上限 20 詞（見 nodes_writer._TARGET_TEXT_WORD_COUNT，含後面附加的
+    # vocab 字詞 2 個空間）：n_lines 是「至少幾行」，字數塞不進去時自動加開更多行，
+    # 避免 fixture 意外撞進 _normalize_line_lengths 的 LLM 分句路徑
+    # （那不是這些測試要測的東西，撞到只會白白多打一次假 LLM 呼叫、擠亂 response 佇列）。
+    # 20 詞上限留 2 詞安全邊界（vocab 字詞附加可能推過門檻），避免整除邊界誤撞分句路徑
+    _SAFE_WORDS_PER_LINE = 18
+    effective_n_lines = max(n_lines, -(-total_words // _SAFE_WORDS_PER_LINE))
+    words_per_line = max(1, total_words // effective_n_lines)
     if format == "monologue":
-        speakers = ["Nova"] * n_lines
+        speakers = ["Nova"] * effective_n_lines
     else:
         speakers = ["Alex", "Sarah"]
-        speakers = [speakers[i % 2] for i in range(n_lines)]
+        speakers = [speakers[i % 2] for i in range(effective_n_lines)]
     script = [
         {
             "speaker": speakers[i],
@@ -146,7 +153,7 @@ def _segment_json(
             "zh": f"段{seg_index + 1}第{i}行",
             "pause_before": False,
         }
-        for i in range(n_lines)
+        for i in range(effective_n_lines)
     ]
     return json.dumps({"script": script})
 
@@ -1395,16 +1402,194 @@ def _build_script(lines: list[dict[str, Any]]) -> ScriptJSON:
     )
 
 
-def test_normalize_line_lengths_noop_returns_same_object() -> None:
-    """全短腳本原物件回傳（零成本 no-op）。"""
+def _line(text: str, zh: str, *, speaker: str = "Sarah", **kw: Any) -> ScriptLine:
+    return ScriptLine.model_validate({"speaker": speaker, "text": text, "zh": zh, **kw})
+
+
+# ── _split_line 機械兜底測試（LLM 分句失敗/限流時的安全網，見 _normalize_line_lengths）──
+
+
+def test_split_line_noop_when_short() -> None:
+    """20 詞以內不切，原物件直接回傳（zero-cost no-op）。"""
+    from engine.pipeline.langgraph_pod.nodes_writer import _split_line
+
+    line = _line("quantum short line", "短句")
+    assert _split_line(line, 20) == [line]
+
+
+def test_split_line_faithfully() -> None:
+    """超長行被切成 ≤20 詞的多段，英文逐詞、中文逐字串回去等於原行。"""
+    from engine.pipeline.langgraph_pod.nodes_writer import _split_line
+
+    long_text = (
+        "quantum reveals your dreams tie very strongly to REM sleep cycles every "
+        "night and scientists have been studying this connection for decades now"
+    )
+    long_zh = "夢境記憶與REM睡眠週期在夜晚有關聯"
+    parts = _split_line(_line(long_text, long_zh), 20)
+
+    assert len(parts) == 2
+    assert all(p.speaker == "Sarah" for p in parts)
+    assert all(len(p.text.split()) <= 20 for p in parts)
+    assert " ".join(p.text for p in parts) == long_text
+    assert "".join(p.zh for p in parts) == long_zh
+
+
+def test_split_line_beyond_three_parts() -> None:
+    """>60 詞的行需要 4 段以上。舊版硬限「2-3 段」永遠切不動，只能整條沿用原行；
+    機械切分沒有這個上限。"""
+    from engine.pipeline.langgraph_pod.nodes_writer import _split_line
+
+    long_text = " ".join(["quantum"] + [f"word{i}" for i in range(83)])  # 84 詞 → 需要 5 段
+    long_zh = "".join(f"中文{i}" for i in range(30))
+    parts = _split_line(_line(long_text, long_zh), 20)
+
+    assert len(parts) == 5
+    assert all(len(p.text.split()) <= 20 for p in parts)
+    assert " ".join(p.text for p in parts) == long_text
+    assert "".join(p.zh for p in parts) == long_zh
+
+
+def test_split_line_prefers_punctuation_break() -> None:
+    """整行只有一句（無句尾標點）時走比例切分：切點優先落在標點結尾的詞之後，
+    而不是硬切在第 12 詞。"""
+    from engine.pipeline.langgraph_pod.nodes_writer import _split_line
+
+    long_text = (
+        "quantum deep sleep matters a lot when it comes to memory, and dreams "
+        "help us learn new things while we rest quietly peacefully"
+    )
+    long_zh = "睡眠對記憶很重要，而夢境幫助我們學習新事物"
+    parts = _split_line(_line(long_text, long_zh), 20)
+
+    assert parts[0].text.endswith("memory,")  # 逗號後斷，不是第 12 詞硬切
+    assert parts[0].zh.endswith("，")
+    assert " ".join(p.text for p in parts[:2]) == long_text
+    assert "".join(p.zh for p in parts[:2]) == long_zh
+
+
+def test_split_line_does_not_cut_inside_latin_word() -> None:
+    """中譯內嵌的英文專有名詞不能被切成 H|ugging（切點挪到單字邊界）。"""
+    from engine.pipeline.langgraph_pod.nodes_writer import _split_line
+
+    long_text = (
+        "quantum rogue agents hid inside Hugging Face for three days and "
+        "the lesson was not malice but rather a simple misunderstanding "
+        "that spiraled quickly out of control"
+    )
+    long_zh = "有失控的 agent 在 Hugging Face 裡躲了三天，教訓不是惡意"
+    parts = _split_line(_line(long_text, long_zh), 20)
+
+    assert "".join(p.zh for p in parts[:2]) == long_zh
+    # 切點兩側不可以同時是拉丁字元＝沒有把某個英文字切成兩半
+    tail, head = parts[0].zh[-1], parts[1].zh[0]
+    assert not (tail.isascii() and tail.isalnum() and head.isascii() and head.isalnum())
+
+
+def test_split_line_preserves_speaker_and_metadata() -> None:
+    """第一段繼承原 pause_before/emotion；後續段 pause_before 強制 False、
+    continuation 標記延續片段。"""
+    from engine.pipeline.langgraph_pod.nodes_writer import _split_line
+
+    long_text = (
+        "quantum see we knew it all along since the very start of this "
+        "journey and nothing could have stopped us from finding out eventually"
+    )
+    line = _line(long_text, "不然你其實早就知道答案了。", pause_before=True, emotion="happy")
+    parts = _split_line(line, 20)
+
+    assert len(parts) >= 2
+    assert parts[0].pause_before is True
+    assert parts[0].emotion == "happy"
+    assert parts[0].continuation is False
+    assert parts[1].pause_before is False
+    assert parts[1].emotion == "happy"
+    assert parts[1].continuation is True
+
+
+def test_split_line_keeps_line_when_zh_too_short() -> None:
+    """zh 短到切不出「每段至少 1 字」時整行不切——ScriptLine.zh 有 min_length=1，
+    寧可留長行也不能生出空 zh。"""
+    from engine.pipeline.langgraph_pod.nodes_writer import _split_line
+
+    long_text = " ".join(["quantum"] + [f"word{i}" for i in range(29)])  # 30 詞 → 需要 3 段
+    line = _line(long_text, "短")  # zh 只有 1 字
+    assert _split_line(line, 20) == [line]
+
+
+def test_split_line_multi_sentence_splits_at_real_boundary() -> None:
+    """真實回報案例的簡化重現：一行含兩個真正句子，各自都在 20 詞內，但合計超過。
+    純比例切分只看整行詞數/字數比例，切點可能落在句子中間、卻配到完整的中文下一句
+    （翻譯錯位）；句子數對得上時鎖在真正句界，每段各自是完整一句話。"""
+    from engine.pipeline.langgraph_pod.nodes_writer import _split_line
+
+    long_text = (
+        "quantum weekend a guy in Kaohsiung filmed his Tesla turning left at a "
+        "tiny intersection. The car just handled it, mostly fine."
+    )
+    long_zh = "上週末一位高雄車主拍到他的特斯拉，在一個小路口左轉。車子就這樣處理掉了，大致上還好。"
+    parts = _split_line(_line(long_text, long_zh, speaker="Alex"), 20)
+
+    assert len(parts) == 2
+    assert parts[0].text.strip().endswith("intersection.")
+    assert parts[0].zh.endswith("左轉。")
+    assert parts[1].text.strip() == "The car just handled it, mostly fine."
+    assert parts[1].zh == "車子就這樣處理掉了，大致上還好。"
+    assert "".join(p.text for p in parts) == long_text
+    assert "".join(p.zh for p in parts) == long_zh
+
+
+# ── _normalize_line_lengths 行為測試：LLM 分句為主、機械切分兜底 ──────────
+
+
+def _split_response(*entries: tuple[int, list[str], list[str]]) -> str:
+    return json.dumps(
+        {"splits": [{"id": i, "text_parts": tp, "zh_parts": zp} for i, tp, zp in entries]},
+        ensure_ascii=False,
+    )
+
+
+async def test_normalize_line_lengths_noop_returns_same_object() -> None:
+    """全短腳本原物件回傳、不打 LLM（零成本 no-op）。"""
     from engine.pipeline.langgraph_pod.nodes import _normalize_line_lengths
 
     script = _build_script(_short_script(8))
-    assert _normalize_line_lengths(script) is script
+    chat = FakeChatModel(responses=[])  # 池子空的話一被呼叫就 raise，用來斷言沒被呼叫
+    out, usage = await _normalize_line_lengths(chat, script)
+
+    assert out is script
+    assert usage == {"input_tokens": 0, "output_tokens": 0}
 
 
-def test_normalize_line_lengths_splits_long_line_faithfully() -> None:
-    """超長行被切成 ≤20 詞的多段，英文逐詞、中文逐字串回去等於原行。"""
+async def test_normalize_line_lengths_uses_llm_split_verbatim() -> None:
+    """LLM 給的切法（保真驗證通過）原樣採用，不會被機械邏輯覆蓋切點——證明 LLM
+    是主要路徑，不是先跑機械演算法再拿 LLM 校正。"""
+    from engine.pipeline.langgraph_pod.nodes import _normalize_line_lengths
+
+    long_text = "quantum a b c d e f g h i j k l m n o p q r s t"  # 21 詞，無標點
+    long_zh = "中文測試句子"
+    words = long_text.split()
+    # 刻意選一個機械詞數平衡演算法不會選的切點（3/18 分，不是接近對半）
+    text_parts = [" ".join(words[:3]), " ".join(words[3:])]
+    zh_parts = [long_zh[:2], long_zh[2:]]
+
+    short = _short_script(8)
+    short[0] = {"speaker": "Sarah", "text": long_text, "zh": long_zh}
+    chat = FakeChatModel(responses=[_split_response((0, text_parts, zh_parts))])
+    out, usage = await _normalize_line_lengths(chat, _build_script(short))
+
+    parts = out.script[:2]
+    assert parts[0].text == text_parts[0]
+    assert parts[1].text == text_parts[1]
+    assert parts[0].zh == zh_parts[0]
+    assert parts[1].zh == zh_parts[1]
+    assert usage["input_tokens"] > 0
+    assert chat._writer_count == 1
+
+
+async def test_normalize_line_lengths_falls_back_when_llm_response_invalid() -> None:
+    """LLM 回應驗證不過（內容跟原文兜不起來）→ 重試一次仍不過就退回機械切分，
+    不會讓這一行永遠切不出來或內容失真。"""
     from engine.pipeline.langgraph_pod.nodes import _normalize_line_lengths
 
     long_text = (
@@ -1414,127 +1599,64 @@ def test_normalize_line_lengths_splits_long_line_faithfully() -> None:
     long_zh = "夢境記憶與REM睡眠週期在夜晚有關聯"
     short = _short_script(8)
     short[0] = {"speaker": "Sarah", "text": long_text, "zh": long_zh}
-    out = _normalize_line_lengths(_build_script(short))
 
-    parts = out.script[:2]  # 被切的是 script[0]，切出來的段落排在最前面
-    assert len(out.script) == len(short) + 1
-    assert all(p.speaker == "Sarah" for p in parts)
+    # 回應少了大半內容，兩次都驗證不過
+    bad = _split_response((0, ["quantum reveals your dreams"], ["夢境"]))
+    chat = FakeChatModel(responses=[bad, bad])
+    out, _usage = await _normalize_line_lengths(chat, _build_script(short))
+
+    parts = out.script[: len(out.script) - len(short) + 1]
+    assert " ".join(p.text for p in parts) == long_text
+    assert "".join(p.zh for p in parts) == long_zh
+    assert all(len(p.text.split()) <= 20 for p in parts)
+    assert chat._writer_count == 2  # 首次 + 1 次重試就放棄，不無限重打
+
+
+async def test_normalize_line_lengths_falls_back_on_rate_limit() -> None:
+    """分句呼叫撞限流 → 立刻退回機械切分，不 raise、不影響整輪寫稿。"""
+    from engine.pipeline.langgraph_pod.nodes import _normalize_line_lengths
+
+    long_text = " ".join(["quantum"] + [f"word{i}" for i in range(29)])  # 30 詞
+    long_zh = "".join(f"中文{i}" for i in range(10))
+    short = _short_script(8)
+    short[0] = {"speaker": "Sarah", "text": long_text, "zh": long_zh}
+    chat = FakeChatModel(responses=[RateLimitError("mock 429")])
+    out, usage = await _normalize_line_lengths(chat, _build_script(short))
+
+    parts = out.script[: len(out.script) - len(short) + 1]
+    assert " ".join(p.text for p in parts) == long_text
+    assert "".join(p.zh for p in parts) == long_zh
+    assert usage == {"input_tokens": 0, "output_tokens": 0}
+
+
+async def test_normalize_line_lengths_subsplits_oversized_llm_part() -> None:
+    """LLM 分成 2 段但其中一段仍超過字數上限 → 段內再用既有機械邏輯細切
+    （風險侷限在段內，不會像整行比例切分那樣跨段配錯）。"""
+    from engine.pipeline.langgraph_pod.nodes import _normalize_line_lengths
+
+    words = ["quantum"] + [f"w{i}" for i in range(39)]  # 40 詞
+    long_text = " ".join(words)
+    long_zh = "".join(f"字{i}" for i in range(20))
+    text_parts = [" ".join(words[:25]), " ".join(words[25:])]  # 第一段 25 詞，超過 20
+    zh_parts = [long_zh[:12], long_zh[12:]]
+
+    short = _short_script(8)
+    short[0] = {"speaker": "Sarah", "text": long_text, "zh": long_zh}
+    chat = FakeChatModel(responses=[_split_response((0, text_parts, zh_parts))])
+    out, _usage = await _normalize_line_lengths(chat, _build_script(short))
+
+    parts = out.script[: len(out.script) - len(short) + 1]
+    assert len(parts) >= 3  # 第一段被細切成至少 2 段 + 第二段
     assert all(len(p.text.split()) <= 20 for p in parts)
     assert " ".join(p.text for p in parts) == long_text
     assert "".join(p.zh for p in parts) == long_zh
-
-
-def test_normalize_line_lengths_splits_beyond_three_parts() -> None:
-    """本次修的核心：>60 詞的行需要 4 段以上。舊版硬限「2-3 段」永遠切不動，
-    只能整條沿用原行；機械切分沒有這個上限。"""
-    from engine.pipeline.langgraph_pod.nodes import _normalize_line_lengths
-
-    long_text = " ".join(["quantum"] + [f"word{i}" for i in range(83)])  # 84 詞 → 需要 5 段
-    long_zh = "".join(f"中文{i}" for i in range(30))
-    short = _short_script(8)
-    short[0] = {"speaker": "Sarah", "text": long_text, "zh": long_zh}
-    out = _normalize_line_lengths(_build_script(short))
-
-    parts = out.script[:5]
-    assert len(out.script) == len(short) + 4  # 一行變五行
-    assert all(len(p.text.split()) <= 20 for p in parts)
-    assert " ".join(p.text for p in parts) == long_text
-    assert "".join(p.zh for p in parts) == long_zh
-
-
-def test_normalize_line_lengths_prefers_punctuation_break() -> None:
-    """切點優先落在標點結尾的詞之後，而不是硬切在第 20 詞。"""
-    from engine.pipeline.langgraph_pod.nodes import _normalize_line_lengths
-
-    long_text = (
-        "quantum deep sleep matters a lot when it comes to memory, and dreams "
-        "help us learn new things while we rest quietly peacefully"
-    )
-    long_zh = "睡眠對記憶很重要，而夢境幫助我們學習新事物"
-    short = _short_script(8)
-    short[0] = {"speaker": "Sarah", "text": long_text, "zh": long_zh}
-    out = _normalize_line_lengths(_build_script(short))
-
-    assert out.script[0].text.endswith("memory,")  # 逗號後斷，不是第 12 詞硬切
-    assert out.script[0].zh.endswith("，")
-    assert " ".join(ln.text for ln in out.script[:2]) == long_text
-    assert "".join(ln.zh for ln in out.script[:2]) == long_zh
-
-
-def test_normalize_line_lengths_does_not_cut_inside_latin_word() -> None:
-    """中譯內嵌的英文專有名詞不能被切成 H|ugging（切點挪到單字邊界）。"""
-    from engine.pipeline.langgraph_pod.nodes import _normalize_line_lengths
-
-    long_text = (
-        "quantum rogue agents hid inside Hugging Face for three days and "
-        "the lesson was not malice but rather a simple misunderstanding "
-        "that spiraled quickly out of control"
-    )
-    long_zh = "有失控的 agent 在 Hugging Face 裡躲了三天，教訓不是惡意"
-    short = _short_script(8)
-    short[0] = {"speaker": "Sarah", "text": long_text, "zh": long_zh}
-    out = _normalize_line_lengths(_build_script(short))
-
-    assert "".join(ln.zh for ln in out.script[:2]) == long_zh
-    # 切點兩側不可以同時是拉丁字元＝沒有把某個英文字切成兩半
-    tail, head = out.script[0].zh[-1], out.script[1].zh[0]
-    assert not (tail.isascii() and tail.isalnum() and head.isascii() and head.isalnum())
-
-
-def test_normalize_line_lengths_preserves_speaker_and_metadata() -> None:
-    """第一段繼承原 pause_before/emotion；後續段 pause_before 強制 False。"""
-    from engine.pipeline.langgraph_pod.nodes import _normalize_line_lengths
-
-    lines: list[dict[str, Any]] = [{"speaker": "Alex", "text": "quantum intro", "zh": "量子引子"}]
-    lines.append(
-        {
-            "speaker": "Sarah",
-            "text": (
-                "quantum see we knew it all along since the very start of this "
-                "journey and nothing could have stopped us from finding out eventually"
-            ),
-            "zh": "不然你其實早就知道答案了。",
-            "pause_before": True,
-            "emotion": "happy",
-        }
-    )
-    while len(lines) < 8:
-        i = len(lines)
-        lines.append(
-            {
-                "speaker": "Alex" if i % 2 == 0 else "Sarah",
-                "text": f"quantum filler {i}",
-                "zh": f"短{i}",
-            }
-        )
-    out = _normalize_line_lengths(_build_script(lines))
-
-    assert out.script[1].pause_before is True
-    assert out.script[1].emotion == "happy"
-    assert out.script[2].pause_before is False
-    assert out.script[2].emotion == "happy"
-    assert out.script[1].speaker == out.script[2].speaker == "Sarah"
-
-
-def test_normalize_line_lengths_keeps_line_when_zh_too_short() -> None:
-    """zh 短到切不出「每段至少 1 字」時整行不切——ScriptLine.zh 有 min_length=1，
-    寧可留長行也不能生出空 zh。"""
-    from engine.pipeline.langgraph_pod.nodes import _normalize_line_lengths
-
-    long_text = " ".join(["quantum"] + [f"word{i}" for i in range(29)])  # 30 詞 → 需要 3 段
-    short = _short_script(8)
-    short[0] = {"speaker": "Sarah", "text": long_text, "zh": "短"}  # zh 只有 1 字
-    out = _normalize_line_lengths(_build_script(short))
-
-    assert out.script[0].text == long_text
-    assert out.script[0].zh == "短"
 
 
 async def test_invoke_writer_normalizes_long_lines_in_returned_script(
     pod_mocks: PodMocks,
 ) -> None:
     """_invoke_writer 回傳的腳本已經過 _normalize_line_lengths：LLM 給的超長行
-    被切成 ≤20 詞的 2 段，而且不會為此多打任何一次 LLM。
+    分句後被切成 ≤20 詞的 2 段，且 outline/segment/split 各打一次 LLM。
     """
     from engine.pipeline.langgraph_pod.nodes import _invoke_writer
 
@@ -1545,24 +1667,38 @@ async def test_invoke_writer_normalizes_long_lines_in_returned_script(
         "REM sleep cycles link remains debated today"
     )
     assert len(long_text.split()) > 20
+    words = long_text.split()
+    long_line_index = 3
 
-    # filler 用 60× 'quantum filler text ' 撐過 word_floor=216（short × A2）；
-    # 它的 zh 只有幾個字，切不出對應段數 → 整行沿用（本測試只驗 long_text 那行被切）。
-    filler_long = "quantum filler text " * 60
-    seg_lines = [
-        {"speaker": "Alex", "text": filler_long, "zh": "量子開場一", "pause_before": False},
-        {"speaker": "Sarah", "text": long_text, "zh": long_zh, "pause_before": False},
-        {"speaker": "Alex", "text": filler_long, "zh": "量子填充三", "pause_before": False},
-        {"speaker": "Sarah", "text": filler_long, "zh": "量子填充四", "pause_before": False},
-        {"speaker": "Alex", "text": filler_long, "zh": "量子填充五", "pause_before": False},
-        {"speaker": "Sarah", "text": filler_long, "zh": "量子填充六", "pause_before": False},
-        {"speaker": "Alex", "text": filler_long, "zh": "量子填充七", "pause_before": False},
-        {"speaker": "Sarah", "text": filler_long, "zh": "量子填充八", "pause_before": False},
-        {"speaker": "Alex", "text": filler_long, "zh": "量子填充九", "pause_before": False},
-    ]
+    # filler 每行 18 詞（<=20，不會觸發切分），行數撐過 word_floor=216（short × A2）；
+    # 分句 LLM 這次只需要處理 long_text 那一行，filler 不會混進同一個 batch。
+    filler_short = ("quantum filler text " * 6).strip()
+    speakers = ["Alex", "Sarah"]
+    seg_lines: list[dict[str, Any]] = []
+    for i in range(12):
+        if i == long_line_index:
+            seg_lines.append(
+                {"speaker": "Sarah", "text": long_text, "zh": long_zh, "pause_before": False}
+            )
+        else:
+            seg_lines.append(
+                {
+                    "speaker": speakers[i % 2],
+                    "text": filler_short,
+                    "zh": f"量子填充{i}",
+                    "pause_before": False,
+                }
+            )
     seg_response = json.dumps({"script": seg_lines})
 
-    chat = FakeChatModel(responses=[_outline_json(n_segments=1), seg_response])
+    split_response = _split_response(
+        (
+            long_line_index,
+            [" ".join(words[:14]), " ".join(words[14:])],
+            [long_zh[:9], long_zh[9:]],
+        )
+    )
+    chat = FakeChatModel(responses=[_outline_json(n_segments=1), seg_response, split_response])
     state: dict[str, Any] = {
         "big_topic": "夢境記憶",
         "canonical_topic": "夢境記憶",
@@ -1604,8 +1740,8 @@ async def test_invoke_writer_normalizes_long_lines_in_returned_script(
             assert ln.speaker == "Sarah", ln
             assert len(ln.text.split()) <= 20, f"split 段仍超 20 詞: {ln.text!r}"
     assert " ".join(split_pairs) == long_text
-    # 切分不打 LLM：writer 只有 outline + segment 兩次呼叫
-    assert chat._writer_count == 2, f"expected 2 calls, got {chat._writer_count}"
+    # outline + segment + split 各一次
+    assert chat._writer_count == 3, f"expected 3 calls, got {chat._writer_count}"
 
 
 # ── 對話式接龍（writer_conversation）──────────────────────────
@@ -1627,14 +1763,14 @@ class _RecordingChat(FakeChatModel):
         return await super()._agenerate(messages, stop, run_manager, **kwargs)
 
 
-def _seg_response(prefix: str, *, start: int = 0, n_lines: int = 5) -> str:
-    """一段合法的段落回應；每行 60 詞讓兩段合起來過 word_floor。"""
+def _seg_response(prefix: str, *, start: int = 0, n_lines: int = 7) -> str:
+    """一段合法的段落回應；每行 18 詞（<=20，不觸發切分），兩段合起來過 word_floor。"""
     return json.dumps(
         {
             "script": [
                 {
                     "speaker": "Alex" if (i + start) % 2 == 0 else "Sarah",
-                    "text": "quantum filler text " * 20,
+                    "text": ("quantum filler text " * 6).strip(),
                     "zh": f"{prefix}填充{i}",
                     "pause_before": False,
                 }
