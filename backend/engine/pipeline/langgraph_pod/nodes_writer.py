@@ -454,6 +454,24 @@ def _build_outline_messages(
     target_vocab_size = _LENGTH_TIERS.get(length_tier, _LENGTH_TIERS["medium"])["vocab"][1]
     avoid_lines = list(avoid_facts) if avoid_facts else []
 
+    # 話量分工在大綱階段就排開：只在段落內容決定後才 judge 事後抓「Alex 講太多」，
+    # 抓到也只能整輪重打——因為失衡是均勻分佈在每一段，不是某幾段特別壞。改在這裡
+    # 逐段指派 primary_speaker，讓失衡在生成前就不會發生。
+    speaker_task = (
+        "\nFor each segment also assign `primary_speaker` (\"Alex\" or \"Sarah\") — "
+        "whoever explains most of that segment's content; the other host mainly asks "
+        "questions / reacts. ALTERNATE this across segments (don't pick the same host "
+        "for every segment) so total explaining time ends up roughly balanced between "
+        "the two hosts by the end of the episode.\n"
+        if format != "monologue"
+        else ""
+    )
+    segment_schema = (
+        '{"focus": str, "vocab_words": [str], "primary_speaker": "Alex"|"Sarah"}'
+        if format != "monologue"
+        else '{"focus": str, "vocab_words": [str]}'
+    )
+
     system = (
         _shared_style_prefix(
             cefr=cefr,
@@ -471,7 +489,8 @@ def _build_outline_messages(
         f"For each segment give a `focus` (1-2 sentences of what this segment covers)"
         f" and a `vocab_words` list (subset of target_vocab for this segment).\n"
         f"`vocab_words` 必須真的是 target_vocab 裡的字，不能憑主題聯想列字（這是硬性規則）。"
-        f" 全集合計 target_vocab 數量上限 {target_vocab_size} 個。\n\n"
+        f" 全集合計 target_vocab 數量上限 {target_vocab_size} 個。\n"
+        f"{speaker_task}\n"
         f"# SOURCES\n{_sources_block(sources or [], avoid_facts)}\n\n"
         f"{_verified_research_block(verified_claims or [], source_conflicts or [])}\n\n"
         f"{_series_block(series_context)}\n\n"
@@ -480,7 +499,7 @@ def _build_outline_messages(
         '"category": "tech"|"business"|"culture"|"science", '
         '"extracted_facts": [{"claim": str, "source_ids": [str]}], '
         '"target_vocab": [{"word": str, "explanation": str}], '
-        f'"segments": [{{"focus": str, "vocab_words": [str]}}]}}\n'
+        f'"segments": [{segment_schema}]}}\n'
         "Output ONLY the JSON object. No markdown, no code fences, no commentary."
     )
 
@@ -533,6 +552,7 @@ def _build_segment_messages(
     extracted_facts: list[SourcedFact] | None = None,
     feedback: list[str] | None = None,
     series_context: tuple[str, ...] = (),
+    primary_speaker: str | None = None,
 ) -> list[dict[str, str]]:
     """單段擴寫 LLM 呼叫：只負責這段的對話內容，不重複 topic/vocab/facts。
 
@@ -631,6 +651,14 @@ def _build_segment_messages(
         user_parts.append(
             f"\n# PREVIOUS SEGMENT (last 3 lines, continue from here):\n{prev_text}\n"
         )
+    if primary_speaker and format != "monologue":
+        other = "Sarah" if primary_speaker == "Alex" else "Alex"
+        user_parts.append(
+            f"\n# SPEAKER BALANCE\n{primary_speaker} drives the explaining in this segment "
+            f"— give {primary_speaker} the majority of substantive explanatory lines. "
+            f"{other} mainly asks questions, reacts, or pushes back; keep {other}'s lines "
+            f"short. This is per-segment, not global — other segments may flip the roles.\n"
+        )
     if feedback:
         user_parts.append("\nREVISION INSTRUCTIONS:")
         user_parts.extend(f"- {line}" for line in feedback)
@@ -686,7 +714,26 @@ _MAX_CONTRACT_RETRIES = 3
 _MAX_SEGMENT_RETRIES = 2
 
 
-def _parse_outline(raw_text: str) -> ScriptOutline:
+def _normalize_primary_speakers(outline: ScriptOutline, fmt: ScriptFormat) -> ScriptOutline:
+    """dialogue 格式：LLM 沒指派或指派退化（全部同一人）時，用簡單交替頂上。
+
+    prompt 只能「引導」LLM 交替分配，不保證它真的照做——退化成全部 Alex（或全部
+    None）等於話量分工完全沒生效，跟沒加這欄位一樣。用交替頂上是保底，不是最佳解，
+    但保證至少不會系統性地讓同一個人講滿整集。
+    """
+    if fmt == "monologue":
+        return outline
+    speakers = [seg.primary_speaker for seg in outline.segments]
+    degenerate = None in speakers or len(set(speakers)) <= 1
+    if not degenerate:
+        return outline
+    fallback: list[Literal["Alex", "Sarah"]] = ["Alex", "Sarah"]
+    for i, seg in enumerate(outline.segments):
+        seg.primary_speaker = fallback[i % 2]
+    return outline
+
+
+def _parse_outline(raw_text: str, fmt: ScriptFormat = "dialogue") -> ScriptOutline:
     """剝 code fence → 驗證成 ScriptOutline。
 
     結構性失敗（schema 不符 / vocab_words 不在 target_vocab 裡）一律 raise
@@ -695,9 +742,10 @@ def _parse_outline(raw_text: str) -> ScriptOutline:
     """
     cleaned = _strip_code_fence(raw_text)
     try:
-        return ScriptOutline.model_validate_json(cleaned)
+        outline = ScriptOutline.model_validate_json(cleaned)
     except (PydanticValidationError, json.JSONDecodeError) as exc:
         raise GenerationError(f"大綱回應無法解析成合法 ScriptOutline：{exc}") from exc
+    return _normalize_primary_speakers(outline, fmt)
 
 
 def _parse_segment_script(raw_text: str) -> list[ScriptLine]:
@@ -805,7 +853,8 @@ async def _generate_outline(
         total_usage["output_tokens"] += usage["output_tokens"]
 
         try:
-            return _parse_outline(ai_msg.content), usage, total_usage
+            outline = _parse_outline(ai_msg.content, state.get("format", "dialogue"))
+            return outline, usage, total_usage
         except GenerationError as exc:
             last_exc = exc
             logger.warning(
@@ -842,6 +891,7 @@ async def _generate_segment(  # type: ignore[return]
     feedback: list[str] | None = None,
     history: list[dict[str, str]] | None = None,
     collector: MetricsCollector | None = None,
+    primary_speaker: str | None = None,
 ) -> tuple[list[ScriptLine], dict[str, int], list[dict[str, str]]]:
     """打 LLM 寫單段對話。回傳 (script_lines, total_usage, 接下一段用的 history)。
 
@@ -879,6 +929,7 @@ async def _generate_segment(  # type: ignore[return]
         previous_tail_lines=previous_tail_lines,
         extracted_facts=extracted_facts,
         series_context=tuple(state.get("series_context") or ()),
+        primary_speaker=primary_speaker,
     )
 
     def compose(fb: list[str] | None) -> list[dict[str, str]]:
@@ -1319,6 +1370,7 @@ async def _invoke_writer(
                     feedback=base_feedback or None,
                     history=history,
                     collector=collector,
+                    primary_speaker=outline_seg.primary_speaker,
                 )
                 total_usage["input_tokens"] += seg_usage["input_tokens"]
                 total_usage["output_tokens"] += seg_usage["output_tokens"]

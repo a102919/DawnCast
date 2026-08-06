@@ -1019,6 +1019,66 @@ def test_build_outline_messages_series_context_empty_vs_present() -> None:
     assert "第一集：AI 入門" in with_ctx[0]["content"]
 
 
+def test_build_outline_messages_speaker_balance_dialogue_only() -> None:
+    """primary_speaker 分工指令與 schema 只在 dialogue 出現，monologue 沒有第二人聲
+    可分工，不該混進去。"""
+    from engine.pipeline.langgraph_pod.nodes import _build_outline_messages
+
+    common: dict[str, Any] = {
+        "canonical_topic": "量子力學",
+        "big_topic": "科技",
+        "topic_type": "evergreen",
+        "angle": "定義",
+        "cefr": "B1",
+        "tone": "playful",
+        "length_tier": "medium",
+        "sources": None,
+        "avoid_facts": (),
+    }
+    dialogue = _build_outline_messages(**common, format="dialogue")
+    mono = _build_outline_messages(**common, format="monologue")
+
+    assert "primary_speaker" in dialogue[0]["content"]
+    assert "ALTERNATE" in dialogue[0]["content"]
+    assert "primary_speaker" not in mono[0]["content"]
+
+
+def test_normalize_primary_speakers_fixes_up_degenerate_assignment() -> None:
+    """LLM 沒指派（全 None）或偷懶指派同一人時，退化偵測要接住，交替頂上；
+    已經有變化的指派原樣保留，不覆寫 LLM 的合理輸出。"""
+    from engine.pipeline.langgraph_pod.nodes_writer import _normalize_primary_speakers
+    from shared.models.engine import OutlineSegment, ScriptOutline
+
+    def _outline(speakers: list[str | None]) -> ScriptOutline:
+        return ScriptOutline(
+            topic="Quantum",
+            topic_zh="量子力學入門",
+            category="science",
+            extracted_facts=[{"claim": "f1", "source_ids": []}],
+            target_vocab=[{"word": "quantum", "explanation": "tiny unit"}],
+            segments=[
+                OutlineSegment(focus=f"part {i}", vocab_words=["quantum"], primary_speaker=s)
+                for i, s in enumerate(speakers)
+            ],
+        )
+
+    all_none = _normalize_primary_speakers(_outline([None, None, None]), "dialogue")
+    assert [s.primary_speaker for s in all_none.segments] == ["Alex", "Sarah", "Alex"]
+
+    all_same = _normalize_primary_speakers(_outline(["Alex", "Alex", "Alex"]), "dialogue")
+    assert [s.primary_speaker for s in all_same.segments] == ["Alex", "Sarah", "Alex"]
+
+    already_varied = _outline(["Sarah", "Alex", "Sarah"])
+    kept = _normalize_primary_speakers(already_varied, "dialogue")
+    assert [s.primary_speaker for s in kept.segments] == ["Sarah", "Alex", "Sarah"]
+
+    half_missing = _normalize_primary_speakers(_outline(["Alex", None, "Sarah"]), "dialogue")
+    assert [s.primary_speaker for s in half_missing.segments] == ["Alex", "Sarah", "Alex"]
+
+    mono = _normalize_primary_speakers(_outline([None, None]), "monologue")
+    assert [s.primary_speaker for s in mono.segments] == [None, None]
+
+
 def test_build_segment_messages_series_context_empty_vs_present() -> None:
     """同一件事在 segment builder 也要驗一次——outline 與 segment 兩個呼叫端
     都要吃得到 series_context（見任務要求「確認兩者都吃得到」）。"""
@@ -1050,6 +1110,15 @@ def test_build_segment_messages_series_context_empty_vs_present() -> None:
     assert "SERIES CONTEXT" not in without_ctx[0]["content"]
     assert "SERIES CONTEXT" in with_ctx[0]["content"]
     assert "第一集：AI 入門" in with_ctx[0]["content"]
+
+    no_speaker = _build_segment_messages(**common)
+    sarah_leads = _build_segment_messages(**common, primary_speaker="Sarah")
+    mono = _build_segment_messages(**{**common, "format": "monologue"}, primary_speaker="Sarah")
+
+    assert "SPEAKER BALANCE" not in no_speaker[1]["content"]
+    assert "SPEAKER BALANCE" in sarah_leads[1]["content"]
+    assert "Sarah drives the explaining" in sarah_leads[1]["content"]
+    assert "SPEAKER BALANCE" not in mono[1]["content"]  # monologue 沒有第二人聲可分工
 
 
 # ── 13. sources 持久化：MockRepo.upsert_episode / update_episode_keys ──

@@ -179,6 +179,12 @@ class OutlineSegment(BaseModel):
 
     focus: str = Field(min_length=1)
     vocab_words: list[str] = Field(default_factory=list)
+    primary_speaker: Literal["Alex", "Sarah"] | None = Field(
+        default=None,
+        description="dialogue 格式：這段負責主講解釋的主持人，另一位負責提問/反應；"
+        "monologue 格式不適用，留 None。用來在大綱階段就把話量分工排開，避免整集"
+        "都是同一個角色在解釋、另一個只負責附和。",
+    )
 
 
 class ScriptOutline(BaseModel):
