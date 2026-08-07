@@ -55,7 +55,7 @@ async def lookup_dict(
         # dict_cache 存的舊 URL 全是死連結，回給前端只會 404；發音由前端 TTS 負責
         await cur.execute(
             """select word, ipa, pos, translation, exchange, null as audio_url,
-                      example_en, example_zh, mnemonic
+                      example_en, example_zh, mnemonic, senses, core_sense
                from public.dict_cache
                where word = any(%s::text[])
                order by array_position(%s::text[], word) desc nulls last
@@ -96,7 +96,7 @@ async def lookup_dict(
             # 讀回（拿 exchange 等其它欄位；audio_url 同上一律 null）
             await cur.execute(
                 """select word, ipa, pos, translation, exchange, null as audio_url,
-                          example_en, example_zh, mnemonic
+                          example_en, example_zh, mnemonic, senses, core_sense
                    from public.dict_cache where word = %s""",
                 (word,),
             )

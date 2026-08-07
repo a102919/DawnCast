@@ -145,6 +145,11 @@ async function request<T>(path: string, opts: RequestOptions): Promise<T> {
 
 // ─── 邊界 schema（對齊 types.ts，camelCase）──────────────────────────────────
 
+const SenseSchema = z.object({
+  pos: z.string().nullable().optional(),
+  zh: z.string(),
+})
+
 const DictEntrySchema = z.object({
   word: z.string(),
   ipa: z.string().nullable().optional(),
@@ -155,6 +160,8 @@ const DictEntrySchema = z.object({
   exampleEn: z.string().nullable().optional(),
   exampleZh: z.string().nullable().optional(),
   mnemonic: z.string().nullable().optional(),
+  senses: z.array(SenseSchema).nullable().optional(),
+  coreSense: z.string().nullable().optional(),
 }) satisfies z.ZodType<DictEntry> & z.ZodType<components['schemas']['DictEntry']>
 
 const VocabItemSchema = z.object({
@@ -177,6 +184,8 @@ const VocabItemSchema = z.object({
   exampleEn: z.string().nullable().optional(),
   exampleZh: z.string().nullable().optional(),
   mnemonic: z.string().nullable().optional(),
+  senses: z.array(SenseSchema).nullable().optional(),
+  coreSense: z.string().nullable().optional(),
   // 過渡期容錯：後端欄位剛上線、rolling deploy 期間舊實例不會回 status，否則 zod
   // schema_mismatch 直接讓整個 VocabRoute + SessionRoute 空白。default(1) 對齊
   // backend VocabItem.status 預設值。

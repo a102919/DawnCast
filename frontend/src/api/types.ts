@@ -1,6 +1,12 @@
 import type { Episode } from '../types/episode'
 import type { MockEpisode } from '../lib/episode'
 
+/** 單一義項。zh 是精簡對應詞（≤6 字），不是英英定義。 */
+export type Sense = {
+  readonly pos?: string | null
+  readonly zh: string
+}
+
 export type DictEntry = {
   readonly word: string
   readonly ipa?: string | null
@@ -12,6 +18,10 @@ export type DictEntry = {
   readonly exampleZh?: string | null
   // 諧音/關鍵字記憶提示（繁中，台灣在地化記憶法）
   readonly mnemonic?: string | null
+  // 義項與核心語意（migration 0030）。senses 為 null = 這個字還沒精煉過，
+  // 前端退回讀 translation。
+  readonly senses?: readonly Sense[] | null
+  readonly coreSense?: string | null
 }
 
 export type VocabItem = {
@@ -36,6 +46,9 @@ export type VocabItem = {
   readonly exampleZh?: string | null
   // 諧音/關鍵字記憶提示：同上，來自 dict_cache JOIN
   readonly mnemonic?: string | null
+  // 義項與核心語意：同上，來自 dict_cache JOIN（migration 0030）
+  readonly senses?: readonly Sense[] | null
+  readonly coreSense?: string | null
   // 1=新字(待學習) 2=複習中(SRS) 5=精熟封存（migration 0026）；伺服器建立時預設 1，
   // 前端不在新增時送出（比照 nextReview/interval/ease）。門檻判斷在前端算，見 VocabProvider。
   readonly status?: number

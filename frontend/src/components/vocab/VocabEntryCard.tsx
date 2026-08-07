@@ -115,7 +115,18 @@ export function VocabEntryCard({ item, onSeek, onRemove, onRevive, variant = 'pa
                   )}
                 </div>
               )}
-              <div className="text-sm text-text-secondary mt-1 whitespace-pre-line">{formatMultiline(item.translation)}</div>
+              {item.senses && item.senses.length > 0 ? (
+                <div className="flex items-baseline gap-1.5 mt-1">
+                  {item.senses[0].pos && (
+                    <span className="shrink-0 text-xs font-mono text-text-tertiary border border-border px-1.5 py-0.5 rounded">
+                      {item.senses[0].pos}
+                    </span>
+                  )}
+                  <span className="text-sm text-text-secondary">{item.senses[0].zh}</span>
+                </div>
+              ) : (
+                <div className="text-sm text-text-secondary mt-1 whitespace-pre-line">{formatMultiline(item.translation)}</div>
+              )}
 
               {/* 來源行 */}
               {isDrawer ? (

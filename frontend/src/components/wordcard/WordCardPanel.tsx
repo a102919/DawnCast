@@ -6,7 +6,7 @@ import { api } from '../../api'
 import type { DictEntry } from '../../api/types'
 import type { Cue } from '../../types/episode'
 import { usePlayer, useVocab } from '../../state'
-import { formatPos, formatExchange, formatTimestamp, formatMultiline, findActiveCueIndex } from '../../lib'
+import { formatPos, formatTimestamp, formatMultiline, findActiveCueIndex } from '../../lib'
 import { useSprings } from '../../lib/motion'
 import { IconButton, Sheet } from '../primitives'
 import { MnemonicHint } from './MnemonicHint'
@@ -145,14 +145,9 @@ export function WordCardPanel({ isOpen, word, entry, lookupError, onRetry, activ
               {/* 單字發音走字典音檔／TTS；從節目 mp3 猜偏移抽樣不準（無逐字時間戳），已棄用 */}
               {entry && <PronounceButton audioUrl={entry.audioUrl} text={word} size={20} />}
             </div>
-            {entry && (
+            {entry && entry.pos.length > 0 && (
               <div className="flex items-center gap-2 mt-0.5">
-                {entry.ipa && (
-                  <span className="text-xs text-text-tertiary font-mono">{entry.ipa}</span>
-                )}
-                {entry.pos.length > 0 && (
-                  <span className="text-xs text-text-tertiary">{formatPos(entry.pos)}</span>
-                )}
+                <span className="text-xs text-text-tertiary">{formatPos(entry.pos)}</span>
               </div>
             )}
             {!entry && word && !lookupError && (
@@ -220,29 +215,23 @@ export function WordCardPanel({ isOpen, word, entry, lookupError, onRetry, activ
           <p className="text-text-secondary text-sm">找不到釋義</p>
         ) : (
           <div className="space-y-3">
-            <p className="text-xl font-medium text-text-primary whitespace-pre-line">{formatMultiline(entry.translation)}</p>
-            {entry.exchange && (
-              <p className="text-xs text-text-tertiary">{formatExchange(entry.exchange)}</p>
-            )}
-            {(entry.exampleEn || entry.exampleZh) && (
-              <div className="border-l-2 border-border pl-3 py-1 space-y-1">
-                {entry.exampleEn && (
-                  <p className="text-sm leading-relaxed text-text-primary flex items-start gap-1.5">
-                    <span>{entry.exampleEn}</span>
-                    <PronounceButton audioUrl={null} text={entry.exampleEn} size={16} label="播放例句發音" />
-                  </p>
+            {/* 主義項：senses[0] 精煉過的字才有；其餘 180 萬列尚未精煉，退回舊 translation 渲染 */}
+            {entry.senses && entry.senses.length > 0 ? (
+              <div className="flex items-baseline gap-2 flex-wrap">
+                {entry.senses[0].pos && (
+                  <span className="shrink-0 text-xs font-mono text-text-tertiary border border-border px-1.5 py-0.5 rounded">
+                    {entry.senses[0].pos}
+                  </span>
                 )}
-                {entry.exampleZh && (
-                  <p className="text-sm leading-relaxed text-text-secondary">
-                    {entry.exampleZh}
-                  </p>
-                )}
+                <p className="text-xl font-medium text-text-primary">{entry.senses[0].zh}</p>
               </div>
+            ) : (
+              <p className="text-xl font-medium text-text-primary whitespace-pre-line">{formatMultiline(entry.translation)}</p>
             )}
-            {activeCue && (entry.exampleEn || entry.exampleZh) && (
+
+            {/* podcast 語境句：優先序最高，只要這句話有播出就顯示，不再要求字典先有例句 */}
+            {activeCue && (
               <div className="mt-1 space-y-2">
-                {/* P0-3：原始語境例句提升權重，搬移到翻譯下方、IPH 之前；用左邊框凸顯、不包灰底 */}
-                {/* ponytail: 只在字典真的有例句時才附上 podcast 語境句，避免拿 podcast 原句冒充字典例句 */}
                 <div className="border-l-2 border-accent pl-3 py-1">
                   <p className="text-base leading-relaxed text-text-primary">
                     {highlightWord(activeCue.text, word ?? '')}
@@ -273,6 +262,54 @@ export function WordCardPanel({ isOpen, word, entry, lookupError, onRetry, activ
                 </p>
               </div>
             )}
+
+            {/* 典型用法：字典自帶例句，跟 podcast 語境句互相獨立，兩者可同時存在也可各自缺席 */}
+            {(entry.exampleEn || entry.exampleZh) && (
+              <div className="border-l-2 border-border-strong pl-3 py-1 space-y-1">
+                <p className="text-xs font-mono text-text-tertiary">典型用法</p>
+                {entry.exampleEn && (
+                  <p className="text-sm leading-relaxed text-text-primary flex items-start gap-1.5">
+                    <span>{entry.exampleEn}</span>
+                    <PronounceButton audioUrl={null} text={entry.exampleEn} size={16} label="播放例句發音" />
+                  </p>
+                )}
+                {entry.exampleZh && (
+                  <p className="text-sm leading-relaxed text-text-secondary">
+                    {entry.exampleZh}
+                  </p>
+                )}
+              </div>
+            )}
+
+            {/* 核心語意：只有精煉過的字才有 */}
+            {entry.coreSense && (
+              <div className="bg-bg-secondary rounded-md px-3 py-2 flex items-start gap-2">
+                <span className="shrink-0 text-xs text-text-tertiary">💡 核心語意</span>
+                <span className="text-sm text-text-secondary">{entry.coreSense}</span>
+              </div>
+            )}
+
+            {/* 其他語意：收合，只在有第二個以上義項時出現 */}
+            {entry.senses && entry.senses.length > 1 && (
+              <details>
+                <summary className="text-xs font-mono text-text-tertiary cursor-pointer select-none hover:text-text-secondary transition-colors duration-fast">
+                  其他語意（{entry.senses.length - 1}）
+                </summary>
+                <div className="mt-2 space-y-1.5">
+                  {entry.senses.slice(1).map((sense, i) => (
+                    <div key={i} className="flex items-baseline gap-2">
+                      {sense.pos && (
+                        <span className="shrink-0 text-xs font-mono text-text-tertiary border border-border px-1.5 py-0.5 rounded">
+                          {sense.pos}
+                        </span>
+                      )}
+                      <span className="text-sm text-text-secondary">{sense.zh}</span>
+                    </div>
+                  ))}
+                </div>
+              </details>
+            )}
+
             {entry.mnemonic && (
               <div className="pt-1">
                 <MnemonicHint text={entry.mnemonic} />

@@ -32,7 +32,7 @@ _SELECT = """
          v.sense_idx, v.source_sentence, v.source_sentence_zh,
          to_char(v.next_review, 'YYYY-MM-DD') as next_review,
          v.interval_days as interval, v.ease, v.status, v.quiz_pass_streak,
-         d.example_en, d.example_zh, d.mnemonic
+         d.example_en, d.example_zh, d.mnemonic, d.senses, d.core_sense
   from public.user_vocab v
   left join public.episodes e on e.id = v.source_episode_id
   left join public.dict_cache d on d.word = v.lemma

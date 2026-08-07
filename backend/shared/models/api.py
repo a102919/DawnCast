@@ -20,6 +20,13 @@ class CamelModel(BaseModel):
     model_config = ConfigDict(alias_generator=to_camel, populate_by_name=True)
 
 
+class Sense(CamelModel):
+    """單一義項。zh 是精簡對應詞（≤6 字），不是英英定義也不是同義詞列表。"""
+
+    pos: str | None = None
+    zh: str
+
+
 class DictEntry(CamelModel):
     word: str
     ipa: str | None = None
@@ -31,6 +38,10 @@ class DictEntry(CamelModel):
     example_zh: str | None = None
     # 諧音/關鍵字記憶提示（繁中，台灣在地化記憶法）：來自同一支翻譯 LLM 呼叫順便產生
     mnemonic: str | None = None
+    # 以下兩欄來自 migration 0030 的義項精煉。null = 這個字還沒精煉過
+    # （quality=0），前端退回讀 translation。
+    senses: list[Sense] | None = None
+    core_sense: str | None = None
 
 
 class VocabItem(CamelModel):
@@ -55,6 +66,9 @@ class VocabItem(CamelModel):
     example_zh: str | None = None
     # 諧音/關鍵字記憶提示：同上，來自 dict_cache JOIN
     mnemonic: str | None = None
+    # 義項與核心語意：同上，來自 dict_cache JOIN（migration 0030）
+    senses: list[Sense] | None = None
+    core_sense: str | None = None
     # 1=新字(待學習) 2=複習中(SRS) 5=精熟封存（見 migration 0026）；門檻判斷在
     # 前端算，見 VocabProvider。ge=1/le=5 對齊 UpdateVocabBody 邊界驗證，避免
     # LLM/測試寫出 0/-1/999 等垃圾值污染 API 回應。

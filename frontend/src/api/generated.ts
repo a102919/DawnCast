@@ -1884,6 +1884,10 @@ export interface components {
             exampleZh?: string | null;
             /** Mnemonic */
             mnemonic?: string | null;
+            /** Senses */
+            senses?: components["schemas"]["Sense"][] | null;
+            /** Coresense */
+            coreSense?: string | null;
         };
         /**
          * Episode
@@ -2142,6 +2146,16 @@ export interface components {
             /** Wordoffsetsurl */
             wordOffsetsUrl?: string | null;
         };
+        /**
+         * Sense
+         * @description 單一義項。zh 是精簡對應詞（≤6 字），不是英英定義也不是同義詞列表。
+         */
+        Sense: {
+            /** Pos */
+            pos?: string | null;
+            /** Zh */
+            zh: string;
+        };
         /** Settings */
         Settings: {
             /**
@@ -2337,6 +2351,10 @@ export interface components {
             exampleZh?: string | null;
             /** Mnemonic */
             mnemonic?: string | null;
+            /** Senses */
+            senses?: components["schemas"]["Sense"][] | null;
+            /** Coresense */
+            coreSense?: string | null;
             /**
              * Status
              * @default 1

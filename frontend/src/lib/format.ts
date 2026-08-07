@@ -24,22 +24,3 @@ export function formatPos(pos: readonly string[]): string {
   } as const
   return pos.map(p => map[p] ?? p).join('、')
 }
-
-export function formatExchange(exchange: string): string {
-  const parts = exchange.split('/')
-  const labels: Record<string, string> = {
-    p: '過去式', d: '過去分詞', i: '現在分詞',
-    '3': '第三人稱', r: '比較級', t: '最高級',
-    s: '複數', 0: '原形',
-  } as const
-  return parts
-    .map(part => {
-      const colon = part.indexOf(':')
-      if (colon === -1) return null
-      const key = part.slice(0, colon)
-      const val = part.slice(colon + 1)
-      return labels[key] ? `${labels[key]}：${val}` : null
-    })
-    .filter((x): x is string => x !== null)
-    .join('　')
-}
